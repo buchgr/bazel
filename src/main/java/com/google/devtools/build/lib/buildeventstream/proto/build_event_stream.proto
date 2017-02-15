@@ -203,6 +203,8 @@ message ActionExecuted {
 // children events.
 message TargetComplete {
   bool success = 1;
+  repeated File output_file = 2;
+  repeated string tag = 3;
 }
 
 // Payload on events reporting about individual test action.

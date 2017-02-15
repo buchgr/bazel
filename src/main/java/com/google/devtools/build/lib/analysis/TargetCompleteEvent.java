@@ -14,10 +14,14 @@
 
 package com.google.devtools.build.lib.analysis;
 
+import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.ArtifactsToBuild;
 import com.google.devtools.build.lib.buildeventstream.BuildEventId;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.File;
 import com.google.devtools.build.lib.buildeventstream.BuildEventWithOrderConstraint;
 import com.google.devtools.build.lib.buildeventstream.GenericBuildEvent;
 import com.google.devtools.build.lib.buildeventstream.PathConverter;
@@ -26,7 +30,9 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
+import com.google.devtools.build.lib.packages.AttributeMap;
 import com.google.devtools.build.lib.rules.test.TestProvider;
+import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.util.Collection;
@@ -37,10 +43,11 @@ public final class TargetCompleteEvent implements SkyValue, BuildEventWithOrderC
   private final ConfiguredTarget target;
   private final NestedSet<Cause> rootCauses;
   private final Collection<BuildEventId> postedAfter;
+  private final Iterable<Artifact> outputs;
   private final boolean isTest;
 
-  private TargetCompleteEvent(
-      ConfiguredTarget target, NestedSet<Cause> rootCauses, boolean isTest) {
+  private TargetCompleteEvent(ConfiguredTarget target, NestedSet<Cause> rootCauses,
+      Iterable<Artifact> outputs, boolean isTest) {
     this.target = target;
     this.rootCauses =
         (rootCauses == null) ? NestedSetBuilder.<Cause>emptySet(Order.STABLE_ORDER) : rootCauses;
@@ -50,17 +57,19 @@ public final class TargetCompleteEvent implements SkyValue, BuildEventWithOrderC
       postedAfterBuilder.add(BuildEventId.fromCause(cause));
     }
     this.postedAfter = postedAfterBuilder.build();
+    this.outputs = outputs;
     this.isTest = isTest;
   }
 
   /** Construct a successful target completion event. */
-  public static TargetCompleteEvent createSuccessfulTarget(ConfiguredTarget ct) {
-    return new TargetCompleteEvent(ct, null, false);
+  public static TargetCompleteEvent createSuccessfulTarget(ConfiguredTarget ct,
+      ArtifactsToBuild artifactsToBuild) {
+    return new TargetCompleteEvent(ct, null, artifactsToBuild.getAllArtifacts(), false);
   }
 
   /** Construct a successful target completion event for a target that will be tested. */
   public static TargetCompleteEvent createSuccessfulTestTarget(ConfiguredTarget ct) {
-    return new TargetCompleteEvent(ct, null, true);
+    return new TargetCompleteEvent(ct, null, ImmutableList.<Artifact>of(), true);
   }
 
 
@@ -69,7 +78,7 @@ public final class TargetCompleteEvent implements SkyValue, BuildEventWithOrderC
    */
   public static TargetCompleteEvent createFailed(ConfiguredTarget ct, NestedSet<Cause> rootCauses) {
     Preconditions.checkArgument(!Iterables.isEmpty(rootCauses));
-    return new TargetCompleteEvent(ct, rootCauses, false);
+    return new TargetCompleteEvent(ct, rootCauses, ImmutableList.<Artifact>of(), false);
   }
 
   /**
@@ -120,13 +129,40 @@ public final class TargetCompleteEvent implements SkyValue, BuildEventWithOrderC
 
   @Override
   public BuildEventStreamProtos.BuildEvent asStreamProto(PathConverter pathConverter) {
-    BuildEventStreamProtos.TargetComplete complete =
-        BuildEventStreamProtos.TargetComplete.newBuilder().setSuccess(!failed()).build();
+    BuildEventStreamProtos.TargetComplete.Builder builder =
+        BuildEventStreamProtos.TargetComplete.newBuilder();
+
+    builder.setSuccess(!failed());
+    builder.addAllTag(getTags());
+    builder.addAllOutputFile(getOutputFiles(pathConverter));
+
+    BuildEventStreamProtos.TargetComplete complete = builder.build();
     return GenericBuildEvent.protoChaining(this).setCompleted(complete).build();
   }
 
   @Override
   public Collection<BuildEventId> postedAfter() {
     return postedAfter;
+  }
+
+  private Iterable<String> getTags() {
+    // We are only interested in targets that are rules.
+    if (!(target instanceof RuleConfiguredTarget)) {
+      return ImmutableList.<String>of();
+    }
+    AttributeMap attributes = ConfiguredAttributeMapper.of((RuleConfiguredTarget) target);
+    // Every rule (implicitly) has a "tags" attribute.
+    return attributes.get("tags", Type.STRING_LIST);
+  }
+
+  private Iterable<File> getOutputFiles(PathConverter pathConverter) {
+    File.Builder fileBuilder = File.newBuilder();
+    ImmutableList.Builder<File> files = ImmutableList.builder();
+    for (Artifact artifact : outputs) {
+      String name = artifact.getFilename();
+      String uri = pathConverter.apply(artifact.getPath());
+      files.add(fileBuilder.setName(name).setUri(uri).build());
+    }
+    return files.build();
   }
 }

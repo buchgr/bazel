@@ -56,6 +56,12 @@ genrule(
   outs = ["fails_to_build.txt"],
   cmd = "false",
 )
+genrule(
+  name = "output_files_and_tags",
+  outs = ["out1.txt"],
+  cmd = "echo foo > \\"\$@\\"",
+  tags = ["tag1", "tag2"]
+)
 EOF
 }
 
@@ -169,6 +175,14 @@ function test_cached_test_results() {
   expect_log 'name:.*test.log'
   expect_log_once '^progress '
   expect_not_log 'aborted'
+}
+
+function test_target_complete() {
+  bazel build --verbose_failures --experimental_build_event_text_file=$TEST_log \
+  pkg:output_files_and_tags || fail "bazel build failed"
+  expect_log 'out1.txt'
+  expect_log 'tag1'
+  expect_log 'tag2'
 }
 
 function test_build_only() {
