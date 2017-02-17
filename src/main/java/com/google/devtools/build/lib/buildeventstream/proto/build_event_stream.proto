@@ -198,12 +198,18 @@ message ActionExecuted {
   string label = 5;
 }
 
+// Collection of all output files belonging to that output_group.
+message OutputGroup {
+  string output_group = 1;
+  repeated File output_file = 2;
+}
+
 // Payload of the event indicating the completion of a target. The target is
 // specified in the id. If the target failed the root causes are provided as
 // children events.
 message TargetComplete {
   bool success = 1;
-  repeated File output_file = 2;
+  repeated OutputGroup output_group = 2;
   repeated string tag = 3;
 }
 
