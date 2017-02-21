@@ -130,4 +130,10 @@ public final class BuildEventId implements Serializable {
     return new BuildEventId(
         BuildEventStreamProtos.BuildEventId.newBuilder().setTestSummary(summaryId).build());
   }
+
+  public static BuildEventId buildFinished() {
+    BuildEventStreamProtos.BuildEventId.BuildFinishedId finishedId =
+        BuildEventStreamProtos.BuildEventId.BuildFinishedId.newBuilder().build();
+    return new BuildEventId(BuildEventStreamProtos.BuildEventId.newBuilder().setBuildFinished(finishedId).build());
+  }
 }

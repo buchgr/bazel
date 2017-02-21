@@ -118,7 +118,7 @@ public class BuildEventStreamerTest {
     assertThat(afterFirstEvent).hasSize(1);
     assertEquals(startEvent.getEventId(), afterFirstEvent.get(0).getEventId());
 
-    streamer.buildComplete(new BuildCompleteEvent(null));
+    streamer.buildEvent(new BuildCompleteEvent(null));
 
     List<BuildEvent> finalStream = transport.getEvents();
     assertThat(finalStream).hasSize(2);
@@ -217,7 +217,7 @@ public class BuildEventStreamerTest {
     streamer.buildEvent(startEvent);
     streamer.buildEvent(earlyEvent);
     streamer.buildEvent(lateReference);
-    streamer.buildComplete(new BuildCompleteEvent(null));
+    streamer.buildEvent(new BuildCompleteEvent(null));
 
     List<BuildEvent> eventsSeen = transport.getEvents();
     int earlyEventCount = 0;
@@ -281,7 +281,7 @@ public class BuildEventStreamerTest {
 
     streamer.buildEvent(startEvent);
     streamer.buildEvent(failedTarget);
-    streamer.buildComplete(new BuildCompleteEvent(null));
+    streamer.buildEvent(new BuildCompleteEvent(null));
 
     List<BuildEvent> allEventsSeen = transport.getEvents();
     assertThat(allEventsSeen).hasSize(5);

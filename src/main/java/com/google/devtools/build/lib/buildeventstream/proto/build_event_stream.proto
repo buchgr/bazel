@@ -19,6 +19,8 @@ package build_event_stream;
 option java_package = "com.google.devtools.build.lib.buildeventstream";
 option java_outer_classname = "BuildEventStreamProtos";
 
+//import "google/protobuf/timestamp.proto";
+
 // Identifier for a build event. It is deliberately structured to also provide
 // information about which build target etc the event is related to.
 //
@@ -85,6 +87,9 @@ message BuildEventId {
     string label = 1;
   }
 
+  message BuildFinishedId {
+  }
+
   oneof id {
     UnknownBuildEventId unknown = 1;
     ProgressId progress = 2;
@@ -94,6 +99,7 @@ message BuildEventId {
     ActionCompletedId action_completed = 6;
     TestResultId test_result = 8;
     TestSummaryId test_summary = 7;
+    BuildFinishedId build_finished = 9;
   }
 }
 
@@ -228,6 +234,12 @@ message TestSummary {
   repeated File failed = 4;
 }
 
+message BuildFinished {
+  bool overall_success = 1;
+  int64 finish_time = 2;
+  //google.protobuf.Timestamp finish_time = 2;
+}
+
 // Message describing a build event. Events will have an identifier that
 // is unique within a given build invocation; they also announce follow-up
 // events as children. More details, which are specific to the kind of event
@@ -245,5 +257,6 @@ message BuildEvent {
     TargetComplete completed = 8;
     TestResult test_result = 10;
     TestSummary test_summary = 9;
+    BuildFinished finished = 14;
   };
 }

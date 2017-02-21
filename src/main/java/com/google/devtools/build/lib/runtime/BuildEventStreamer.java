@@ -154,30 +154,9 @@ public class BuildEventStreamer implements EventHandler {
   };
 
   @Subscribe
-  public void buildComplete(BuildCompleteEvent event) {
-    clearPendingEvents();
-    post(ProgressEvent.finalProgressUpdate(progressCount));
-    clearAnnouncedEvents();
-    close();
-  }
-
-  @Subscribe
   public void buildEvent(BuildEvent event) {
-    if (event instanceof ActionExecutedEvent) {
-      // We ignore events about action executions if the execution succeeded.
-      if (((ActionExecutedEvent) event).getException() == null) {
-        return;
-      }
-    }
-
-    if (event instanceof BuildEventWithOrderConstraint) {
-      // Check if all prerequisit events are posted already.
-      for (BuildEventId prerequisiteId : ((BuildEventWithOrderConstraint) event).postedAfter()) {
-        if (!postedEvents.contains(prerequisiteId)) {
-          pendingEvents.put(prerequisiteId, event);
-          return;
-        }
-      }
+    if (isActionWithoutError(event) || bufferUntilPrerequisitesReceived(event)) {
+      return;
     }
 
     post(event);
@@ -187,10 +166,40 @@ public class BuildEventStreamer implements EventHandler {
     for (BuildEvent freedEvent : toReconsider) {
       buildEvent(freedEvent);
     }
+
+    if (event instanceof BuildCompleteEvent) {
+      buildComplete((BuildCompleteEvent) event);
+    }
   }
 
   @VisibleForTesting
   ImmutableSet<BuildEventTransport> getTransports() {
     return ImmutableSet.copyOf(transports);
+  }
+
+  private void buildComplete(BuildCompleteEvent event) {
+    clearPendingEvents();
+    post(ProgressEvent.finalProgressUpdate(progressCount));
+    clearAnnouncedEvents();
+    close();
+  }
+
+  private boolean isActionWithoutError(BuildEvent event) {
+    return event instanceof ActionExecutedEvent &&
+        ((ActionExecutedEvent) event).getException() == null;
+  }
+
+  private boolean bufferUntilPrerequisitesReceived(BuildEvent event) {
+    if (!(event instanceof BuildEventWithOrderConstraint)) {
+      return false;
+    }
+    // Check if all prerequisite events are posted already.
+    for (BuildEventId prerequisiteId : ((BuildEventWithOrderConstraint) event).postedAfter()) {
+      if (!postedEvents.contains(prerequisiteId)) {
+        pendingEvents.put(prerequisiteId, event);
+        return true;
+      }
+    }
+    return false;
   }
 }
