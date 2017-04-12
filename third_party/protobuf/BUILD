@@ -5,52 +5,6 @@ licenses(["notice"])
 exports_files(["LICENSE"])
 
 ################################################################################
-# Modifications made by bazel
-################################################################################
-
-load(":protobuf.bzl", "py_proto_library")
-
-filegroup(
-    name = "srcs",
-    srcs = glob(
-        [
-            "**",
-            "protobuf.bzl",
-            "python/google/protobuf/**/*.py",
-            "src/google/protobuf/**/*.proto",
-        ],
-    ),
-    visibility = ["//visibility:public"],
-)
-
-java_import(
-    name = "protobuf_java_util",
-    jars = ["protobuf-java-util-3.0.0.jar"],
-    exports = [
-        "//third_party:gson",
-    ],
-    visibility = ["//visibility:public"],
-)
-
-java_import(
-    name = "protobuf_java",
-    jars = ["protobuf-java-3.2.0.jar"],
-    visibility = ["//visibility:public"],
-)
-
-# For bootstrapping JavaBuilder
-filegroup(
-    name = "protobuf-jars",
-    srcs = ["protobuf-java-3.2.0.jar"],
-    visibility = ["//visibility:public"],
-)
-
-################################################################################
-# The below build rules are a copy of the upstream protobuf BUILD file with
-# Java support removed.
-################################################################################
-
-################################################################################
 # Protobuf Runtime Library
 ################################################################################
 
@@ -607,6 +561,30 @@ cc_test(
 ################################################################################
 internal_gen_well_known_protos_java(
     srcs = WELL_KNOWN_PROTOS,
+)
+
+java_library(
+    name = "protobuf_java",
+    srcs = glob([
+        "java/core/src/main/java/com/google/protobuf/*.java",
+    ]) + [
+        ":gen_well_known_protos_java",
+    ],
+    javacopts = ["-source 6"],
+    visibility = ["//visibility:public"],
+)
+
+java_library(
+    name = "protobuf_java_util",
+    srcs = glob([
+        "java/util/src/main/java/com/google/protobuf/util/*.java",
+    ]),
+    visibility = ["//visibility:public"],
+    deps = [
+        "protobuf_java",
+        "//external:gson",
+        "//external:guava",
+    ],
 )
 
 ################################################################################
