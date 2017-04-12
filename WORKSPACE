@@ -27,6 +27,19 @@ bind(
     actual = "//third_party:guava",
 )
 
+# External dependency used by //third_party/protobuf:protobuf_python
+new_http_archive(
+    name = "six_archive",
+    build_file = "./third_party/protobuf/six.BUILD",
+    sha256 = "105f8d68616f8248e24bf0e9372ef04d3cc10104f1980f54d57b2ce73a5ad56a",
+    url = "https://pypi.python.org/packages/source/s/six/six-1.10.0.tar.gz#md5=34eed507548117b2ab523ab14b2f8b55",
+)
+
+bind(
+    name = "six",
+    actual = "@six_archive//:six",
+)
+
 # For tools/cpp/test/...
 load("//tools/cpp/test:docker_repository.bzl", "docker_repository")
 docker_repository()
@@ -50,16 +63,15 @@ docker_repository()
 # This allows rules written in skylark to locate apple build tools.
 bind(name = "xcrunwrapper", actual = "@bazel_tools//tools/objc:xcrunwrapper")
 
-new_local_repository(
+local_repository(
     name = "com_google_protobuf",
-    path = "./third_party/protobuf/3.0.0/",
-    build_file = "./third_party/protobuf/3.0.0/BUILD",
+    path = "./third_party/protobuf/",
 )
 
 new_local_repository(
     name = "com_google_protobuf_java",
-    path = "./third_party/protobuf/3.0.0/",
-    build_file = "./third_party/protobuf/3.0.0/com_google_protobuf_java.BUILD",
+    path = "./third_party/protobuf/",
+    build_file = "./third_party/protobuf/com_google_protobuf_java.BUILD",
 )
 
 # OpenJDK distributions used to create a version of Bazel bundled with the OpenJDK.
