@@ -106,6 +106,30 @@ public class ProtoCompileActionBuilderTest {
   }
 
   @Test
+  public void commandline_derivedArtifact() {
+    // Verify that the command line contains the correct path to a generated protocol buffers.
+    SupportData supportData =
+        SupportData.create(
+            Predicates.<TransitiveInfoCollection>alwaysFalse(),
+            ImmutableList.of(derivedArtifact("//:dont-care", "source_file.proto")),
+            NestedSetBuilder.<Artifact>emptySet(STABLE_ORDER),
+            NestedSetBuilder.<Artifact>emptySet(STABLE_ORDER),
+            true);
+
+    CustomCommandLine cmdLine =
+        createCommandLineFromToolchains(
+            ImmutableList.<ToolchainInvocation>of(),
+            supportData.getDirectProtoSources(),
+            supportData.getTransitiveImports(),
+            null,
+            "//foo:bar",
+            true,
+            ImmutableList.<String>of());
+
+    assertThat(cmdLine.arguments()).containsExactly("out/source_file.proto");
+  }
+
+  @Test
   public void commandLine_strictDeps() throws Exception {
     ProtoLangToolchainProvider toolchain =
         ProtoLangToolchainProvider.create(
