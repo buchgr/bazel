@@ -61,7 +61,7 @@ java_binary(
     main_class = "com.google.devtools.build.java.bazel.JavaBuilderConfigGenerator",
     deps = [
         "//src/main/java/com/google/devtools/build/lib:java-toolchain-parser",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -93,7 +93,7 @@ java_library(
     deps = [
         ":javabuilder-javacopts-lib",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar:javac_options",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -111,7 +111,7 @@ java_library(
         ":JavaBuilderConfig",
         ":JavaLangtools",
         ":JavacBootclasspath",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

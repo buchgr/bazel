@@ -28,7 +28,7 @@ java_binary(
         "//src/main/protobuf:worker_protocol_java_proto",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:auto_value",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )

@@ -87,7 +87,7 @@ gensrcjar = rule(
 def cc_grpc_library(name, src):
   basename = src[:-len(".proto")]
   protoc_label = str(Label("//third_party/protobuf:protoc"))
-  cpp_plugin_label = str(Label("//third_party/grpc:cpp_plugin"))
+  cpp_plugin_label = str(Label("@io_grpc//:cpp_plugin"))
   native.genrule(
       name = name + "_codegen",
       srcs = [src],
@@ -104,21 +104,21 @@ def cc_grpc_library(name, src):
       name = name,
       srcs = [basename + ".grpc.pb.cc", basename + ".pb.cc"],
       hdrs = [basename + ".grpc.pb.h", basename + ".pb.h"],
-      deps = [str(Label("//third_party/grpc:grpc++_unsecure"))],
+      deps = [str(Label("@io_grpc//:grpc++_unsecure"))],
       includes = ["."])
 
 # TODO(bazel-team): support proto => proto dependencies too
 def java_proto_library(name, src, use_grpc_plugin=False):
   grpc_java_plugin = None
   if use_grpc_plugin:
-    grpc_java_plugin = str(Label("//third_party/grpc:grpc-java-plugin"))
+    grpc_java_plugin = str(Label("@io_grpc//:grpc-java-plugin"))
 
   gensrcjar(name=name + "_srcjar", src=src, grpc_java_plugin=grpc_java_plugin)
   deps = [str(Label("//third_party/protobuf:protobuf_java"))]
   if use_grpc_plugin:
     deps += [
-        str(Label("//third_party/grpc:grpc-jar")),
-        str(Label("//third_party:guava")),
+        str(Label("@io_grpc//:grpc-jar")),
+        str(Label("@com_google_guava//:jar")),
     ]
   native.java_library(
     name=name,

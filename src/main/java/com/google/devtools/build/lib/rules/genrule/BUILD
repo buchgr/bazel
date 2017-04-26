@@ -17,8 +17,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/rules/cpp",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )

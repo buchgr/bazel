@@ -23,7 +23,7 @@ java_library(
     ],
     deps = [
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/jarhelper",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

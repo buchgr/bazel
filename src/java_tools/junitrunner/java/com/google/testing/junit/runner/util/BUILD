@@ -4,7 +4,7 @@ java_library(
     name = "util",
     srcs = glob(["*.java"]),
     deps = [
-        "//third_party:jsr305",
+        "@jsr305//:jar",
         "//third_party:junit4",
     ],
 )

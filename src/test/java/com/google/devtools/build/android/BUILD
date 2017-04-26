@@ -15,7 +15,7 @@ java_test(
     srcs = ["RClassGeneratorActionTest.java"],
     deps = [
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],
@@ -42,7 +42,7 @@ java_test(
         ":test_utils",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:android_common_25_0_0",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -71,7 +71,7 @@ java_test(
         ":test_utils",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:android_common_25_0_0",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -85,7 +85,7 @@ java_test(
     deps = [
         ":test_utils",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -99,7 +99,7 @@ java_test(
     deps = [
         "//src/main/java/com/google/devtools/common/options",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],
@@ -111,7 +111,7 @@ java_test(
     tags = ["no_windows"],  # Test asserts forward slashes in android data xml files.
     deps = [
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -134,7 +134,7 @@ java_test(
     srcs = ["DependencyAndroidDataTest.java"],
     deps = [
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -154,7 +154,7 @@ java_test(
     deps = [
         ":test_utils",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],
@@ -168,7 +168,7 @@ java_test(
         ":test_utils",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:android_common_25_0_0",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -180,7 +180,7 @@ java_test(
     srcs = ["SerializedAndroidDataTest.java"],
     deps = [
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -192,9 +192,9 @@ java_test(
     srcs = ["SplitConfigurationFilterTest.java"],
     deps = [
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],
@@ -205,7 +205,7 @@ java_test(
     srcs = ["UnvalidatedAndroidDataTest.java"],
     deps = [
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -217,7 +217,7 @@ java_test(
     srcs = ["UnvalidatedAndroidDirectoriesTest.java"],
     deps = [
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -234,7 +234,7 @@ java_library(
     deps = [
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:android_common_25_0_0",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:truth",
     ],
 )

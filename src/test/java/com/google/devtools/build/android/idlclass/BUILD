@@ -11,7 +11,7 @@ java_test(
     deps = [
         "//src/main/protobuf:java_compilation_java_proto",
         "//src/tools/android/java/com/google/devtools/build/android/idlclass:idlclass_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],
