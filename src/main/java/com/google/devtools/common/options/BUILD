@@ -7,8 +7,8 @@ java_library(
     name = "options",
     srcs = glob(["*.java"]),
     deps = [
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 

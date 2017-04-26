@@ -22,8 +22,8 @@ java_library(
         "//third_party:asm-commons",
         "//third_party:asm-tree",
         "//third_party:auto_value",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
