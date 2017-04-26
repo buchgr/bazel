@@ -23,8 +23,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/rules/objc",
         "//src/main/java/com/google/devtools/common/options",
         "//third_party:apache_velocity",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 

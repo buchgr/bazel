@@ -13,7 +13,7 @@ java_library(
     deps = [
         "//src/main/java/com/google/devtools/build/lib:packages",
         "//src/main/java/com/google/devtools/build/lib:skylarkinterface",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

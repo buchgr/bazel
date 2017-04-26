@@ -17,7 +17,7 @@ java_test(
     deps = [
         "//src/tools/benchmark/java/com/google/devtools/build/benchmark:benchmark_lib",
         "//src/tools/benchmark/java/com/google/devtools/build/benchmark:build_data_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],
@@ -30,7 +30,7 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:shell",
         "//src/tools/benchmark/java/com/google/devtools/build/benchmark:benchmark_lib",
         "//src/tools/benchmark/java/com/google/devtools/build/benchmark:build_data_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],

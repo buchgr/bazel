@@ -8,5 +8,5 @@ filegroup(
 java_library(
     name = "util",
     srcs = glob(["*.java"]),
-    deps = ["//third_party:guava"],
+    deps = ["@com_google_guava//:jar"],
 )

@@ -15,6 +15,6 @@ java_library(
         "//src/java_tools/singlejar:libSingleJar",
         "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
         "//src/tools/xcode-common/java/com/google/devtools/build/xcode/util",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )

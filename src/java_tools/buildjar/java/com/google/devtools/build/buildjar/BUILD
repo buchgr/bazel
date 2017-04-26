@@ -19,7 +19,7 @@ java_library(
     ],
     deps = [
         ":JarOwner",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -38,8 +38,8 @@ java_library(
         ":javac_options",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins",
         "//third_party:auto_value",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/java/jdk/langtools:javac-9-dev-r4023-1",
     ],
 )
@@ -69,7 +69,7 @@ java_library(
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:errorprone",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:processing",
         "//src/main/protobuf:worker_protocol_java_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party/java/jacoco:core",
         "//third_party/java/jdk/langtools:javac-9-dev-r4023-1",
     ],
@@ -94,7 +94,7 @@ java_library(
     ],
     deps = [
         "//third_party:auto_value",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -119,8 +119,8 @@ java_library(
     ],
     deps = [
         "//third_party:auto_value",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -131,7 +131,7 @@ bootstrap_java_library(
     jars = [
         "//third_party:auto_value-jars",
         "//third_party:bootstrap_guava_and_error_prone-jars-2.0.20-SNAPSHOT",
-        "//third_party:jsr305-jars",
+        "@jsr305//:jsr-305.jar",
         "//third_party/protobuf:protobuf-jars",
         "//third_party/java/jacoco:core-jars",
     ],
@@ -170,7 +170,7 @@ bootstrap_java_library(
     name = "bootstrap_JarOwner",
     srcs = ["JarOwner.java"],
     jars = [
-        "//third_party:jsr305-jars",
+        "@jsr305//:jsr-305.jar",
         "//third_party:auto_value-jars",
         "//third_party:bootstrap_guava_and_error_prone-jars-2.0.20-SNAPSHOT",
     ],
@@ -210,7 +210,7 @@ java_library(
         "//src/main/protobuf:deps_java_proto",
         "//src/main/protobuf:java_compilation_java_proto",
         "//src/main/protobuf:worker_protocol_java_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

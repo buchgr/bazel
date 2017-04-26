@@ -5,7 +5,7 @@ java_test(
     srcs = ["JavaCodeGeneratorHelperTest.java"],
     deps = [
         "//src/tools/benchmark/java/com/google/devtools/build/benchmark/codegenerator:codegenerator_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
     ],
 )
@@ -15,7 +15,7 @@ java_test(
     srcs = ["JavaCodeGeneratorTest.java"],
     deps = [
         "//src/tools/benchmark/java/com/google/devtools/build/benchmark/codegenerator:codegenerator_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],
@@ -26,7 +26,7 @@ java_test(
     srcs = ["CppCodeGeneratorHelperTest.java"],
     deps = [
         "//src/tools/benchmark/java/com/google/devtools/build/benchmark/codegenerator:codegenerator_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],
@@ -37,7 +37,7 @@ java_test(
     srcs = ["CppCodeGeneratorTest.java"],
     deps = [
         "//src/tools/benchmark/java/com/google/devtools/build/benchmark/codegenerator:codegenerator_lib",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],

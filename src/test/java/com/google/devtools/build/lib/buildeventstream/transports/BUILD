@@ -16,7 +16,7 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/buildeventstream/proto:build_event_stream_java_proto",
         "//src/main/java/com/google/devtools/build/lib/buildeventstream/transports",
         "//src/test/java/com/google/devtools/build/lib:packages_testutil",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",

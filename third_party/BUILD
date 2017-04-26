@@ -7,7 +7,7 @@ filegroup(
         "//third_party/css/font_awesome:srcs",
         "//third_party/ijar:srcs",
         "//third_party/iossim:srcs",
-        "//third_party/grpc:srcs",
+        "@io_grpc//:srcs",
         "//third_party/java/android_databinding:srcs",
         "//third_party/java/aosp_gradle_core:srcs",
         "//third_party/java/apkbuilder:srcs",
@@ -32,6 +32,12 @@ filegroup(
         "//third_party/zlib:srcs",
         "//third_party/nanopb:srcs",
         "//third_party/googleapis:srcs",
+        "@jsr305//:srcs",
+        "@jcip_annotations//:srcs",
+        "@error_prone//:srcs",
+        "@com_google_guava//:srcs",
+        "@io_netty//:srcs",
+        "@zlib//:srcs",
     ],
 )
 
@@ -197,7 +203,7 @@ java_import(
     ],
     runtime_deps = [
         ":api_client",
-        ":guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -211,8 +217,8 @@ java_plugin(
         ":auto_common",
         ":auto_service",
         ":auto_value_value",
-        ":guava",
-        ":jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         ":tomcat_annotations_api",
     ],
 )
@@ -233,7 +239,7 @@ java_plugin(
     deps = [
         ":auto_common",
         ":auto_service",
-        ":guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -247,7 +253,7 @@ java_plugin(
         ":auto_common",
         ":auto_service",
         ":auto_value_value",
-        ":guava",
+        "@com_google_guava//:jar",
         ":tomcat_annotations_api",
     ],
 )
@@ -291,7 +297,7 @@ java_plugin(
         ":dagger_api",
         ":dagger_compiler",
         ":dagger_producers",
-        ":guava",
+        "@com_google_guava//:jar",
         ":jsr330_inject",
     ],
 )
@@ -343,16 +349,16 @@ alias(
 java_import(
     name = "error_prone",
     jars = [
-        "error_prone/error_prone_check_api-2.0.20-SNAPSHOT.jar",
-        "error_prone/error_prone_core-2.0.20-SNAPSHOT.jar",
-        "error_prone/error_prone_annotations-2.0.20-SNAPSHOT.jar",
-        "error_prone/error_prone_annotation-2.0.20-SNAPSHOT.jar",
+        "@error_prone//:error_prone_check_api-2.0.20-SNAPSHOT.jar",
+        "@error_prone//:error_prone_core-2.0.20-SNAPSHOT.jar",
+        "@error_prone//:error_prone_annotations-2.0.20-SNAPSHOT.jar",
+        "@error_prone//:error_prone_annotation-2.0.20-SNAPSHOT.jar",
     ],
     exports = [
         ":auto_common",
-        ":guava",
-        ":jcip_annotations",
-        ":jsr305",
+        "@com_google_guava//:jar",
+        "@jcip_annotations//:jar",
+        "@jsr305//:jar",
         ":pcollections",
         "//third_party/checker_framework_dataflow",
         "//third_party/jformatstring",
@@ -363,13 +369,6 @@ java_import(
     name = "jackson2",
     jars = [
         "jackson2/jackson-core-2.8.6.jar",
-    ],
-)
-
-java_import(
-    name = "jcip_annotations",
-    jars = [
-        "jcip_annotations/jcip-annotations-1.0-1.jar",
     ],
 )
 
@@ -385,13 +384,13 @@ filegroup(
     name = "bootstrap_guava_and_error_prone-jars",
     srcs = [
         "auto/auto-common-0.3.jar",
-        "error_prone/error_prone_annotation-2.0.20-SNAPSHOT.jar",
-        "error_prone/error_prone_annotations-2.0.20-SNAPSHOT.jar",
-        "error_prone/error_prone_check_api-2.0.20-SNAPSHOT.jar",
-        "error_prone/error_prone_core-2.0.20-SNAPSHOT.jar",
-        "guava/guava-21.0.jar",
-        "jcip_annotations/jcip-annotations-1.0-1.jar",
-        "jsr305/jsr-305.jar",
+        "@error_prone//:error_prone_annotation-2.0.20-SNAPSHOT.jar",
+        "@error_prone//:error_prone_annotations-2.0.20-SNAPSHOT.jar",
+        "@error_prone//:error_prone_check_api-2.0.20-SNAPSHOT.jar",
+        "@error_prone//:error_prone_core-2.0.20-SNAPSHOT.jar",
+        "@com_google_guava//:guava-21.0.jar",
+        "@jcip_annotations//:jcip-annotations-1.0-1.jar",
+        "@jsr305//:jsr-305.jar",
         "pcollections/pcollections-2.1.2.jar",
         "//third_party/checker_framework_dataflow:bootstrap",
         "//third_party/jformatstring:bootstrap",
@@ -404,28 +403,10 @@ alias(
     actual = "bootstrap_guava_and_error_prone-jars",
 )
 
-# As of Guava 20.0, Guava code uses Error Prone annotations. This isn't a
-# problem when compiling with java 8, but is a problem when compiling Bazel
-# with java 7 (the Error Prone jars need to be on the javac classpath). So,
-# until we drop support for compiling Bazel with java 7, we unfortunately need
-# to ensure that the Error Prone jars are always used together with the Guava
-# jars.
-java_import(
-    name = "guava",
-    jars = [
-        "error_prone/error_prone_annotations-2.0.19.jar",
-        "jcip_annotations/jcip-annotations-1.0-1.jar",
-        "jsr305/jsr-305.jar",
-    ] + select({
-        "//tools/jdk:jdk7": ["guava/guava-21.0-20161101.jar"],
-        "//conditions:default": ["guava/guava-21.0.jar"],
-    }),
-)
-
 # For bootstrapping JavaBuilder
 filegroup(
     name = "guava-jars",
-    srcs = ["guava/guava-21.0.jar"],
+    srcs = ["@com_google_guava//:guava-21.0.jar"],
 )
 
 java_import(
@@ -448,16 +429,7 @@ java_import(
     jars = ["jsch/jsch-0.1.51.jar"],
 )
 
-java_import(
-    name = "jsr305",
-    jars = ["jsr305/jsr-305.jar"],
-)
-
 # For bootstrapping JavaBuilder
-filegroup(
-    name = "jsr305-jars",
-    srcs = ["jsr305/jsr-305.jar"],
-)
 
 java_import(
     name = "jsr330_inject",
@@ -477,11 +449,6 @@ java_import(
         "maven_model/maven-model-builder-3.2.3.jar",
         "maven_model/maven-repository-metadata-3.2.3.jar",
     ],
-)
-
-java_import(
-    name = "netty",
-    jars = ["netty/netty-all-4.1.0.CR6.jar"],
 )
 
 java_import(
@@ -522,8 +489,8 @@ java_import(
 java_import(
     name = "guava-testlib",
     jars = select({
-        "//tools/jdk:jdk7": ["guava/guava-testlib-21.0-20161101.jar"],
-        "//conditions:default": ["guava/guava-testlib-21.0.jar"],
+        "//tools/jdk:jdk7": ["@com_google_guava//:guava-testlib-21.0-20161101.jar"],
+        "//conditions:default": ["@com_google_guava//:guava-testlib-21.0.jar"],
     }),
 )
 

@@ -31,8 +31,8 @@ java_library(
     ),
     visibility = ["//visibility:public"],
     deps = [
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -46,8 +46,8 @@ java_library(
     visibility = ["//visibility:public"],
     deps = [
         ":ziputils_lib",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -61,7 +61,7 @@ java_binary(
     deps = [
         ":splitter_lib",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -89,6 +89,6 @@ java_binary(
         ":splitter_lib",
         ":ziputils_lib",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
