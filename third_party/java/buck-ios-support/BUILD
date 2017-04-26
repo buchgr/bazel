@@ -14,8 +14,8 @@ java_library(
         ["java/**/*.java"],
     ),
     deps = [
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party/java/dd_plist",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )

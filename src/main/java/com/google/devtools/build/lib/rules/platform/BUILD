@@ -15,7 +15,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:packages",
         "//src/main/java/com/google/devtools/build/lib:skylarkinterface",
         "//src/main/java/com/google/devtools/build/lib/analysis/platform",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

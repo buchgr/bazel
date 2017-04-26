@@ -80,10 +80,10 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/protobuf:invocation_policy_java_proto",
-        "//third_party:guava",
         "//third_party:guava-testlib",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -108,10 +108,10 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib:windows",
-        "//third_party:guava",
         "//third_party:guava-testlib",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -174,11 +174,11 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
         "//third_party:guava-testlib",
         "//third_party:joda_time",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -203,10 +203,10 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib:windows",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
         "//third_party:guava-testlib",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -218,10 +218,10 @@ java_library(
     deps = [
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib:windows",
-        "//third_party:guava",
         "//third_party:guava-testlib",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -245,9 +245,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:os_util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib:windows",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -275,12 +275,12 @@ java_library(
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -311,12 +311,12 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/rules/cpp",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -373,12 +373,12 @@ java_library(
         "//src/main/protobuf:extra_actions_base_java_proto",
         "//src/test/java/com/google/devtools/build/lib/skyframe:testutil",
         "//src/test/java/com/google/devtools/build/skyframe:testutil",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -415,12 +415,12 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/protobuf:extra_actions_base_java_proto",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -450,12 +450,12 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/rules/objc",
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:extra_actions_base_java_proto",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -478,9 +478,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:packages",
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -503,9 +503,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:build-base",
         "//src/main/java/com/google/devtools/build/lib:packages",
         "//src/main/java/com/google/devtools/build/lib:vfs",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -543,12 +543,12 @@ java_test(
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/test/java/com/google/devtools/build/lib/skyframe:testutil",
         "//third_party:auto_value",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -567,9 +567,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:graph",
         "//src/main/java/com/google/devtools/build/lib:packages-internal",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -604,13 +604,13 @@ java_library(
         "//src/main/protobuf:build_java_proto",
         "//src/main/protobuf:crosstool_config_java_proto",
         "//src/main/protobuf:extra_actions_base_java_proto",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
         "//third_party/protobuf:protobuf_java",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -643,12 +643,12 @@ java_test(
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/protobuf:build_java_proto",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
         "//third_party/protobuf:protobuf_java",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -673,10 +673,10 @@ java_test(
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -706,12 +706,12 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:bazel-main",
         "//src/main/java/com/google/devtools/build/lib:collect",
         "//src/main/java/com/google/devtools/build/lib:shell",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -737,14 +737,14 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/protobuf:command_server_java_proto",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
-        "//third_party/grpc:grpc-jar",
         "//third_party/protobuf:protobuf_java",
+        "@com_google_guava//:jar",
+        "@io_grpc//:grpc-jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -770,11 +770,11 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -792,11 +792,11 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:clock",
         "//src/main/java/com/google/devtools/build/lib:profiler-output",
         "//src/main/java/com/google/devtools/build/lib:vfs",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -816,11 +816,11 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:bazel-rules",
         "//src/main/java/com/google/devtools/build/lib:os_util",
         "//src/main/java/com/google/devtools/build/lib:packages",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -843,11 +843,11 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -867,11 +867,11 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:java-rules",
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -894,11 +894,11 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -938,12 +938,12 @@ java_test(
         "//src/main/protobuf:crosstool_config_java_proto",
         "//src/main/protobuf:extra_actions_base_java_proto",
         "//src/test/java/com/google/devtools/build/lib:packages_testutil",
-        "//third_party:guava",
         "//third_party:guava-testlib",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
         "//third_party/protobuf:protobuf_java",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -959,9 +959,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/rules/cpp",
         "//src/main/java/com/google/devtools/build/lib/rules/cpp/proto:ProtoCcHeaderProvider",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -974,9 +974,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/rules/objc",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1025,9 +1025,9 @@ java_test(
         "//src/main/protobuf:crosstool_config_java_proto",
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:packages_testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1057,10 +1057,10 @@ java_test(
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:invocation_policy_java_proto",
         "//src/main/protobuf:test_status_java_proto",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1084,12 +1084,12 @@ java_test(
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:remote_protocol_java_proto",
         "//third_party:api_client",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
-        "//third_party/grpc:grpc-jar",
         "//third_party/protobuf:protobuf_java",
+        "@com_google_guava//:jar",
+        "@io_grpc//:grpc-jar",
     ],
 )
 
@@ -1116,9 +1116,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/sandbox",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1146,9 +1146,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/rules/apple",
         "//src/main/java/com/google/devtools/build/lib/standalone",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1172,11 +1172,11 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
         "//third_party/protobuf:protobuf_java",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1193,10 +1193,10 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:mockito",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1210,9 +1210,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:proto-rules",
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1225,9 +1225,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:build-base",
         "//src/main/java/com/google/devtools/build/lib:proto-rules",
         "//src/main/java/com/google/devtools/build/lib/actions",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1245,7 +1245,7 @@ java_library(
     deps = [
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:worker_protocol_java_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

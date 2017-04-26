@@ -17,9 +17,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:packages",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )

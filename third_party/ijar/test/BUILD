@@ -168,9 +168,9 @@ java_test(
     deps = [
         "//src/java_tools/buildjar:BazelJavaCompiler",
         "//third_party:asm",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 

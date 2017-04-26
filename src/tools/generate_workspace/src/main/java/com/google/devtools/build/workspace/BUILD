@@ -15,8 +15,8 @@ java_library(
         "//src/main/java/com/google/devtools/common/options",
         "//src/tools/generate_workspace/src/main/java/com/google/devtools/build/workspace/maven",
         "//src/tools/generate_workspace/src/main/java/com/google/devtools/build/workspace/maven:rule",
-        "//third_party:guava",
         "//third_party:maven_model",
+        "@com_google_guava//:jar",
     ],
 )
 

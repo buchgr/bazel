@@ -41,11 +41,11 @@ java_library(
         "//src/tools/android/java/com/google/devtools/build/android/resources",
         "//third_party:android_common_25_0_0",
         "//third_party:asm",
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party/java/android_databinding:exec",
         "//third_party/java/aosp_gradle_core",
         "//third_party/protobuf:protobuf_java",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 

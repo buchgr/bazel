@@ -24,7 +24,7 @@ bind(
 
 bind(
     name = "guava",
-    actual = "//third_party:guava",
+    actual = "//third_party/guava:jar",
 )
 
 # Used by //third_party/protobuf:protobuf_python
@@ -76,6 +76,54 @@ new_local_repository(
     name = "googleapis",
     path = "./third_party/googleapis/",
     build_file = "./third_party/googleapis/BUILD",
+)
+
+new_local_repository(
+    name = "io_grpc",
+    build_file = "./third_party/grpc/BUILD",
+    path = "./third_party/grpc/",
+)
+
+new_local_repository(
+    name = "jsr305",
+    build_file = "./third_party/jsr305/BUILD",
+    path = "./third_party/jsr305/",
+)
+
+new_local_repository(
+    name = "jcip_annotations",
+    build_file = "./third_party/jcip_annotations/BUILD",
+    path = "./third_party/jcip_annotations/",
+)
+
+new_local_repository(
+    name = "error_prone",
+    build_file = "./third_party/error_prone/BUILD",
+    path = "./third_party/error_prone/",
+)
+
+new_local_repository(
+    name = "com_google_guava",
+    build_file = "./third_party/guava/BUILD",
+    path = "./third_party/guava/",
+)
+
+new_local_repository(
+    name = "io_netty",
+    build_file = "./third_party/netty/BUILD",
+    path = "./third_party/netty/",
+)
+
+new_local_repository(
+    name = "zlib",
+    build_file = "./third_party/zlib/BUILD",
+    path = "./third_party/zlib/",
+)
+
+new_local_repository(
+    name = "com_google_instrumentation",
+    build_file = "./third_party/instrumentation/BUILD",
+    path = "./third_party/instrumentation/",
 )
 
 # OpenJDK distributions used to create a version of Bazel bundled with the OpenJDK.

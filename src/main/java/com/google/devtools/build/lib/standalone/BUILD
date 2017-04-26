@@ -20,7 +20,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/rules/apple",
         "//src/main/java/com/google/devtools/build/lib/rules/cpp",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

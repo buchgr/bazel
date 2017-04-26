@@ -21,7 +21,7 @@ java_binary(
     main_class = "com.android.sdklib.build.ApkBuilderMain",
     deps = [
         "//src/java_tools/singlejar:libSingleJar",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

@@ -12,8 +12,8 @@ java_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//src/java_tools/buildjar/java/com/google/devtools/build/java/turbine/javac:javac_turbine",
-        "//third_party:guava",
         "//third_party:turbine",
+        "@com_google_guava//:jar",
     ],
 )
 

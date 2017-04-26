@@ -19,9 +19,9 @@ java_test(
     test_class = "com.google.devtools.build.java.bazel.BazelJavaCompilerTest",
     deps = [
         "//src/java_tools/buildjar/java/com/google/devtools/build/java/bazel:BazelJavaCompiler",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 

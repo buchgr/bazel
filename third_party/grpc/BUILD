@@ -29,10 +29,10 @@ java_import(
         "grpc-context-1.3.0.jar",
     ],
     deps = [
-      "//third_party:guava",
-      "//third_party:instrumentation",
+        "@com_google_guava//:jar",
+        "@com_google_instrumentation//:jar",
     ],
-    runtime_deps = ["//third_party:netty"],
+    runtime_deps = ["@io_netty//:netty"],
 )
 
 cc_binary(
@@ -43,7 +43,7 @@ cc_binary(
         "compiler/src/java_plugin/cpp/java_plugin.cpp",
     ],
     copts = ["-w"],
-    deps = ["//third_party/protobuf:protoc_lib"],
+    deps = ["@com_google_protobuf//:protoc_lib"],
 )
 
 cc_binary(
@@ -56,15 +56,12 @@ cc_binary(
         "src/compiler/cpp_plugin.cc",
         "src/compiler/generator_helpers.h",
     ] + glob(["include/**/*.h"]),
-    copts = [
-        "-Ithird_party/grpc/include",
-        "-Ithird_party/grpc",
-    ],
+    includes = ["include"],
     linkopts = [
         "-lm",
     ],
     visibility = ["//visibility:public"],
-    deps = ["//third_party/protobuf:protoc_lib"],
+    deps = ["@com_google_protobuf//:protoc_lib"],
 )
 
 cc_library(
@@ -441,7 +438,7 @@ cc_library(
         "include",
     ],
     deps = [
-        "//third_party/zlib",
+        "@zlib//:zlib",
     ],
 )
 
@@ -559,6 +556,6 @@ cc_library(
     ],
     deps = [
         ":grpc_unsecure",
-        "//third_party/protobuf:protobuf",
+        "@com_google_protobuf//:protobuf",
     ],
 )

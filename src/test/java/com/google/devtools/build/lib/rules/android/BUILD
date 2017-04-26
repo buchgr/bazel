@@ -12,9 +12,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:syntax",
         "//src/test/java/com/google/devtools/build/lib:analysis_testutil",
         "//src/test/java/com/google/devtools/build/lib:packages_testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -30,9 +30,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:foundations_testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -70,9 +70,9 @@ java_test(
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:analysis_testutil",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -88,9 +88,9 @@ java_test(
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:analysis_testutil",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -122,9 +122,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/test/java/com/google/devtools/build/lib:analysis_testutil",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -142,9 +142,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:analysis_testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -163,9 +163,9 @@ java_library(
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:analysis_testutil",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -177,9 +177,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:analysis_testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -197,9 +197,9 @@ java_test(
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:analysis_testutil",
         "//src/test/java/com/google/devtools/build/lib:packages_testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -215,8 +215,8 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )

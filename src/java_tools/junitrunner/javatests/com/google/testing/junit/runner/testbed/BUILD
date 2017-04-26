@@ -11,9 +11,9 @@ java_library(
     testonly = 1,
     srcs = glob(["*.java"]),
     deps = [
-        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 

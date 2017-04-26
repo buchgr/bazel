@@ -20,7 +20,7 @@ java_library(
         "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
         "//src/main/java/com/google/devtools/build/lib:shell",
         "//src/main/protobuf:worker_protocol_java_proto",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
     ],
 )
 
@@ -39,10 +39,10 @@ java_test(
         "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
         "//src/main/java/com/google/devtools/build/lib:shell",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -55,10 +55,10 @@ java_test(
     deps = [
         "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
         "//third_party:guava-testlib",
         "//third_party:junit4",
         "//third_party:truth",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -70,7 +70,7 @@ load("//tools/build_rules:java_rules_skylark.bzl", "bootstrap_java_library", "bo
 bootstrap_java_library(
     name = "skylark-deps",
     jars = [
-        "//third_party:jsr305-jars",
+        "@jsr305//:jsr-305.jar",
     ],
 )
 

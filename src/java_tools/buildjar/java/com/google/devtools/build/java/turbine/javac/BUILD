@@ -17,10 +17,10 @@ java_library(
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar:javac_options",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:dependency",
         "//third_party:asm",
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party:turbine",
         "//third_party/java/jdk/langtools:javac",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -29,9 +29,9 @@ java_library(
     srcs = ["JavacTurbineCompileRequest.java"],
     deps = [
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:dependency",
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party/java/jdk/langtools:javac",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -39,9 +39,9 @@ java_library(
     name = "javac_turbine_compile_result",
     srcs = ["JavacTurbineCompileResult.java"],
     deps = [
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party/java/jdk/langtools:javac",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -53,10 +53,10 @@ java_library(
         ":javac_turbine_compile_result",
         ":javac_turbine_java_compiler",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:dependency",
-        "//third_party:guava",
         "//third_party:jimfs",
-        "//third_party:jsr305",
         "//third_party/java/jdk/langtools:javac",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -67,8 +67,8 @@ java_library(
         ":javac_turbine_compile_request",
         ":tree_pruner",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:dependency",
-        "//third_party:jsr305",
         "//third_party/java/jdk/langtools:javac",
+        "@jsr305//:jar",
     ],
 )
 
@@ -76,8 +76,8 @@ java_library(
     name = "zip_util",
     srcs = ["ZipUtil.java"],
     deps = [
-        "//third_party:jsr305",
         "//third_party/java/jdk/langtools:javac",
+        "@jsr305//:jar",
     ],
 )
 
@@ -85,9 +85,9 @@ java_library(
     name = "tree_pruner",
     srcs = ["TreePruner.java"],
     deps = [
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party/java/jdk/langtools:javac",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 

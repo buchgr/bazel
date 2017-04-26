@@ -18,10 +18,10 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:events",
         "//src/main/java/com/google/devtools/build/lib:maven-connector",
         "//third_party:aether",
-        "//third_party:guava",
-        "//third_party:jsr305",
         "//third_party:maven_model",
         "//third_party:plexus_component_annotations",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -36,8 +36,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:events",
         "//src/main/java/com/google/devtools/build/lib:maven-connector",
         "//third_party:aether",
-        "//third_party:guava",
         "//third_party:maven_model",
+        "@com_google_guava//:jar",
     ],
 )
 

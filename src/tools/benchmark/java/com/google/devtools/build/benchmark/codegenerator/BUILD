@@ -6,8 +6,8 @@ java_binary(
     main_class = "com.google.devtools.build.benchmark.codegenerator.Main",
     deps = [
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
         "//third_party/java/javapoet",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -16,8 +16,8 @@ java_library(
     srcs = glob(["*.java"]),
     deps = [
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
         "//third_party/java/javapoet",
+        "@com_google_guava//:jar",
     ],
 )
 
