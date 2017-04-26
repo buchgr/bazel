@@ -8,7 +8,7 @@ java_library(
     name = "shell",
     srcs = glob(["shell/*.java"]),
     deps = [
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -58,8 +58,8 @@ java_library(
     name = "graph",
     srcs = glob(["graph/*.java"]),
     deps = [
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -82,7 +82,7 @@ java_library(
         ":preconditions",
         ":shell",
         ":vfs",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -101,8 +101,8 @@ java_library(
         ":shell",
         ":vfs",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -112,8 +112,8 @@ java_library(
     srcs = glob(["concurrent/*.java"]),
     deps = [
         ":preconditions",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -126,8 +126,8 @@ java_library(
     ]),
     deps = [
         ":preconditions",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -141,8 +141,8 @@ java_library(
         ":preconditions",
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:invocation_policy_java_proto",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -163,8 +163,8 @@ java_library(
         ":preconditions",
         ":shell",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -180,8 +180,8 @@ java_library(
         ":util",
         ":vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -196,8 +196,8 @@ java_library(
         ":preconditions",
         ":unix",
         ":vfs",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -225,7 +225,7 @@ java_library(
     deps = [
         ":concurrent",
         ":preconditions",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -234,8 +234,8 @@ java_library(
     name = "preconditions",
     srcs = ["util/Preconditions.java"],
     deps = [
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -247,7 +247,7 @@ java_library(
         ":clock",
         ":concurrent",
         ":vfs",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -278,7 +278,7 @@ java_library(
     name = "single-line-formatter",
     srcs = ["util/SingleLineFormatter.java"],
     deps = [
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:joda_time",
     ],
 )
@@ -320,8 +320,8 @@ java_library(
         ":unix",
         ":vfs",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -332,7 +332,7 @@ java_library(
         "util/ExitCode.java",
     ],
     deps = [
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -345,8 +345,8 @@ java_library(
         ":io",
         ":preconditions",
         ":vfs",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -360,8 +360,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/buildeventstream/proto:build_event_stream_java_proto",
         "//src/main/java/com/google/devtools/build/lib/causes",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -408,7 +408,7 @@ java_library(
     ]),
     deps = [
         "//src/main/java/com/google/devtools/build/lib:util",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
     ],
 )
 
@@ -431,8 +431,8 @@ java_library(
         "//third_party:asm-util",
         "//third_party:auto_value",
         "//third_party:bytebuddy",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -481,8 +481,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:build_java_proto",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -506,8 +506,8 @@ java_library(
         ":preconditions",
         ":shell",
         "//src/main/protobuf:build_java_proto",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -602,8 +602,8 @@ java_library(
         "//src/main/protobuf:invocation_policy_java_proto",
         "//src/main/protobuf:test_status_java_proto",
         "//third_party:auto_value",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -625,7 +625,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:invocation_policy_java_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -681,9 +681,9 @@ java_library(
         "//src/main/protobuf:crosstool_config_java_proto",
         "//third_party:android_common_25_0_0",
         "//third_party:auto_value",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:joda_time",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
     ],
 )
 
@@ -719,8 +719,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/worker",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -739,7 +739,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/query2",
         "//src/main/java/com/google/devtools/build/lib/query2:query-engine",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -786,9 +786,9 @@ java_library(
         "//third_party:aether",
         "//third_party:apache_commons_compress",
         "//third_party:auto_value",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:jgit",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
         "//third_party:maven",
         "//third_party:maven_model",
         "//third_party:plexus_component_annotations",
@@ -820,8 +820,8 @@ java_library(
         ":vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/rules/cpp",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -842,8 +842,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/common/options",
         "//third_party:auto_value",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -911,9 +911,9 @@ java_library(
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:extra_actions_base_java_proto",
         "//third_party:auto_value",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:joda_time",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -995,9 +995,9 @@ java_library(
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:extra_actions_base_java_proto",
         "//third_party:auto_value",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:joda_time",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
     ],
 )
 
@@ -1036,8 +1036,8 @@ java_library(
         "//src/main/protobuf:apk_manifest_java_proto",
         "//third_party:android_common_25_0_0",
         "//third_party:auto_value",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -1060,8 +1060,8 @@ java_library(
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:crosstool_config_java_proto",
         "//src/main/protobuf:extra_actions_base_java_proto",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -1084,8 +1084,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/rules/cpp",
         "//src/main/protobuf:intellij_ide_info_java_proto",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -1149,10 +1149,10 @@ java_library(
         "//src/main/protobuf:command_server_java_proto",
         "//src/main/protobuf:invocation_policy_java_proto",
         "//src/main/protobuf:test_status_java_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:joda_time",
-        "//third_party:jsr305",
-        "//third_party/grpc:grpc-jar",
+        "@jsr305//:jar",
+        "@io_grpc//:grpc-jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )
@@ -1193,7 +1193,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/actions",
         "//src/main/java/com/google/devtools/build/lib/rules/objc",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 
@@ -1227,7 +1227,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/query2",
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:build_java_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

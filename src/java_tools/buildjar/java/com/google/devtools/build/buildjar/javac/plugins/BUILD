@@ -27,7 +27,7 @@ java_library(
         ":plugins",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar:JarOwner",
         "//src/main/protobuf:deps_java_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party/java/jdk/langtools:javac",
     ],
 )
@@ -39,7 +39,7 @@ java_library(
         ":plugins",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar:invalid_command_line_exception",
         "//third_party:error_prone",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party/java/jdk/langtools:javac",
     ],
 )
@@ -50,7 +50,7 @@ java_library(
     deps = [
         ":plugins",
         "//src/main/protobuf:java_compilation_java_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party/java/jdk/langtools:javac",
     ],
 )

@@ -31,8 +31,8 @@ java_library(
         "//src/main/protobuf:plmerge_java_proto",
         "//src/main/protobuf:xcodegen_java_proto",
         "//third_party:auto_value",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/java/dd_plist",
     ],
 )

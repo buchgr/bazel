@@ -204,7 +204,7 @@ index 62284a3..bc76cd1 100644
 +  gensrcjar(name=name + "_srcjar", src=src, grpc_java_plugin=grpc_java_plugin)
 +  deps = ["//third_party/protobuf"]
 +  if use_grpc_plugin:
-+    deps += ["//third_party/grpc:grpc-jar", "//third_party:guava"]
++    deps += ["//third_party/grpc:grpc-jar", "@com_google_guava//:jar"]
    native.java_library(
      name=name,
      srcs=[name + "_srcjar"],

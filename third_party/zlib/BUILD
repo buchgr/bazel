@@ -3,7 +3,7 @@ licenses(["notice"])  #  BSD/MIT-like license
 filegroup(
     name = "srcs",
     srcs = glob(["**"]),
-    visibility = ["//third_party:__pkg__"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
