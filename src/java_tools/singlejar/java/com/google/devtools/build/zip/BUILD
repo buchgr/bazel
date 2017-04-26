@@ -14,7 +14,7 @@ filegroup(
 java_library(
     name = "zip",
     srcs = glob(["*.java"]),
-    deps = ["//third_party:jsr305"],
+    deps = ["@jsr305//:jar"],
 )
 
 filegroup(

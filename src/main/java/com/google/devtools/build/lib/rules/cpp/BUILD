@@ -30,8 +30,8 @@ java_library(
         "//src/main/protobuf:crosstool_config_java_proto",
         "//src/main/protobuf:extra_actions_base_java_proto",
         "//third_party:auto_value",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )

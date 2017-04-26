@@ -17,7 +17,7 @@ java_import(
         "grpc-stub-0.15.0.jar",
         "grpc-core-0.15.0.jar",
     ],
-    runtime_deps = ["//third_party:netty"],
+    runtime_deps = ["@io_netty//:netty"],
 )
 
 cc_binary(
@@ -28,7 +28,7 @@ cc_binary(
         "compiler/src/java_plugin/cpp/java_plugin.cpp",
     ],
     copts = ["-w"],
-    deps = ["//third_party/protobuf:protoc_lib"],
+    deps = ["@com_google_protobuf//:protoc_lib"],
 )
 
 cc_binary(
@@ -49,7 +49,7 @@ cc_binary(
         "-lm",
     ],
     visibility = ["//visibility:public"],
-    deps = ["//third_party/protobuf:protoc_lib"],
+    deps = ["@com_google_protobuf//:protoc_lib"],
 )
 
 cc_library(
@@ -422,7 +422,7 @@ cc_library(
         "include",
     ],
     deps = [
-        "//third_party/zlib",
+        "@zlib//:zlib",
     ],
 )
 
@@ -540,6 +540,6 @@ cc_library(
     ],
     deps = [
         ":grpc_unsecure",
-        "//third_party/protobuf:protobuf",
+        "@com_google_protobuf//:protobuf",
     ],
 )

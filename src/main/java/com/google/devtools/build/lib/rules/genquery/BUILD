@@ -22,8 +22,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/query2:query-output",
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
         "//third_party/protobuf:protobuf_java",
     ],
 )

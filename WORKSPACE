@@ -74,6 +74,48 @@ new_local_repository(
     build_file = "./third_party/googleapis/BUILD",
 )
 
+new_local_repository(
+    name = "io_grpc",
+    path = "./third_party/grpc/",
+    build_file = "./third_party/grpc/BUILD",
+)
+
+new_local_repository(
+    name = "jsr305",
+    path = "./third_party/jsr305/",
+    build_file = "./third_party/jsr305/BUILD",
+)
+
+new_local_repository(
+    name = "jcip_annotations",
+    path = "./third_party/jcip_annotations/",
+    build_file = "./third_party/jcip_annotations/BUILD",
+)
+
+new_local_repository(
+    name = "error_prone",
+    path = "./third_party/error_prone/",
+    build_file = "./third_party/error_prone/BUILD",
+)
+
+new_local_repository(
+    name = "com_google_guava",
+    path = "./third_party/guava/",
+    build_file = "./third_party/guava/BUILD",
+)
+
+new_local_repository(
+    name = "io_netty",
+    path = "./third_party/netty/",
+    build_file = "./third_party/netty/BUILD",
+)
+
+new_local_repository(
+    name = "zlib",
+    path = "./third_party/zlib/",
+    build_file = "./third_party/zlib/BUILD",
+)
+
 # OpenJDK distributions used to create a version of Bazel bundled with the OpenJDK.
 http_file(
     name = "openjdk_linux",

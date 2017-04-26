@@ -23,7 +23,7 @@ java_library(
         "//third_party:asm",
         "//third_party:asm-commons",
         "//third_party:asm-util",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
         "//third_party:slf4j",
     ],
 )
@@ -34,7 +34,7 @@ java_binary(
     main_class = "com.tonicsystems.jarjar.Main",
     deps = [
         ":jarjar_core",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
         "//third_party/java/jopt-simple",
     ],
 )

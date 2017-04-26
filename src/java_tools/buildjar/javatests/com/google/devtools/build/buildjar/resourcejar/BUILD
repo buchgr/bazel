@@ -9,7 +9,7 @@ java_test(
     srcs = ["ResourceJarBuilderTest.java"],
     deps = [
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/resourcejar",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party:junit4",
         "//third_party:truth",
         "//third_party/java/jdk/langtools:javac-9-dev-r4023-1",

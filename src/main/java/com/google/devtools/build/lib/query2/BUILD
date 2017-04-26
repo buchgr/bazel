@@ -15,8 +15,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/skyframe",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -33,8 +33,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:build_java_proto",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 
@@ -46,8 +46,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:concurrent",
         "//src/main/java/com/google/devtools/build/lib:graph",
         "//src/main/java/com/google/devtools/build/lib:util",
-        "//third_party:guava",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@jsr305//:jar",
     ],
 )
 

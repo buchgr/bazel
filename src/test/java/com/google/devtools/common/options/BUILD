@@ -11,9 +11,9 @@ java_test(
     deps = [
         "//src/main/java/com/google/devtools/common/options",
         "//src/test/java/com/google/devtools/build/lib:testutil",
-        "//third_party:guava",
-        "//third_party:guava-testlib",
-        "//third_party:jsr305",
+        "@com_google_guava//:jar",
+        "@com_google_guava//:jar-testlib",
+        "@jsr305//:jar",
         "//third_party:junit4",
         "//third_party:truth",
     ],

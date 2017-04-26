@@ -9,7 +9,7 @@ java_binary(
         ":plmerge_lib",
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:plmerge_java_proto",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party/java/dd_plist",
     ],
 )
@@ -24,7 +24,7 @@ java_library(
         "//src/main/protobuf:plmerge_java_proto",
         "//src/tools/xcode-common/java/com/google/devtools/build/xcode/common",
         "//src/tools/xcode-common/java/com/google/devtools/build/xcode/util",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
         "//third_party/java/dd_plist",
     ],
 )

@@ -24,7 +24,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/rules/cpp",
         "//src/main/java/com/google/devtools/build/lib/standalone",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
 

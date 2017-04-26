@@ -7,7 +7,7 @@ java_library(
     deps = [
         "//src/java_tools/junitrunner/java/com/google/testing/junit/runner/sharding/api",
         "//src/java_tools/junitrunner/java/com/google/testing/junit/runner/util",
-        "//third_party:jsr305",
+        "@jsr305//:jar",
         "//third_party:jsr330_inject",
         "//third_party:junit4",
     ],

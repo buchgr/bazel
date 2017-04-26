@@ -118,7 +118,7 @@ def java_proto_library(name, src, use_grpc_plugin=False):
   if use_grpc_plugin:
     deps += [
         str(Label("//third_party/grpc:grpc-jar")),
-        str(Label("//third_party:guava")),
+        str(Label("@com_google_guava//:jar")),
     ]
   native.java_library(
     name=name,

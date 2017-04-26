@@ -15,6 +15,6 @@ java_library(
     deps = [
         "//third_party:android_common_25_0_0",
         "//third_party:asm",
-        "//third_party:guava",
+        "@com_google_guava//:jar",
     ],
 )
