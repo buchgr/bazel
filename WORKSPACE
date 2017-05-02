@@ -68,6 +68,12 @@ new_local_repository(
     build_file = "./third_party/protobuf/3.2.0/com_google_protobuf_java.BUILD",
 )
 
+new_local_repository(
+    name = "googleapis",
+    path = "./third_party/googleapis/",
+    build_file = "./third_party/googleapis/BUILD",
+)
+
 # OpenJDK distributions used to create a version of Bazel bundled with the OpenJDK.
 http_file(
     name = "openjdk_linux",
