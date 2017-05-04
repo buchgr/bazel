@@ -30,7 +30,6 @@ function set_up() {
   ${bazel_data}/src/tools/remote_worker/remote_worker \
       --work_path=${work_path} \
       --listen_port=${worker_port} \
-      --grpc_max_chunk_size_bytes=120000000 \
       --hazelcast_standalone_listen_port=${hazelcast_port} \
       --pid_file=${pid_file} >& $TEST_log &
   local wait_seconds=0
@@ -79,7 +78,7 @@ EOF
   bazel clean --expunge
   bazel --host_jvm_args=-Dbazel.DigestFunction=SHA1 build \
     --spawn_strategy=remote \
-    --remote_worker=localhost:${worker_port} \
+    --remote_executor=localhost:${worker_port} \
     --remote_cache=localhost:${worker_port} \
         //a:test >& $TEST_log \
     || fail "Failed to build //a:test with remote execution"
@@ -102,7 +101,7 @@ int main() { std::cout << "Hello test!" << std::endl; return 0; }
 EOF
   bazel --host_jvm_args=-Dbazel.DigestFunction=SHA1 test \
       --spawn_strategy=remote \
-      --remote_worker=localhost:${worker_port} \
+      --remote_executor=localhost:${worker_port} \
       --remote_cache=localhost:${worker_port} \
       --test_output=errors \
       //a:test >& $TEST_log \
@@ -160,8 +159,7 @@ EOF
   bazel clean --expunge
   bazel --host_jvm_args=-Dbazel.DigestFunction=SHA1 build \
     --spawn_strategy=remote \
-    --grpc_max_chunk_size_bytes=120000000 \
-    --remote_worker=localhost:${worker_port} \
+    --remote_executor=localhost:${worker_port} \
     --remote_cache=localhost:${worker_port} \
         //a:large_output >& $TEST_log \
     || fail "Failed to build //a:large_output with remote execution"
@@ -189,7 +187,7 @@ EOF
   bazel clean --expunge
   bazel --host_jvm_args=-Dbazel.DigestFunction=SHA1 build \
     --spawn_strategy=remote \
-    --rest_cache_url=http://localhost:${hazelcast_port}/hazelcast/rest/maps/cache \
+    --remote_rest_cache=http://localhost:${hazelcast_port}/hazelcast/rest/maps/cache \
         //a:test >& $TEST_log \
     || fail "Failed to build //a:test with remote gRPC cache service"
   diff bazel-bin/a/test ${TEST_TMPDIR}/test_expected \
@@ -212,7 +210,7 @@ if __name__ == "__main__":
 EOF
   bazel --host_jvm_args=-Dbazel.DigestFunction=SHA1 test \
       --spawn_strategy=remote \
-      --remote_worker=localhost:${worker_port} \
+      --remote_executor=localhost:${worker_port} \
       --remote_cache=localhost:${worker_port} \
       --test_output=errors \
       //a:test >& $TEST_log \

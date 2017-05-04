@@ -13,31 +13,22 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
-import com.google.devtools.build.lib.remote.CasServiceGrpc.CasServiceBlockingStub;
-import com.google.devtools.build.lib.remote.CasServiceGrpc.CasServiceStub;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasDownloadBlobRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasDownloadReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasDownloadTreeMetadataReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasDownloadTreeMetadataRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasLookupReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasLookupRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasUploadBlobReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasUploadBlobRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasUploadTreeMetadataReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasUploadTreeMetadataRequest;
-import io.grpc.stub.StreamObserver;
-import java.util.Iterator;
+import com.google.devtools.remoteexecution.v1test.BatchUpdateBlobsRequest;
+import com.google.devtools.remoteexecution.v1test.BatchUpdateBlobsResponse;
+import com.google.devtools.remoteexecution.v1test.ContentAddressableStorageGrpc.ContentAddressableStorageBlockingStub;
+import com.google.devtools.remoteexecution.v1test.ContentAddressableStorageGrpc.ContentAddressableStorageStub;
+import com.google.devtools.remoteexecution.v1test.FindMissingBlobsRequest;
+import com.google.devtools.remoteexecution.v1test.FindMissingBlobsResponse;
+import com.google.devtools.remoteexecution.v1test.GetTreeRequest;
+import com.google.devtools.remoteexecution.v1test.GetTreeResponse;
 
 /**
  * An abstraction layer between the remote execution client and gRPC to support unit testing. This
- * interface covers the CAS RPC methods, see {@link CasServiceBlockingStub} and
- * {@link CasServiceStub}.
+ * interface covers the CAS RPC methods, see {@link ContentAddressableStorageBlockingStub} and
+ * {@link ContentAddressableStorageStub}.
  */
 public interface GrpcCasInterface {
-  CasLookupReply lookup(CasLookupRequest request);
-  CasUploadTreeMetadataReply uploadTreeMetadata(CasUploadTreeMetadataRequest request);
-  CasDownloadTreeMetadataReply downloadTreeMetadata(CasDownloadTreeMetadataRequest request);
-  Iterator<CasDownloadReply> downloadBlob(CasDownloadBlobRequest request);
-  StreamObserver<CasUploadBlobRequest> uploadBlobAsync(
-      StreamObserver<CasUploadBlobReply> responseObserver);
+  FindMissingBlobsResponse findMissingBlobs(FindMissingBlobsRequest request);
+  BatchUpdateBlobsResponse batchUpdateBlobs(BatchUpdateBlobsRequest request);
+  GetTreeResponse getTree(GetTreeRequest request);
 }

@@ -14,40 +14,100 @@
 
 package com.google.devtools.build.lib.remote;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterators;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputFileCache;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
-import com.google.devtools.build.lib.remote.RemoteProtocol.BlobChunk;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ContentDigest;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.Path;
-import com.google.protobuf.ByteString;
+import com.google.devtools.remoteexecution.v1test.Digest;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
 import javax.annotation.Nullable;
 
-/** An iterator-type object that transforms byte sources into a stream of BlobChunk messages. */
+/** An iterator-type object that transforms byte sources into a stream of Chunks. */
 public final class Chunker {
+  // This is effectively final, should be changed only in unit-tests!
+  private static int DEFAULT_CHUNK_SIZE = 1024 * 16;
+
+  @VisibleForTesting
+  public static void setDefaultChunkSizeForTesting(int value) {
+    DEFAULT_CHUNK_SIZE = value;
+  }
+
+  public static int getDefaultChunkSize() {
+    return DEFAULT_CHUNK_SIZE;
+  }
+
+  /** A piece of a byte[] blob. */
+  public static final class Chunk {
+
+    private final Digest digest;
+    private final long offset;
+    // TODO(olaola): consider saving data in a different format that byte[].
+    private final byte[] data;
+
+    @VisibleForTesting
+    public Chunk(Digest digest, byte[] data, long offset) {
+      this.digest = digest;
+      this.data = data;
+      this.offset = offset;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      if (o == this) {
+        return true;
+      }
+      if (!(o instanceof Chunk)) {
+        return false;
+      }
+      Chunk other = (Chunk) o;
+      return other.offset == offset
+          && other.digest.equals(digest)
+          && Arrays.equals(other.data, data);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(digest, offset, Arrays.hashCode(data));
+    }
+
+    public Digest getDigest() {
+      return digest;
+    }
+
+    public long getOffset() {
+      return offset;
+    }
+
+    public byte[] getData() {
+      return data;
+    }
+  }
+
   /** An Item is an opaque digestable source of bytes. */
   interface Item {
-    ContentDigest getDigest() throws IOException;
+    Digest getDigest() throws IOException;
 
     InputStream getInputStream() throws IOException;
   }
 
   private final Iterator<Item> inputIterator;
   private InputStream currentStream;
-  private final Set<ContentDigest> digests;
-  private ContentDigest digest;
+  private final Set<Digest> digests;
+  private Digest digest;
   private long bytesLeft;
   private final int chunkSize;
 
@@ -55,7 +115,7 @@ public final class Chunker {
       Iterator<Item> inputIterator,
       int chunkSize,
       // If present, specifies which digests to output out of the whole input.
-      @Nullable Set<ContentDigest> digests)
+      @Nullable Set<Digest> digests)
       throws IOException {
     Preconditions.checkArgument(chunkSize > 0, "Chunk size must be greater than 0");
     this.digests = digests;
@@ -72,7 +132,7 @@ public final class Chunker {
     this(Iterators.singletonIterator(input), chunkSize, ImmutableSet.of(input.getDigest()));
   }
 
-  private void advanceInput() throws IOException {
+  public void advanceInput() throws IOException {
     do {
       if (inputIterator != null && inputIterator.hasNext()) {
         Item input = inputIterator.next();
@@ -87,41 +147,37 @@ public final class Chunker {
     } while (digest != null && digests != null && !digests.contains(digest));
   }
 
-  /** True if the object has more BlobChunk elements. */
+  /** True if the object has more Chunk elements. */
   public boolean hasNext() {
     return currentStream != null;
   }
 
-  /** Consume the next BlobChunk element. */
-  public BlobChunk next() throws IOException {
+  /** Consume the next Chunk element. */
+  public Chunk next() throws IOException {
     if (!hasNext()) {
       throw new NoSuchElementException();
     }
-    BlobChunk.Builder chunk = BlobChunk.newBuilder();
-    long offset = digest.getSizeBytes() - bytesLeft;
-    if (offset == 0) {
-      chunk.setDigest(digest);
-    } else {
-      chunk.setOffset(offset);
-    }
+    final long offset = digest.getSizeBytes() - bytesLeft;
+    byte[] blob = new byte[0];
     if (bytesLeft > 0) {
-      byte[] blob = new byte[(int) Math.min(bytesLeft, chunkSize)];
+      blob = new byte[(int) Math.min(bytesLeft, chunkSize)];
       currentStream.read(blob);
-      chunk.setData(ByteString.copyFrom(blob));
       bytesLeft -= blob.length;
     }
+    final Chunk result = new Chunk(digest, blob, offset);
     if (bytesLeft == 0) {
       currentStream.close();
       advanceInput(); // Sets the current stream to null, if it was the last.
     }
-    return chunk.build();
+    return result;
   }
 
   static Item toItem(final byte[] blob) {
     return new Item() {
       @Override
-      public ContentDigest getDigest() throws IOException {
-        return ContentDigests.computeDigest(blob);
+      public Digest getDigest() throws IOException {
+        // We rely on this fucntion only being called once per Item, so no caching is needed.
+        return Digests.computeDigest(blob);
       }
 
       @Override
@@ -134,8 +190,9 @@ public final class Chunker {
   static Item toItem(final Path file) {
     return new Item() {
       @Override
-      public ContentDigest getDigest() throws IOException {
-        return ContentDigests.computeDigest(file);
+      public Digest getDigest() throws IOException {
+        // We rely on this fucntion only being called once per Item, so no caching is needed.
+        return Digests.computeDigest(file);
       }
 
       @Override
@@ -152,8 +209,8 @@ public final class Chunker {
     }
     return new Item() {
       @Override
-      public ContentDigest getDigest() throws IOException {
-        return ContentDigests.getDigestFromInputCache(input, inputCache);
+      public Digest getDigest() throws IOException {
+        return Digests.getDigestFromInputCache(input, inputCache);
       }
 
       @Override
@@ -166,8 +223,8 @@ public final class Chunker {
   static Item toItem(final VirtualActionInput input) {
     return new Item() {
       @Override
-      public ContentDigest getDigest() throws IOException {
-        return ContentDigests.computeDigest(input);
+      public Digest getDigest() throws IOException {
+        return Digests.computeDigest(input);
       }
 
       @Override
@@ -189,14 +246,33 @@ public final class Chunker {
     return new Chunker(toItem(input, inputCache, execRoot), chunkSize);
   }
 
+  /**
+   * Create a Chunker from a given ActionInput, taking its digest from the provided
+   * ActionInputFileCache.
+   */
+  public static Chunker from(ActionInput input, ActionInputFileCache inputCache, Path execRoot)
+      throws IOException {
+    return from(input, getDefaultChunkSize(), inputCache, execRoot);
+  }
+
   /** Create a Chunker from a given blob and chunkSize. */
   public static Chunker from(byte[] blob, int chunkSize) throws IOException {
     return new Chunker(toItem(blob), chunkSize);
   }
 
+  /** Create a Chunker from a given blob. */
+  public static Chunker from(byte[] blob) throws IOException {
+    return from(blob, getDefaultChunkSize());
+  }
+
   /** Create a Chunker from a given Path and chunkSize. */
   public static Chunker from(Path file, int chunkSize) throws IOException {
     return new Chunker(toItem(file), chunkSize);
+  }
+
+  /** Create a Chunker from a given Path. */
+  public static Chunker from(Path file) throws IOException {
+    return from(file, getDefaultChunkSize());
   }
 
   /**
@@ -205,8 +281,8 @@ public final class Chunker {
    */
   public static final class Builder {
     private final ArrayList<Item> items = new ArrayList<>();
-    private Set<ContentDigest> digests = null;
-    private int chunkSize = 0;
+    private Set<Digest> digests = null;
+    private int chunkSize = getDefaultChunkSize();
 
     public Chunker build() throws IOException {
       return new Chunker(items.iterator(), chunkSize, digests);
@@ -221,7 +297,7 @@ public final class Chunker {
      * Restricts the Chunker to use only inputs with these digests. This is an optimization for CAS
      * uploads where a list of digests missing from the CAS is known.
      */
-    public Builder onlyUseDigests(Set<ContentDigest> digests) {
+    public Builder onlyUseDigests(Set<Digest> digests) {
       this.digests = digests;
       return this;
     }

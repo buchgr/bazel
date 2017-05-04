@@ -18,9 +18,9 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.runtime.AuthAndTLSOptions;
 import io.grpc.CallCredentials;
 import io.grpc.auth.MoreCallCredentials;
-import io.grpc.internal.GrpcUtil;
 import io.grpc.netty.GrpcSslContexts;
 import io.netty.handler.ssl.SslContext;
 import java.io.File;
@@ -33,24 +33,20 @@ import javax.net.ssl.SSLException;
 /** Instantiate all authentication helpers from build options. */
 @ThreadSafe
 public final class ChannelOptions {
-  private final int maxMessageSize;
   private final boolean tlsEnabled;
   private final SslContext sslContext;
   private final String tlsAuthorityOverride;
   private final CallCredentials credentials;
-  private static final int CHUNK_MESSAGE_OVERHEAD = 1024;
 
   private ChannelOptions(
       boolean tlsEnabled,
       SslContext sslContext,
       String tlsAuthorityOverride,
-      CallCredentials credentials,
-      int maxMessageSize) {
+      CallCredentials credentials) {
     this.tlsEnabled = tlsEnabled;
     this.sslContext = sslContext;
     this.tlsAuthorityOverride = tlsAuthorityOverride;
     this.credentials = credentials;
-    this.maxMessageSize = maxMessageSize;
   }
 
   public boolean tlsEnabled() {
@@ -69,16 +65,12 @@ public final class ChannelOptions {
     return sslContext;
   }
 
-  public int maxMessageSize() {
-    return maxMessageSize;
-  }
-
-  public static ChannelOptions create(RemoteOptions options) {
+  public static ChannelOptions create(AuthAndTLSOptions options) {
     try {
       return create(
           options,
-          options.authCredentialsJson != null
-              ? new FileInputStream(options.authCredentialsJson)
+          options.authCredentials != null
+              ? new FileInputStream(options.authCredentials)
               : null);
     } catch (IOException e) {
       throw new IllegalArgumentException(
@@ -88,17 +80,19 @@ public final class ChannelOptions {
 
   @VisibleForTesting
   public static ChannelOptions create(
-      RemoteOptions options, @Nullable InputStream credentialsInputStream) {
+      AuthAndTLSOptions options,
+      @Nullable InputStream credentialsInputStream) {
     boolean tlsEnabled = options.tlsEnabled;
     SslContext sslContext = null;
     String tlsAuthorityOverride = options.tlsAuthorityOverride;
     CallCredentials credentials = null;
-    if (options.tlsEnabled && options.tlsCert != null) {
+    if (options.tlsEnabled && options.tlsCertificate != null) {
       try {
-        sslContext = GrpcSslContexts.forClient().trustManager(new File(options.tlsCert)).build();
+        sslContext =
+            GrpcSslContexts.forClient().trustManager(new File(options.tlsCertificate)).build();
       } catch (SSLException e) {
         throw new IllegalArgumentException(
-            "SSL error initializing cert " + options.tlsCert + " : " + e);
+            "SSL error initializing cert " + options.tlsCertificate + " : " + e);
       }
     }
     if (options.authEnabled) {
@@ -116,11 +110,7 @@ public final class ChannelOptions {
             "Failed initializing auth credentials for remote cache/execution " + e);
       }
     }
-    final int maxMessageSize =
-        Math.max(
-            GrpcUtil.DEFAULT_MAX_MESSAGE_SIZE,
-            options.grpcMaxChunkSizeBytes + CHUNK_MESSAGE_OVERHEAD);
     return new ChannelOptions(
-        tlsEnabled, sslContext, tlsAuthorityOverride, credentials, maxMessageSize);
+        tlsEnabled, sslContext, tlsAuthorityOverride, credentials);
   }
 }

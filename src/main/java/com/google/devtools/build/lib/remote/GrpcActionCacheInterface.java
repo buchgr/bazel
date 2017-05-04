@@ -13,17 +13,16 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
-import com.google.devtools.build.lib.remote.ExecutionCacheServiceGrpc.ExecutionCacheServiceBlockingStub;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecutionCacheReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecutionCacheRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecutionCacheSetReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecutionCacheSetRequest;
+import com.google.devtools.remoteexecution.v1test.ActionCacheGrpc.ActionCacheBlockingStub;
+import com.google.devtools.remoteexecution.v1test.ActionResult;
+import com.google.devtools.remoteexecution.v1test.GetActionResultRequest;
+import com.google.devtools.remoteexecution.v1test.UpdateActionResultRequest;
 
 /**
  * An abstraction layer between the remote execution client and gRPC to support unit testing. This
- * interface covers the execution cache RPC methods, see {@link ExecutionCacheServiceBlockingStub}.
+ * interface covers the execution cache RPC methods, see {@link ActionCacheBlockingStub}.
  */
-public interface GrpcExecutionCacheInterface {
-  ExecutionCacheReply getCachedResult(ExecutionCacheRequest request);
-  ExecutionCacheSetReply setCachedResult(ExecutionCacheSetRequest request);
+public interface GrpcActionCacheInterface {
+  ActionResult getActionResult(GetActionResultRequest request);
+  ActionResult updateActionResult(UpdateActionResultRequest request);
 }

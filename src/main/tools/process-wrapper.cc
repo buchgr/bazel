@@ -36,9 +36,8 @@
 #include <string>
 #include <vector>
 
+#include "src/main/tools/logging.h"
 #include "src/main/tools/process-tools.h"
-
-bool global_debug = false;
 
 static double global_kill_delay;
 static pid_t global_child_pid;
@@ -133,10 +132,12 @@ static void SpawnCommand(const std::vector<char *> &args, double timeout_secs) {
 
     // Set up a signal handler which kills all subprocesses when the given
     // signal is triggered.
-    HandleSignal(SIGALRM, OnSignal);
-    HandleSignal(SIGTERM, OnSignal);
-    HandleSignal(SIGINT, OnSignal);
-    SetTimeout(timeout_secs);
+    InstallSignalHandler(SIGALRM, OnSignal);
+    InstallSignalHandler(SIGTERM, OnSignal);
+    InstallSignalHandler(SIGINT, OnSignal);
+    if (timeout_secs > 0) {
+      SetTimeout(timeout_secs);
+    }
 
     int status = WaitChild(global_child_pid);
 
@@ -146,13 +147,13 @@ static void SpawnCommand(const std::vector<char *> &args, double timeout_secs) {
 
     if (global_signal > 0) {
       // Don't trust the exit code if we got a timeout or signal.
-      UnHandle(global_signal);
+      InstallDefaultSignalHandler(global_signal);
       raise(global_signal);
     } else if (WIFEXITED(status)) {
       exit(WEXITSTATUS(status));
     } else {
       int sig = WTERMSIG(status);
-      UnHandle(sig);
+      InstallDefaultSignalHandler(sig);
       raise(sig);
     }
   }

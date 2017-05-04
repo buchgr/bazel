@@ -15,26 +15,27 @@ package com.google.devtools.build.lib.remote;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.Spawn;
+import com.google.devtools.build.lib.actions.Spawns;
 import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.exec.SpawnResult;
 import com.google.devtools.build.lib.exec.SpawnResult.Status;
 import com.google.devtools.build.lib.exec.SpawnRunner;
-import com.google.devtools.build.lib.remote.ContentDigests.ActionKey;
-import com.google.devtools.build.lib.remote.RemoteProtocol.Action;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ActionResult;
-import com.google.devtools.build.lib.remote.RemoteProtocol.Command;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ContentDigest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.Platform;
+import com.google.devtools.build.lib.remote.Digests.ActionKey;
 import com.google.devtools.build.lib.remote.TreeNodeRepository.TreeNode;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.remoteexecution.v1test.Action;
+import com.google.devtools.remoteexecution.v1test.ActionResult;
+import com.google.devtools.remoteexecution.v1test.Command;
+import com.google.devtools.remoteexecution.v1test.Digest;
+import com.google.devtools.remoteexecution.v1test.Platform;
+import com.google.protobuf.Duration;
 import com.google.protobuf.TextFormat;
 import com.google.protobuf.TextFormat.ParseException;
 import io.grpc.StatusRuntimeException;
@@ -100,11 +101,13 @@ final class CachedLocalSpawnRunner implements SpawnRunner {
       Action action =
           buildAction(
               spawn.getOutputFiles(),
-              ContentDigests.computeDigest(command),
-              repository.getMerkleDigest(inputRoot));
+              Digests.computeDigest(command),
+              repository.getMerkleDigest(inputRoot),
+              // TODO(olaola): set sensible local and remote timouts.
+              Spawns.getTimeoutSeconds(spawn, 120));
 
       // Look up action cache, and reuse the action output if it is found.
-      actionKey = ContentDigests.computeActionKey(action);
+      actionKey = Digests.computeActionKey(action);
       ActionResult result =
           this.options.remoteAcceptCached ? actionCache.getCachedActionResult(actionKey) : null;
       if (result != null) {
@@ -117,7 +120,7 @@ final class CachedLocalSpawnRunner implements SpawnRunner {
           passRemoteOutErr(result, policy.getFileOutErr());
           return new SpawnResult.Builder()
               .setStatus(Status.SUCCESS)
-              .setExitCode(result.getReturnCode())
+              .setExitCode(result.getExitCode())
               .build();
         } catch (CacheNotFoundException e) {
           // TODO(ulfjack): Track down who throws this exception in what cases and double-check that
@@ -126,7 +129,7 @@ final class CachedLocalSpawnRunner implements SpawnRunner {
         }
       }
       SpawnResult spawnResult = delegate.exec(spawn, policy);
-      if (options.remoteLocalExecUploadResults
+      if (options.remoteUploadLocalResults
           && spawnResult.status() == Status.SUCCESS
           && spawnResult.exitCode() == 0) {
         writeCacheEntry(spawn, policy.getFileOutErr(), actionKey);
@@ -138,40 +141,53 @@ final class CachedLocalSpawnRunner implements SpawnRunner {
   }
 
   private Action buildAction(
-      Collection<? extends ActionInput> outputs, ContentDigest command, ContentDigest inputRoot) {
+      Collection<? extends ActionInput> outputs,
+      Digest command,
+      Digest inputRoot,
+      long timeoutSeconds) {
     Action.Builder action = Action.newBuilder();
     action.setCommandDigest(command);
     action.setInputRootDigest(inputRoot);
     // Somewhat ugly: we rely on the stable order of outputs here for remote action caching.
     for (ActionInput output : outputs) {
-      action.addOutputPath(output.getExecPathString());
+      // TODO: output directories should be handled here, when they are supported.
+      action.addOutputFiles(output.getExecPathString());
     }
     if (platform != null) {
       action.setPlatform(platform);
     }
+    action.setTimeout(Duration.newBuilder().setSeconds(timeoutSeconds));
     return action.build();
   }
 
-  private static Command buildCommand(
-      List<String> arguments, ImmutableMap<String, String> environment) {
+  private Command buildCommand(List<String> arguments, ImmutableMap<String, String> environment) {
     Command.Builder command = Command.newBuilder();
-    command.addAllArgv(arguments);
+    command.addAllArguments(arguments);
     // Sorting the environment pairs by variable name.
     TreeSet<String> variables = new TreeSet<>(environment.keySet());
     for (String var : variables) {
-      command.addEnvironmentBuilder().setVariable(var).setValue(environment.get(var));
+      command.addEnvironmentVariablesBuilder().setName(var).setValue(environment.get(var));
     }
     return command.build();
   }
 
-  private void passRemoteOutErr(
-      ActionResult result, FileOutErr outErr)
-          throws CacheNotFoundException {
-    ImmutableList<byte[]> streams =
-        actionCache.downloadBlobs(
-            ImmutableList.of(result.getStdoutDigest(), result.getStderrDigest()));
-    outErr.printOut(new String(streams.get(0), UTF_8));
-    outErr.printErr(new String(streams.get(1), UTF_8));
+  private void passRemoteOutErr(ActionResult result, FileOutErr outErr) {
+    try {
+      if (result.hasStdoutDigest()) {
+        byte[] stdoutBytes = actionCache.downloadBlob(result.getStdoutDigest());
+        outErr.printOut(new String(stdoutBytes, UTF_8));
+      } else if (result.getStdoutRaw().size() > 0) {
+        outErr.printOut(result.getStdoutRaw().toStringUtf8());
+      }
+      if (result.hasStderrDigest()) {
+        byte[] stderrBytes = actionCache.downloadBlob(result.getStderrDigest());
+        outErr.printErr(new String(stderrBytes, UTF_8));
+      } else if (result.getStderrRaw().size() > 0) {
+        outErr.printErr(result.getStderrRaw().toStringUtf8());
+      }
+    } catch (CacheNotFoundException e) {
+      // Ignoring.
+    }
   }
 
   private void writeCacheEntry(Spawn spawn, FileOutErr outErr, ActionKey actionKey)
@@ -187,8 +203,8 @@ final class CachedLocalSpawnRunner implements SpawnRunner {
     }
     ActionResult.Builder result = ActionResult.newBuilder();
     actionCache.uploadAllResults(execRoot, outputFiles, result);
-    ContentDigest stderr = actionCache.uploadFileContents(outErr.getErrorPath());
-    ContentDigest stdout = actionCache.uploadFileContents(outErr.getOutputPath());
+    Digest stderr = actionCache.uploadFileContents(outErr.getErrorPath());
+    Digest stdout = actionCache.uploadFileContents(outErr.getOutputPath());
     result.setStderrDigest(stderr);
     result.setStdoutDigest(stdout);
     actionCache.setCachedActionResult(actionKey, result.build());

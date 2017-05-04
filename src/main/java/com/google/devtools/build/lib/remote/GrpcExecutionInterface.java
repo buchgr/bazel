@@ -13,15 +13,13 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
-import com.google.devtools.build.lib.remote.ExecuteServiceGrpc.ExecuteServiceBlockingStub;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecuteReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecuteRequest;
-import java.util.Iterator;
+import com.google.devtools.remoteexecution.v1test.ExecuteRequest;
+import com.google.longrunning.Operation;
 
 /**
  * An abstraction layer between the remote execution client and gRPC to support unit testing. This
  * interface covers the remote execution RPC methods, see {@link ExecuteServiceBlockingStub}.
  */
 public interface GrpcExecutionInterface {
-  Iterator<ExecuteReply> execute(ExecuteRequest request);
+  Operation execute(ExecuteRequest request);
 }

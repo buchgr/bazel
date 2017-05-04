@@ -20,14 +20,14 @@ import com.google.devtools.common.options.OptionsBase;
 /** Options for remote execution and distributed caching. */
 public final class RemoteOptions extends OptionsBase {
   @Option(
-    name = "rest_cache_url",
+    name = "remote_rest_cache",
     defaultValue = "null",
     category = "remote",
     help =
         "A base URL for a RESTful cache server for storing build artifacts."
             + "It has to support PUT, GET, and HEAD requests."
   )
-  public String restCacheUrl;
+  public String remoteRestCache;
 
   @Option(
     name = "hazelcast_node",
@@ -56,52 +56,28 @@ public final class RemoteOptions extends OptionsBase {
   public int hazelcastStandaloneListenPort;
 
   @Option(
-    name = "remote_worker",
+    name = "remote_executor",
     defaultValue = "null",
     category = "remote",
-    help = "Hostname and port number of remote worker in the form of host:port. "
+    help = "HOST or HOST:PORT of a remote execution endpoint."
   )
-  public String remoteWorker;
+  public String remoteExecutor;
 
   @Option(
     name = "remote_cache",
     defaultValue = "null",
     category = "remote",
-    help = "Hostname and port number of remote gRPC cache in the form of host:port. "
+    help = "HOST or HOST:PORT of a remote caching endpoint."
   )
   public String remoteCache;
 
   @Option(
-    name = "grpc_max_chunk_size_bytes",
-    defaultValue = "16000",
-    category = "remote",
-    help = "The maximal number of data bytes to be sent in a single message."
-  )
-  public int grpcMaxChunkSizeBytes;
-
-  @Option(
-    name = "grpc_max_batch_inputs",
-    defaultValue = "100",
-    category = "remote",
-    help = "The maximal number of input files to be sent in a single batch."
-  )
-  public int grpcMaxBatchInputs;
-
-  @Option(
-    name = "grpc_max_batch_size_bytes",
-    defaultValue = "10485760", // 10MB
-    category = "remote",
-    help = "The maximal number of input bytes to be sent in a single batch."
-  )
-  public int grpcMaxBatchSizeBytes;
-
-  @Option(
-    name = "grpc_timeout_seconds",
+    name = "remote_timeout",
     defaultValue = "60",
     category = "remote",
-    help = "The maximal number of seconds to wait for remote calls."
+    help = "The maximum number of seconds to wait for remote execution and cache calls."
   )
-  public int grpcTimeoutSeconds;
+  public int remoteTimeout;
 
   @Option(
     name = "remote_accept_cached",
@@ -112,20 +88,20 @@ public final class RemoteOptions extends OptionsBase {
   public boolean remoteAcceptCached;
 
   @Option(
-    name = "remote_allow_local_fallback",
+    name = "remote_local_fallback",
     defaultValue = "true",
     category = "remote",
-    help = "Whether to fall back to standalone strategy if remote fails."
+    help = "Whether to fall back to standalone local execution strategy if remote execution fails."
   )
-  public boolean remoteAllowLocalFallback;
+  public boolean remoteLocalFallback;
 
   @Option(
-    name = "remote_local_exec_upload_results",
+    name = "remote_upload_local_results",
     defaultValue = "true",
     category = "remote",
-    help = "Whether to upload action results to the remote cache after executing locally."
+    help = "Whether to upload locally executed action results to the remote cache."
   )
-  public boolean remoteLocalExecUploadResults;
+  public boolean remoteUploadLocalResults;
 
   @Option(
     name = "experimental_remote_platform_override",
@@ -136,54 +112,10 @@ public final class RemoteOptions extends OptionsBase {
   public String experimentalRemotePlatformOverride;
 
   @Option(
-    name = "auth_enabled",
-    defaultValue = "false",
+    name = "remote_instance_name",
+    defaultValue = "",
     category = "remote",
-    help = "Whether to enable API key authentication."
+    help = "Value to pass as instance_name in the remote_execution API."
   )
-  public boolean authEnabled;
-
-  @Option(
-    name = "auth_scope",
-    defaultValue = "null",
-    category = "remote",
-    help = "If server authentication requires a scope, provide it here."
-  )
-  public String authScope;
-
-  @Option(
-    name = "auth_credentials_json",
-    defaultValue = "null",
-    category = "remote",
-    help = "Location of credentials JSON file."
-  )
-  public String authCredentialsJson;
-
-  @Option(
-    name = "tls_enabled",
-    defaultValue = "false",
-    category = "remote",
-    help =
-        "If set to true, Bazel uses TLS encryption for all connections to remote cache and "
-            + "execution servers."
-  )
-  public boolean tlsEnabled;
-
-  @Option(
-    name = "tls_cert",
-    defaultValue = "null",
-    category = "remote",
-    help = "TLS certificate file to use."
-  )
-  public String tlsCert;
-
-  @Option(
-    name = "tls_authority_override",
-    defaultValue = "null",
-    category = "remote",
-    help =
-        "If present, consider the value of the flag a valid TLS authority. This is useful for "
-            + "using self-signed test TLS certificates. For testing only."
-  )
-  public String tlsAuthorityOverride;
+  public String remoteInstanceName;
 }
