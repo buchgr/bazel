@@ -1,0 +1,26 @@
+java_library(
+    name = "buildeventservice-module",
+    srcs = glob(["*.java"]),
+    visibility = [
+        "//visibility:public",
+    ],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib:buildeventstream",
+        "//src/main/java/com/google/devtools/build/lib:events",
+        "//src/main/java/com/google/devtools/build/lib:runtime",
+        "//src/main/java/com/google/devtools/build/lib:util",
+        "//src/main/java/com/google/devtools/build/lib/bazel/buildeventservice/client",
+        "//src/main/java/com/google/devtools/build/lib/buildeventstream/proto:build_event_stream_java_proto",
+        "//src/main/java/com/google/devtools/common/options",
+        "//third_party:joda_time",
+        "@com_google_guava//:jar",
+        "@com_google_protobuf//:protobuf_java",
+        "@com_google_protobuf//:protobuf_java_util",
+        "@com_google_protobuf//:well_known_types_any_proto",
+        "@googleapis//:google_devtools_build_v1_build_events_java_proto",
+        "@googleapis//:google_devtools_build_v1_build_status_java_proto",
+        "@googleapis//:google_devtools_build_v1_publish_build_event_java_proto",
+        "@io_grpc//:grpc-jar",
+        "@jsr305//:jar",
+    ],
+)
