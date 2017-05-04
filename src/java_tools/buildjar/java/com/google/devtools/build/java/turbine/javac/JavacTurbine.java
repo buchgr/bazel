@@ -108,6 +108,7 @@ public class JavacTurbine implements AutoCloseable {
 
   private static final int ZIPFILE_BUFFER_SIZE = 1024 * 16;
 
+  private static final Joiner CLASSPATH_JOINER = Joiner.on(':');
 
   private final PrintWriter out;
   private final TurbineOptions turbineOptions;
@@ -175,17 +176,16 @@ public class JavacTurbine implements AutoCloseable {
     if (sources.isEmpty()) {
       // accept compilations with an empty source list for compatibility with JavaBuilder
       emitClassJar(Paths.get(turbineOptions.outputFile()), ImmutableMap.of());
-      dependencyModule.emitDependencyInformation(
-          /*classpath=*/ ImmutableList.of(), /*successful=*/ true);
+      dependencyModule.emitDependencyInformation(/*classpath=*/ "", /*successful=*/ true);
       return Result.OK_WITH_REDUCED_CLASSPATH;
     }
 
     Result result = Result.ERROR;
     JavacTurbineCompileResult compileResult = null;
-    ImmutableList<String> actualClasspath = ImmutableList.of();
+    List<String> actualClasspath = ImmutableList.of();
 
-    ImmutableList<String> originalClasspath = turbineOptions.classPath();
-    ImmutableList<String> compressedClasspath =
+    List<String> originalClasspath = turbineOptions.classPath();
+    List<String> compressedClasspath =
         dependencyModule.computeStrictClasspath(turbineOptions.classPath());
 
     requestBuilder.setStrictDepsPlugin(new StrictJavaDepsPlugin(dependencyModule));
@@ -215,7 +215,8 @@ public class JavacTurbine implements AutoCloseable {
 
     if (result.ok()) {
       emitClassJar(Paths.get(turbineOptions.outputFile()), compileResult.files());
-      dependencyModule.emitDependencyInformation(actualClasspath, compileResult.success());
+      dependencyModule.emitDependencyInformation(
+          CLASSPATH_JOINER.join(actualClasspath), compileResult.success());
     } else {
       out.print(compileResult.output());
     }
@@ -229,7 +230,6 @@ public class JavacTurbine implements AutoCloseable {
             .setReduceClasspath()
             .setTargetLabel(turbineOptions.targetLabel().orNull())
             .addDepsArtifacts(turbineOptions.depsArtifacts())
-            .setPlatformJars(turbineOptions.bootClassPath())
             .setStrictJavaDeps(strictDepsMode.toString())
             .addDirectMappings(parseJarsToTargets(turbineOptions.directJarsToTargets()))
             .addIndirectMappings(parseJarsToTargets(turbineOptions.indirectJarsToTargets()));

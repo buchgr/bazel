@@ -89,6 +89,7 @@ public abstract class AbstractConfiguredTarget
     return "ConfiguredTarget(" + getTarget().getLabel() + ", " + getConfiguration() + ")";
   }
 
+  @Nullable
   @Override
   public <P extends TransitiveInfoProvider> P getProvider(Class<P> provider) {
     AnalysisUtils.checkProvider(provider);
@@ -116,7 +117,7 @@ public abstract class AbstractConfiguredTarget
   }
 
   @Override
-  public final Object getIndex(Object key, Location loc) throws EvalException {
+  public Object getIndex(Object key, Location loc) throws EvalException {
     if (!(key instanceof ClassObjectConstructor)) {
       throw new EvalException(loc, String.format(
           "Type Target only supports indexing by object constructors, got %s instead",
@@ -148,7 +149,7 @@ public abstract class AbstractConfiguredTarget
   }
 
   @Override
-  public final ImmutableCollection<String> getKeys() {
+  public ImmutableCollection<String> getKeys() {
     ImmutableList.Builder<String> result = ImmutableList.builder();
     result.addAll(ImmutableList.of(
         DATA_RUNFILES_FIELD,
@@ -179,7 +180,7 @@ public abstract class AbstractConfiguredTarget
 
   @Nullable
   @Override
-  public final Object get(SkylarkProviderIdentifier id) {
+  public Object get(SkylarkProviderIdentifier id) {
     if (id.isLegacy()) {
       return get(id.getLegacyId());
     }
@@ -190,7 +191,7 @@ public abstract class AbstractConfiguredTarget
   /** Returns a declared provider provided by this target. Only meant to use from Skylark. */
   @Nullable
   @Override
-  public final SkylarkClassObject get(ClassObjectConstructor.Key providerKey) {
+  public SkylarkClassObject get(ClassObjectConstructor.Key providerKey) {
     if (providerKey.equals(DefaultProvider.SKYLARK_CONSTRUCTOR.getKey())) {
       return getDefaultProvider();
     }

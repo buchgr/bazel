@@ -329,8 +329,10 @@ public class DataResourceXml implements DataResource {
   }
 
   @Override
-  public void writeResourceToClass(FullyQualifiedName key, AndroidResourceSymbolSink sink) {
-    xml.writeResourceToClass(key, sink);
+  public void writeResourceToClass(
+      FullyQualifiedName key,
+      AndroidResourceClassWriter resourceClassWriter) {
+    xml.writeResourceToClass(key, resourceClassWriter);
   }
 
   @Override

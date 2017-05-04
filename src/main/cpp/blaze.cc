@@ -531,13 +531,8 @@ static void AddLoggingArgs(vector<string> *args) {
                     ToString(globals->extract_data_time));
   }
   if (globals->restart_reason != NO_RESTART) {
-    const char *reasons[] = {"no_restart",
-                             "no_daemon",
-                             "new_version",
-                             "new_options",
-                             "pid_file_but_no_server",
-                             "server_vanished",
-                             "server_unresponsive"};
+    const char *reasons[] = {"no_restart", "no_daemon", "new_version",
+                             "new_options"};
     args->push_back(string("--restart_reason=") +
                     reasons[globals->restart_reason]);
   }
@@ -705,12 +700,6 @@ static int GetServerPid(const string &server_dir) {
   return result;
 }
 
-static void SetRestartReasonIfNotSet(RestartReason restart_reason) {
-  if (globals->restart_reason == NO_RESTART) {
-    globals->restart_reason = restart_reason;
-  }
-}
-
 // Starts up a new server and connects to it. Exits if it didn't work not.
 static void StartServerAndConnect(const WorkspaceLayout *workspace_layout,
                                   BlazeServer *server) {
@@ -732,16 +721,10 @@ static void StartServerAndConnect(const WorkspaceLayout *workspace_layout,
   int server_pid = GetServerPid(server_dir);
   if (server_pid > 0) {
     if (VerifyServerProcess(server_pid, globals->options->output_base,
-                            globals->options->install_base)) {
-      if (KillServerProcess(server_pid)) {
-        fprintf(stderr, "Killed non-responsive server process (pid=%d)\n",
-                server_pid);
-        SetRestartReasonIfNotSet(SERVER_UNRESPONSIVE);
-      } else {
-        SetRestartReasonIfNotSet(SERVER_VANISHED);
-      }
-    } else {
-      SetRestartReasonIfNotSet(PID_FILE_BUT_NO_SERVER);
+                            globals->options->install_base) &&
+        KillServerProcess(server_pid)) {
+      fprintf(stderr, "Killed non-responsive server process (pid=%d)\n",
+              server_pid);
     }
   }
 

@@ -37,7 +37,7 @@ public final class ListLiteral extends Expression {
 
   private final List<Expression> exprs;
 
-  public ListLiteral(Kind kind, List<Expression> exprs) {
+  private ListLiteral(Kind kind, List<Expression> exprs) {
     this.kind = kind;
     this.exprs = exprs;
   }
@@ -55,10 +55,9 @@ public final class ListLiteral extends Expression {
     return makeList(Collections.<Expression>emptyList());
   }
 
-  public Kind getKind() {
-    return kind;
-  }
-
+  /**
+   * Returns the list of expressions for each element of the tuple.
+   */
   public List<Expression> getElements() {
     return exprs;
   }

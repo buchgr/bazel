@@ -88,12 +88,7 @@ public final class ConfiguredAspect {
   @Nullable
   @VisibleForTesting
   public <P extends TransitiveInfoProvider> P getProvider(Class<P> providerClass) {
-    AnalysisUtils.checkProvider(providerClass);
     return providers.getProvider(providerClass);
-  }
-
-  SkylarkProviders getSkylarkProviders() {
-    return providers.getProvider(SkylarkProviders.class);
   }
 
   public Object getProvider(SkylarkProviderIdentifier id) {
@@ -108,7 +103,7 @@ public final class ConfiguredAspect {
     if (OutputGroupProvider.SKYLARK_CONSTRUCTOR.getKey().equals(key)) {
       return getProvider(OutputGroupProvider.class);
     }
-    SkylarkProviders skylarkProviders = providers.getProvider(SkylarkProviders.class);
+    SkylarkProviders skylarkProviders = getProvider(SkylarkProviders.class);
     return skylarkProviders != null ? skylarkProviders.getDeclaredProvider(key) : null;
   }
 
@@ -116,7 +111,7 @@ public final class ConfiguredAspect {
     if (OutputGroupProvider.SKYLARK_NAME.equals(legacyKey)) {
       return getProvider(OutputGroupProvider.class);
     }
-    SkylarkProviders skylarkProviders = providers.getProvider(SkylarkProviders.class);
+    SkylarkProviders skylarkProviders = getProvider(SkylarkProviders.class);
     return skylarkProviders != null
         ? skylarkProviders.get(SkylarkProviderIdentifier.forLegacy(legacyKey))
         : null;

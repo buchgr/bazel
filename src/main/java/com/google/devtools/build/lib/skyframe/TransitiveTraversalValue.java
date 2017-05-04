@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
-import com.google.common.base.MoreObjects;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
@@ -53,16 +52,8 @@ public abstract class TransitiveTraversalValue implements SkyValue {
   private static final InternerWithPresenceCheck<TransitiveTraversalValue> VALUE_INTERNER =
       new InternerWithPresenceCheck<>();
 
-  private final String kind;
-
-  protected TransitiveTraversalValue(String kind) {
-    this.kind = Preconditions.checkNotNull(kind);
-  }
-
-  static TransitiveTraversalValue unsuccessfulTransitiveTraversal(
-      String firstErrorMessage, Target target) {
-    return new TransitiveTraversalValueWithError(
-        Preconditions.checkNotNull(firstErrorMessage), target.getTargetKind());
+  static TransitiveTraversalValue unsuccessfulTransitiveTraversal(String firstErrorMessage) {
+    return new TransitiveTraversalValueWithError(Preconditions.checkNotNull(firstErrorMessage));
   }
 
   static TransitiveTraversalValue forTarget(Target target, @Nullable String firstErrorMessage) {
@@ -93,16 +84,16 @@ public abstract class TransitiveTraversalValue implements SkyValue {
         return value;
       }
     } else {
-      return new TransitiveTraversalValueWithError(firstErrorMessage, target.getTargetKind());
+      return new TransitiveTraversalValueWithError(firstErrorMessage);
     }
   }
 
   public static TransitiveTraversalValue create(
-      AdvertisedProviderSet providers, String kind, @Nullable String firstErrorMessage) {
+      AdvertisedProviderSet providers, @Nullable String kind, @Nullable String firstErrorMessage) {
     TransitiveTraversalValue value =
         firstErrorMessage == null
             ? new TransitiveTraversalValueWithoutError(providers, kind)
-            : new TransitiveTraversalValueWithError(firstErrorMessage, kind);
+            : new TransitiveTraversalValueWithError(firstErrorMessage);
     if (firstErrorMessage == null) {
       TransitiveTraversalValue oldValue = VALUE_INTERNER.getCanonical(value);
       return oldValue == null ? value : oldValue;
@@ -119,10 +110,9 @@ public abstract class TransitiveTraversalValue implements SkyValue {
    */
   public abstract AdvertisedProviderSet getProviders();
 
-  /** Returns the target kind. */
-  public String getKind() {
-    return kind;
-  }
+  /** Returns the target kind, if any. */
+  @Nullable
+  public abstract String getKind();
 
   /**
    * Returns the first error message, if any, from loading the target and its transitive
@@ -159,11 +149,12 @@ public abstract class TransitiveTraversalValue implements SkyValue {
   /** A transitive target reference without error. */
   public static final class TransitiveTraversalValueWithoutError extends TransitiveTraversalValue {
     private final AdvertisedProviderSet advertisedProviders;
+    @Nullable private final String kind;
 
     private TransitiveTraversalValueWithoutError(
         AdvertisedProviderSet providers, @Nullable String kind) {
-      super(kind);
       this.advertisedProviders = Preconditions.checkNotNull(providers);
+      this.kind = kind;
     }
 
     @Override
@@ -178,16 +169,14 @@ public abstract class TransitiveTraversalValue implements SkyValue {
 
     @Override
     @Nullable
-    public String getFirstErrorMessage() {
-      return null;
+    public String getKind() {
+      return kind;
     }
 
     @Override
-    public String toString() {
-      return MoreObjects.toStringHelper(this)
-          .add("kind", getKind())
-          .add("providers", advertisedProviders)
-          .toString();
+    @Nullable
+    public String getFirstErrorMessage() {
+      return null;
     }
   }
 
@@ -195,8 +184,7 @@ public abstract class TransitiveTraversalValue implements SkyValue {
   public static final class TransitiveTraversalValueWithError extends TransitiveTraversalValue {
     private final String firstErrorMessage;
 
-    private TransitiveTraversalValueWithError(String firstErrorMessage, String kind) {
-      super(kind);
+    private TransitiveTraversalValueWithError(String firstErrorMessage) {
       this.firstErrorMessage =
           StringCanonicalizer.intern(Preconditions.checkNotNull(firstErrorMessage));
     }
@@ -213,16 +201,14 @@ public abstract class TransitiveTraversalValue implements SkyValue {
 
     @Override
     @Nullable
-    public String getFirstErrorMessage() {
-      return firstErrorMessage;
+    public String getKind() {
+      return null;
     }
 
     @Override
-    public String toString() {
-      return MoreObjects.toStringHelper(this)
-          .add("error", firstErrorMessage)
-          .add("kind", getKind())
-          .toString();
+    @Nullable
+    public String getFirstErrorMessage() {
+      return firstErrorMessage;
     }
   }
 }

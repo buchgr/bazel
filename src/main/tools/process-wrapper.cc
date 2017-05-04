@@ -22,27 +22,39 @@
 // die with raise(SIGTERM) even if the child process handles SIGTERM with
 // exit(0).
 
+#include "src/main/tools/process-tools.h"
+
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
 #include <string>
 #include <vector>
 
-#include "src/main/tools/process-tools.h"
+using std::vector;
 
-bool global_debug = false;
+// Not in headers on OSX.
+extern char **environ;
 
-static double global_kill_delay;
-static pid_t global_child_pid;
-static volatile sig_atomic_t global_signal;
+// The pid of the spawned child process.
+static volatile sig_atomic_t global_child_pid;
+
+// The signal that will be sent to the child when a timeout occurs.
+static volatile sig_atomic_t global_next_timeout_signal = SIGTERM;
+
+// Whether the child was killed due to a timeout.
+static volatile sig_atomic_t global_timeout_occurred;
 
 // Options parsing result.
 struct Options {
@@ -50,7 +62,8 @@ struct Options {
   double kill_delay_secs;
   std::string stdout_path;
   std::string stderr_path;
-  std::vector<char *> args;
+  bool debug;
+  vector<char *> args;
 };
 
 static struct Options opt;
@@ -64,10 +77,9 @@ static void Usage(char *program_name) {
   exit(EXIT_FAILURE);
 }
 
-// Parse the command line flags and return the result in an Options structure
-// passed as argument.
-static void ParseCommandLine(std::vector<char *> args) {
-  if (args.size() < 5) {
+// Parse the command line flags and put the results in the global opt variable.
+static void ParseCommandLine(vector<char *> args) {
+  if (args.size() <= 5) {
     Usage(args.front());
   }
 
@@ -87,89 +99,88 @@ static void ParseCommandLine(std::vector<char *> args) {
   opt.args.push_back(nullptr);
 }
 
-// Called when timeout or signal occurs.
-void OnSignal(int sig) {
-  global_signal = sig;
-
-  // Nothing to do if we received a signal before spawning the child.
-  if (global_child_pid == -1) {
-    return;
-  }
-
-  if (sig == SIGALRM) {
-    // SIGALRM represents a timeout, so we should give the process a bit of
-    // time to die gracefully if it needs it.
-    KillEverything(global_child_pid, true, global_kill_delay);
-  } else {
-    // Signals should kill the process quickly, as it's typically blocking
-    // the return of the prompt after a user hits "Ctrl-C".
-    KillEverything(global_child_pid, false, global_kill_delay);
+static void OnTimeout(int signum) {
+  global_timeout_occurred = true;
+  kill(-global_child_pid, global_next_timeout_signal);
+  if (global_next_timeout_signal == SIGTERM && opt.kill_delay_secs > 0) {
+    global_next_timeout_signal = SIGKILL;
+    SetTimeout(opt.kill_delay_secs);
   }
 }
 
-// Run the command specified by the argv array and kill it after timeout
-// seconds.
-static void SpawnCommand(const std::vector<char *> &args, double timeout_secs) {
-  global_child_pid = fork();
-  if (global_child_pid < 0) {
-    DIE("fork");
-  } else if (global_child_pid == 0) {
-    // In child.
-    if (setsid() < 0) {
-      DIE("setsid");
-    }
-    ClearSignalMask();
+static void ForwardSignal(int signum) {
+  if (global_child_pid > 0) {
+    kill(-global_child_pid, signum);
+  }
+}
 
-    // Force umask to include read and execute for everyone, to make
-    // output permissions predictable.
-    umask(022);
+static void SetupSignalHandlers() {
+  RestoreSignalHandlersAndMask();
 
-    // Does not return unless something went wrong.
-    if (execvp(args[0], args.data()) < 0) {
-      DIE("execvp(%s, ...)", args[0]);
-    }
-  } else {
-    // In parent.
-
-    // Set up a signal handler which kills all subprocesses when the given
-    // signal is triggered.
-    HandleSignal(SIGALRM, OnSignal);
-    HandleSignal(SIGTERM, OnSignal);
-    HandleSignal(SIGINT, OnSignal);
-    SetTimeout(timeout_secs);
-
-    int status = WaitChild(global_child_pid);
-
-    // The child is done for, but may have grandchildren that we still have to
-    // kill.
-    kill(-global_child_pid, SIGKILL);
-
-    if (global_signal > 0) {
-      // Don't trust the exit code if we got a timeout or signal.
-      UnHandle(global_signal);
-      raise(global_signal);
-    } else if (WIFEXITED(status)) {
-      exit(WEXITSTATUS(status));
-    } else {
-      int sig = WTERMSIG(status);
-      UnHandle(sig);
-      raise(sig);
+  for (int signum = 1; signum < NSIG; signum++) {
+    switch (signum) {
+      // Some signals should indeed kill us and not be forwarded to the child,
+      // thus we can use the default handler.
+      case SIGABRT:
+      case SIGBUS:
+      case SIGFPE:
+      case SIGILL:
+      case SIGSEGV:
+      case SIGSYS:
+      case SIGTRAP:
+        break;
+      // It's fine to use the default handler for SIGCHLD, because we use wait()
+      // in the main loop to wait for children to die anyway.
+      case SIGCHLD:
+        break;
+      // One does not simply install a signal handler for these two signals
+      case SIGKILL:
+      case SIGSTOP:
+        break;
+      // Ignore SIGTTIN and SIGTTOU, as we hand off the terminal to the child in
+      // SpawnChild().
+      case SIGTTIN:
+      case SIGTTOU:
+        IgnoreSignal(signum);
+        break;
+      // We need a special signal handler for this if we use a timeout.
+      case SIGALRM:
+        if (opt.timeout_secs > 0) {
+          InstallSignalHandler(signum, OnTimeout);
+        } else {
+          InstallSignalHandler(signum, ForwardSignal);
+        }
+        break;
+      // All other signals should be forwarded to the child.
+      default:
+        InstallSignalHandler(signum, ForwardSignal);
+        break;
     }
   }
 }
 
 int main(int argc, char *argv[]) {
-  std::vector<char *> args(argv, argv + argc);
-  ParseCommandLine(args);
-  global_kill_delay = opt.kill_delay_secs;
+  KillMeWhenMyParentDies(SIGTERM);
+  DropPrivileges();
 
-  SwitchToEuid();
-  SwitchToEgid();
+  vector<char *> args(argv, argv + argc);
+  ParseCommandLine(args);
 
   Redirect(opt.stdout_path, STDOUT_FILENO);
   Redirect(opt.stderr_path, STDERR_FILENO);
 
-  SpawnCommand(opt.args, opt.timeout_secs);
+  SetupSignalHandlers();
+  BecomeSubreaper();
+  global_child_pid = SpawnCommand(opt.args);
 
-  return 0;
+  if (opt.timeout_secs > 0) {
+    SetTimeout(opt.timeout_secs);
+  }
+
+  int exitcode = WaitForChild(global_child_pid);
+  if (global_timeout_occurred) {
+    return 128 + SIGALRM;
+  }
+
+  return exitcode;
 }

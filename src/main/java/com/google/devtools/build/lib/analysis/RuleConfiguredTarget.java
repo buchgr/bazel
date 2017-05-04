@@ -19,8 +19,6 @@ import com.google.devtools.build.lib.analysis.config.RunUnder;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.OutputFile;
 import com.google.devtools.build.lib.packages.Rule;
-import com.google.devtools.build.lib.packages.SkylarkClassObject;
-import com.google.devtools.build.lib.packages.SkylarkClassObjectConstructor;
 import com.google.devtools.build.lib.util.Preconditions;
 import javax.annotation.Nullable;
 
@@ -50,8 +48,7 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
   RuleConfiguredTarget(
       RuleContext ruleContext,
       TransitiveInfoProviderMap providers,
-      ImmutableMap<String, Object> legacySkylarkProviders,
-      ImmutableMap<SkylarkClassObjectConstructor.Key, SkylarkClassObject> skylarkProviders) {
+      SkylarkProviders skylarkProviders) {
     super(ruleContext);
     // We don't use ImmutableMap.Builder here to allow augmenting the initial list of 'default'
     // providers by passing them in.
@@ -62,11 +59,9 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
     Preconditions.checkState(providerBuilder.contains(FilesToRunProvider.class));
 
     // Initialize every SkylarkApiProvider
-    if (!legacySkylarkProviders.isEmpty() || !skylarkProviders.isEmpty()) {
-      SkylarkProviders allSkylarkProviders = new SkylarkProviders(legacySkylarkProviders,
-          skylarkProviders);
-      allSkylarkProviders.init(this);
-      providerBuilder.add(allSkylarkProviders);
+    if (!skylarkProviders.isEmpty()) {
+      skylarkProviders.init(this);
+      providerBuilder.add(skylarkProviders);
     }
 
     this.providers = providerBuilder.build();

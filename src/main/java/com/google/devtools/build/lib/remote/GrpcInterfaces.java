@@ -13,26 +13,31 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
-import com.google.devtools.build.lib.remote.CasServiceGrpc.CasServiceBlockingStub;
-import com.google.devtools.build.lib.remote.CasServiceGrpc.CasServiceStub;
-import com.google.devtools.build.lib.remote.ExecuteServiceGrpc.ExecuteServiceBlockingStub;
-import com.google.devtools.build.lib.remote.ExecutionCacheServiceGrpc.ExecutionCacheServiceBlockingStub;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasDownloadBlobRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasDownloadReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasDownloadTreeMetadataReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasDownloadTreeMetadataRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasLookupReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasLookupRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasUploadBlobReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasUploadBlobRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasUploadTreeMetadataReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.CasUploadTreeMetadataRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecuteReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecuteRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecutionCacheReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecutionCacheRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecutionCacheSetReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecutionCacheSetRequest;
+import com.google.bytestream.ByteStreamGrpc;
+import com.google.bytestream.ByteStreamGrpc.ByteStreamBlockingStub;
+import com.google.bytestream.ByteStreamGrpc.ByteStreamStub;
+import com.google.bytestream.ByteStreamProto.ReadRequest;
+import com.google.bytestream.ByteStreamProto.ReadResponse;
+import com.google.bytestream.ByteStreamProto.WriteRequest;
+import com.google.bytestream.ByteStreamProto.WriteResponse;
+import com.google.devtools.remoteexecution.v1test.ActionCacheGrpc;
+import com.google.devtools.remoteexecution.v1test.ActionCacheGrpc.ActionCacheBlockingStub;
+import com.google.devtools.remoteexecution.v1test.ActionResult;
+import com.google.devtools.remoteexecution.v1test.BatchUpdateBlobsRequest;
+import com.google.devtools.remoteexecution.v1test.BatchUpdateBlobsResponse;
+import com.google.devtools.remoteexecution.v1test.ContentAddressableStorageGrpc;
+import com.google.devtools.remoteexecution.v1test.ContentAddressableStorageGrpc.ContentAddressableStorageBlockingStub;
+import com.google.devtools.remoteexecution.v1test.ExecuteRequest;
+import com.google.devtools.remoteexecution.v1test.ExecutionGrpc;
+import com.google.devtools.remoteexecution.v1test.ExecutionGrpc.ExecutionBlockingStub;
+import com.google.devtools.remoteexecution.v1test.FindMissingBlobsRequest;
+import com.google.devtools.remoteexecution.v1test.FindMissingBlobsResponse;
+import com.google.devtools.remoteexecution.v1test.GetActionResultRequest;
+import com.google.devtools.remoteexecution.v1test.GetTreeRequest;
+import com.google.devtools.remoteexecution.v1test.GetTreeResponse;
+import com.google.devtools.remoteexecution.v1test.UpdateActionResultRequest;
+import com.google.longrunning.Operation;
+import com.google.protobuf.util.Durations;
 import io.grpc.Channel;
 import io.grpc.stub.StreamObserver;
 import java.util.Iterator;
@@ -40,90 +45,92 @@ import java.util.concurrent.TimeUnit;
 
 /** Implementations of the gRPC interfaces that actually talk to gRPC. */
 public class GrpcInterfaces {
+  // TODO(olaola): break these into separate classes?
   /** Create a {@link GrpcCasInterface} instance that actually talks to gRPC. */
   public static GrpcCasInterface casInterface(
-      final int grpcTimeoutSeconds,
-      final Channel channel,
-      final ChannelOptions channelOptions) {
+      final int grpcTimeoutSeconds, final Channel channel, final ChannelOptions channelOptions) {
     return new GrpcCasInterface() {
-      private CasServiceBlockingStub getCasServiceBlockingStub() {
-        return CasServiceGrpc.newBlockingStub(channel)
+      private ContentAddressableStorageBlockingStub getBlockingStub() {
+        return ContentAddressableStorageGrpc.newBlockingStub(channel)
             .withCallCredentials(channelOptions.getCallCredentials())
             .withDeadlineAfter(grpcTimeoutSeconds, TimeUnit.SECONDS);
       }
 
-      private CasServiceStub getCasServiceStub() {
-        return CasServiceGrpc.newStub(channel)
-            .withCallCredentials(channelOptions.getCallCredentials())
-            .withDeadlineAfter(grpcTimeoutSeconds, TimeUnit.SECONDS);
+      // TODO(olaola): reuse stubs between calls.
+      @Override
+      public FindMissingBlobsResponse findMissingBlobs(FindMissingBlobsRequest request) {
+        return getBlockingStub().findMissingBlobs(request);
       }
 
       @Override
-      public CasLookupReply lookup(CasLookupRequest request) {
-        return getCasServiceBlockingStub().lookup(request);
+      public BatchUpdateBlobsResponse batchUpdateBlobs(BatchUpdateBlobsRequest request) {
+        return getBlockingStub().batchUpdateBlobs(request);
       }
 
       @Override
-      public CasUploadTreeMetadataReply uploadTreeMetadata(CasUploadTreeMetadataRequest request) {
-        return getCasServiceBlockingStub().uploadTreeMetadata(request);
+      public GetTreeResponse getTree(GetTreeRequest request) {
+        return getBlockingStub().getTree(request);
+      }
+    };
+  }
+
+  /** Create a {@link GrpcByteStreamInterface} instance that actually talks to gRPC. */
+  public static GrpcByteStreamInterface byteStreamInterface(
+      final int grpcTimeoutSeconds, final Channel channel, final ChannelOptions channelOptions) {
+    return new GrpcByteStreamInterface() {
+      @Override
+      public Iterator<ReadResponse> read(ReadRequest request) {
+        ByteStreamBlockingStub stub =
+            ByteStreamGrpc.newBlockingStub(channel)
+                .withCallCredentials(channelOptions.getCallCredentials())
+                .withDeadlineAfter(grpcTimeoutSeconds, TimeUnit.SECONDS);
+        return stub.read(request);
       }
 
       @Override
-      public CasDownloadTreeMetadataReply downloadTreeMetadata(
-          CasDownloadTreeMetadataRequest request) {
-        return getCasServiceBlockingStub().downloadTreeMetadata(request);
-      }
-
-      @Override
-      public Iterator<CasDownloadReply> downloadBlob(CasDownloadBlobRequest request) {
-        return getCasServiceBlockingStub().downloadBlob(request);
-      }
-
-      @Override
-      public StreamObserver<CasUploadBlobRequest> uploadBlobAsync(
-          StreamObserver<CasUploadBlobReply> responseObserver) {
-        return getCasServiceStub().uploadBlob(responseObserver);
+      public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> responseObserver) {
+        ByteStreamStub stub =
+            ByteStreamGrpc.newStub(channel)
+                .withCallCredentials(channelOptions.getCallCredentials())
+                .withDeadlineAfter(grpcTimeoutSeconds, TimeUnit.SECONDS);
+        return stub.write(responseObserver);
       }
     };
   }
 
   /** Create a {@link GrpcCasInterface} instance that actually talks to gRPC. */
-  public static GrpcExecutionCacheInterface executionCacheInterface(
-      final int grpcTimeoutSeconds,
-      final Channel channel,
-      final ChannelOptions channelOptions) {
-    return new GrpcExecutionCacheInterface() {
-      private ExecutionCacheServiceBlockingStub getExecutionCacheServiceBlockingStub() {
-        return ExecutionCacheServiceGrpc.newBlockingStub(channel)
+  public static GrpcActionCacheInterface actionCacheInterface(
+      final int grpcTimeoutSeconds, final Channel channel, final ChannelOptions channelOptions) {
+    return new GrpcActionCacheInterface() {
+      private ActionCacheBlockingStub getBlockingStub() {
+        return ActionCacheGrpc.newBlockingStub(channel)
             .withCallCredentials(channelOptions.getCallCredentials())
             .withDeadlineAfter(grpcTimeoutSeconds, TimeUnit.SECONDS);
       }
 
       @Override
-      public ExecutionCacheReply getCachedResult(ExecutionCacheRequest request) {
-        return getExecutionCacheServiceBlockingStub().getCachedResult(request);
+      public ActionResult getActionResult(GetActionResultRequest request) {
+        return getBlockingStub().getActionResult(request);
       }
 
       @Override
-      public ExecutionCacheSetReply setCachedResult(ExecutionCacheSetRequest request) {
-        return getExecutionCacheServiceBlockingStub().setCachedResult(request);
+      public ActionResult updateActionResult(UpdateActionResultRequest request) {
+        return getBlockingStub().updateActionResult(request);
       }
     };
   }
 
   /** Create a {@link GrpcExecutionInterface} instance that actually talks to gRPC. */
   public static GrpcExecutionInterface executionInterface(
-      final int grpcTimeoutSeconds,
-      final Channel channel,
-      final ChannelOptions channelOptions) {
+      final int grpcTimeoutSeconds, final Channel channel, final ChannelOptions channelOptions) {
     return new GrpcExecutionInterface() {
       @Override
-      public Iterator<ExecuteReply> execute(ExecuteRequest request) {
-        ExecuteServiceBlockingStub stub =
-            ExecuteServiceGrpc.newBlockingStub(channel)
+      public Operation execute(ExecuteRequest request) {
+        int actionSeconds = (int)Durations.toSeconds(request.getAction().getTimeout());
+        ExecutionBlockingStub stub =
+            ExecutionGrpc.newBlockingStub(channel)
                 .withCallCredentials(channelOptions.getCallCredentials())
-                .withDeadlineAfter(
-                    grpcTimeoutSeconds + request.getTimeoutMillis() / 1000, TimeUnit.SECONDS);
+                .withDeadlineAfter(grpcTimeoutSeconds + actionSeconds, TimeUnit.SECONDS);
         return stub.execute(request);
       }
     };

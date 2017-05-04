@@ -79,7 +79,7 @@ public class DarwinSandboxedStrategy extends SandboxStrategy {
     this.verboseFailures = verboseFailures;
     this.productName = productName;
     this.alwaysWritableDirs = alwaysWritableDirs;
-    this.spawnInputExpander = new SpawnInputExpander(false);
+    spawnInputExpander = new SpawnInputExpander(false);
   }
 
   public static DarwinSandboxedStrategy create(
@@ -173,8 +173,7 @@ public class DarwinSandboxedStrategy extends SandboxStrategy {
         StandaloneSpawnStrategy.locallyDeterminedEnv(execRoot, productName, spawn.getEnvironment());
 
     HashSet<Path> writableDirs = new HashSet<>(alwaysWritableDirs);
-    ImmutableSet<Path> extraWritableDirs = getWritableDirs(sandboxExecRoot, spawnEnvironment);
-    writableDirs.addAll(extraWritableDirs);
+    writableDirs.addAll(getWritableDirs(sandboxExecRoot, spawnEnvironment));
 
     SymlinkedExecRoot symlinkedExecRoot = new SymlinkedExecRoot(sandboxExecRoot);
     ImmutableSet<PathFragment> outputs = SandboxHelpers.getOutputFiles(spawn);
@@ -184,15 +183,8 @@ public class DarwinSandboxedStrategy extends SandboxStrategy {
         outputs,
         writableDirs);
 
-    // This will add the resolved versions of the spawn-dependant writable paths (e.g. its execroot
-    // or TEST_TMPDIR) to the set, now that they have been created by the SymlinkedExecRoot.
-    for (Path extraWritableDir : extraWritableDirs) {
-      addPathToSetIfExists(writableDirs, extraWritableDir);
-    }
-
     DarwinSandboxRunner runner =
-        new DarwinSandboxRunner(
-            sandboxPath, sandboxExecRoot, writableDirs, getInaccessiblePaths(), verboseFailures);
+        new DarwinSandboxRunner(sandboxPath, sandboxExecRoot, writableDirs, verboseFailures);
     try {
       runSpawn(
           spawn,

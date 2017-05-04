@@ -36,6 +36,7 @@ import java.util.Set;
 final class LinuxSandboxRunner extends SandboxRunner {
   private static final String LINUX_SANDBOX = "linux-sandbox" + OsUtils.executableExtension();
 
+  private final Path execRoot;
   private final Path sandboxExecRoot;
   private final Set<Path> writableDirs;
   private final Set<Path> tmpfsPaths;
@@ -44,6 +45,7 @@ final class LinuxSandboxRunner extends SandboxRunner {
   private final boolean sandboxDebug;
 
   LinuxSandboxRunner(
+      Path execRoot,
       Path sandboxExecRoot,
       Set<Path> writableDirs,
       Set<Path> tmpfsPaths,
@@ -51,6 +53,7 @@ final class LinuxSandboxRunner extends SandboxRunner {
       boolean verboseFailures,
       boolean sandboxDebug) {
     super(verboseFailures);
+    this.execRoot = execRoot;
     this.sandboxExecRoot = sandboxExecRoot;
     this.writableDirs = writableDirs;
     this.tmpfsPaths = tmpfsPaths;

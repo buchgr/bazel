@@ -43,6 +43,7 @@ import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.rules.cpp.CppConfigurationLoader.CppConfigurationParameters;
 import com.google.devtools.build.lib.rules.cpp.CppLinkActionConfigs.CppLinkPlatform;
 import com.google.devtools.build.lib.rules.cpp.Link.LinkTargetType;
+import com.google.devtools.build.lib.rules.cpp.transitions.ContextCollectorOwnerTransition;
 import com.google.devtools.build.lib.rules.cpp.transitions.DisableLipoTransition;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
@@ -2156,6 +2157,11 @@ public class CppConfiguration extends BuildConfiguration.Fragment {
 
   public PathFragment getDefaultSysroot() {
     return defaultSysroot;
+  }
+
+  @Override
+  public PatchTransition getArtifactOwnerTransition() {
+    return isLipoContextCollector() ? ContextCollectorOwnerTransition.INSTANCE : null;
   }
 
   @Nullable

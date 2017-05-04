@@ -15,17 +15,19 @@
 package com.google.devtools.build.lib.remote;
 
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecuteReply;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecuteRequest;
-import com.google.devtools.build.lib.remote.RemoteProtocol.ExecutionStatus;
+import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.remoteexecution.v1test.ExecuteRequest;
+import com.google.devtools.remoteexecution.v1test.ExecuteResponse;
+import com.google.longrunning.Operation;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.ManagedChannel;
-import java.util.Iterator;
+import io.grpc.protobuf.StatusProto;
 
 /** A remote work executor that uses gRPC for communicating the work, inputs and outputs. */
 @ThreadSafe
 public class GrpcRemoteExecutor extends GrpcActionCache {
   public static boolean isRemoteExecutionOptions(RemoteOptions options) {
-    return options.remoteWorker != null;
+    return options.remoteExecutor != null;
   }
 
   private final GrpcExecutionInterface executionIface;
@@ -33,9 +35,10 @@ public class GrpcRemoteExecutor extends GrpcActionCache {
   public GrpcRemoteExecutor(
       RemoteOptions options,
       GrpcCasInterface casIface,
-      GrpcExecutionCacheInterface cacheIface,
+      GrpcByteStreamInterface bsIface,
+      GrpcActionCacheInterface cacheIface,
       GrpcExecutionInterface executionIface) {
-    super(options, casIface, cacheIface);
+    super(options, casIface, bsIface, cacheIface);
     this.executionIface = executionIface;
   }
 
@@ -43,30 +46,28 @@ public class GrpcRemoteExecutor extends GrpcActionCache {
       ManagedChannel channel, ChannelOptions channelOptions, RemoteOptions options) {
     super(
         options,
-        GrpcInterfaces.casInterface(options.grpcTimeoutSeconds, channel, channelOptions),
-        GrpcInterfaces.executionCacheInterface(
-            options.grpcTimeoutSeconds, channel, channelOptions));
+        GrpcInterfaces.casInterface(options.remoteTimeout, channel, channelOptions),
+        GrpcInterfaces.byteStreamInterface(options.remoteTimeout, channel, channelOptions),
+        GrpcInterfaces.actionCacheInterface(
+            options.remoteTimeout, channel, channelOptions));
     this.executionIface =
-        GrpcInterfaces.executionInterface(options.grpcTimeoutSeconds, channel, channelOptions);
+        GrpcInterfaces.executionInterface(options.remoteTimeout, channel, channelOptions);
   }
 
-  public ExecuteReply executeRemotely(ExecuteRequest request) {
-    Iterator<ExecuteReply> replies = executionIface.execute(request);
-    ExecuteReply reply = null;
-    while (replies.hasNext()) {
-      reply = replies.next();
-      // We can handle the action execution progress here.
+  public ExecuteResponse executeRemotely(ExecuteRequest request) {
+    // TODO(olaola): handle longrunning Operations by using the Watcher API to wait for results.
+    // For now, only support actions with wait_for_completion = true.
+    Preconditions.checkArgument(request.getWaitForCompletion());
+    Operation op = executionIface.execute(request);
+    Preconditions.checkState(op.getDone());
+    Preconditions.checkState(op.getResultCase() != Operation.ResultCase.RESULT_NOT_SET);
+    if (op.getResultCase() == Operation.ResultCase.ERROR) {
+      throw StatusProto.toStatusRuntimeException(op.getError());
     }
-    if (reply == null) {
-      return ExecuteReply.newBuilder()
-          .setStatus(
-              ExecutionStatus.newBuilder()
-                  .setExecuted(false)
-                  .setSucceeded(false)
-                  .setError(ExecutionStatus.ErrorCode.UNKNOWN_ERROR)
-                  .setErrorDetail("Remote server terminated the connection"))
-          .build();
+    try {
+      return op.getResponse().unpack(ExecuteResponse.class);
+    } catch (InvalidProtocolBufferException e) {
+      throw new RuntimeException(e);
     }
-    return reply;
   }
 }

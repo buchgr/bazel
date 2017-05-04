@@ -114,15 +114,6 @@ public class SandboxOptions extends OptionsBase {
   public boolean sandboxFakeUsername;
 
   @Option(
-    name = "sandbox_block_path",
-    allowMultiple = true,
-    defaultValue = "",
-    category = "config",
-    help = "For sandboxed actions, disallow access to this path."
-  )
-  public List<String> sandboxBlockPath;
-
-  @Option(
       name = "sandbox_tmpfs_path",
       allowMultiple = true,
       defaultValue = "",

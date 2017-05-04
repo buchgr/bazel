@@ -30,6 +30,7 @@ import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.OutputGroupProvider;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
+import com.google.devtools.build.lib.analysis.SkylarkProviders;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
@@ -177,7 +178,10 @@ public class SkylarkIntegrationTest extends BuildViewTestCase {
         OutputGroupProvider.get(getConfiguredTarget("//test/skylark:lib"))
             .getOutputGroup(OutputGroupProvider.HIDDEN_TOP_LEVEL);
     ConfiguredTarget myTarget = getConfiguredTarget("//test/skylark:my");
-    SkylarkNestedSet result = (SkylarkNestedSet) myTarget.get("result");
+    SkylarkNestedSet result =
+        (SkylarkNestedSet) myTarget
+            .getProvider(SkylarkProviders.class)
+            .getValue("result");
     assertThat(result.getSet(Artifact.class)).containsExactlyElementsIn(hiddenTopLevelArtifacts);
     assertThat(OutputGroupProvider.get(myTarget).getOutputGroup("my_group"))
         .containsExactlyElementsIn(hiddenTopLevelArtifacts);
@@ -202,7 +206,10 @@ public class SkylarkIntegrationTest extends BuildViewTestCase {
         OutputGroupProvider.get(getConfiguredTarget("//test/skylark:lib"))
             .getOutputGroup(OutputGroupProvider.HIDDEN_TOP_LEVEL);
     ConfiguredTarget myTarget = getConfiguredTarget("//test/skylark:my");
-    SkylarkNestedSet result = (SkylarkNestedSet) myTarget.get("result");
+    SkylarkNestedSet result =
+        (SkylarkNestedSet) myTarget
+            .getProvider(SkylarkProviders.class)
+            .getValue("result");
     assertThat(result.getSet(Artifact.class)).containsExactlyElementsIn(hiddenTopLevelArtifacts);
     assertThat(OutputGroupProvider.get(myTarget).getOutputGroup("my_group"))
         .containsExactlyElementsIn(hiddenTopLevelArtifacts);
@@ -234,13 +241,14 @@ public class SkylarkIntegrationTest extends BuildViewTestCase {
         OutputGroupProvider.get(getConfiguredTarget("//test/skylark:lib"))
             .getOutputGroup(OutputGroupProvider.HIDDEN_TOP_LEVEL);
     ConfiguredTarget myTarget = getConfiguredTarget("//test/skylark:my");
-    SkylarkNestedSet result = (SkylarkNestedSet) myTarget.get("result");
+    SkylarkProviders skylarkProviders = myTarget.getProvider(SkylarkProviders.class);
+    SkylarkNestedSet result = (SkylarkNestedSet) skylarkProviders.getValue("result");
     assertThat(result.getSet(Artifact.class)).containsExactlyElementsIn(hiddenTopLevelArtifacts);
     assertThat(OutputGroupProvider.get(myTarget).getOutputGroup("my_group"))
         .containsExactlyElementsIn(hiddenTopLevelArtifacts);
-    assertThat(myTarget.get("has_key1")).isEqualTo(Boolean.TRUE);
-    assertThat(myTarget.get("has_key2")).isEqualTo(Boolean.FALSE);
-    assertThat((SkylarkList) myTarget.get("all_keys"))
+    assertThat(skylarkProviders.getValue("has_key1")).isEqualTo(Boolean.TRUE);
+    assertThat(skylarkProviders.getValue("has_key2")).isEqualTo(Boolean.FALSE);
+    assertThat((SkylarkList) skylarkProviders.getValue("all_keys"))
         .containsExactly(
             "_hidden_top_level" + INTERNAL_SUFFIX,
             "compilation_prerequisites" + INTERNAL_SUFFIX,
@@ -268,7 +276,9 @@ public class SkylarkIntegrationTest extends BuildViewTestCase {
         OutputGroupProvider.get(getConfiguredTarget("//test/skylark:lib"))
             .getOutputGroup(OutputGroupProvider.HIDDEN_TOP_LEVEL);
     ConfiguredTarget myTarget = getConfiguredTarget("//test/skylark:my");
-    SkylarkNestedSet result = (SkylarkNestedSet) myTarget.get("result");
+    SkylarkProviders skylarkProviders = myTarget
+        .getProvider(SkylarkProviders.class);
+    SkylarkNestedSet result = (SkylarkNestedSet) skylarkProviders.getValue("result");
     assertThat(result.getSet(Artifact.class)).containsExactlyElementsIn(hiddenTopLevelArtifacts);
     assertThat(OutputGroupProvider.get(myTarget).getOutputGroup("my_group"))
         .containsExactlyElementsIn(hiddenTopLevelArtifacts);
@@ -295,7 +305,7 @@ public class SkylarkIntegrationTest extends BuildViewTestCase {
             .getOutputGroup(OutputGroupProvider.HIDDEN_TOP_LEVEL);
     ConfiguredTarget myTarget = getConfiguredTarget("//test/skylark:my");
     SkylarkNestedSet result =
-        (SkylarkNestedSet) myTarget.get("result");
+        (SkylarkNestedSet) myTarget.getProvider(SkylarkProviders.class).getValue("result");
     assertThat(result.getSet(Artifact.class)).containsExactlyElementsIn(hiddenTopLevelArtifacts);
     assertThat(OutputGroupProvider.get(myTarget).getOutputGroup("my_group"))
         .containsExactlyElementsIn(hiddenTopLevelArtifacts);
@@ -324,7 +334,7 @@ public class SkylarkIntegrationTest extends BuildViewTestCase {
             .getOutputGroup(OutputGroupProvider.HIDDEN_TOP_LEVEL);
     ConfiguredTarget myTarget = getConfiguredTarget("//test/skylark:my");
     SkylarkNestedSet result =
-        (SkylarkNestedSet) myTarget.get("result");
+        (SkylarkNestedSet) myTarget.getProvider(SkylarkProviders.class).getValue("result");
     assertThat(result.getSet(Artifact.class)).containsExactlyElementsIn(hiddenTopLevelArtifacts);
     assertThat(OutputGroupProvider.get(myTarget).getOutputGroup("my_group"))
         .containsExactlyElementsIn(hiddenTopLevelArtifacts);
@@ -1004,7 +1014,9 @@ public class SkylarkIntegrationTest extends BuildViewTestCase {
     ClassObjectConstructor.Key key = new SkylarkClassObjectConstructor.SkylarkKey(
         Label.create(configuredTarget.getLabel().getPackageIdentifier(), "extension.bzl"),
         "my_provider");
-    SkylarkClassObject declaredProvider = configuredTarget.get(key);
+    SkylarkProviders skylarkProviders = configuredTarget.getProvider(SkylarkProviders.class);
+    assertThat(skylarkProviders).isNotNull();
+    SkylarkClassObject declaredProvider = skylarkProviders.getDeclaredProvider(key);
     assertThat(declaredProvider).isNotNull();
     assertThat(declaredProvider.getConstructor().getKey()).isEqualTo(key);
     assertThat(declaredProvider.getValue("x")).isEqualTo(1);
@@ -1029,7 +1041,9 @@ public class SkylarkIntegrationTest extends BuildViewTestCase {
     ClassObjectConstructor.Key key = new SkylarkClassObjectConstructor.SkylarkKey(
         Label.create(configuredTarget.getLabel().getPackageIdentifier(), "extension.bzl"),
         "my_provider");
-    SkylarkClassObject declaredProvider = configuredTarget.get(key);
+    SkylarkProviders skylarkProviders = configuredTarget.getProvider(SkylarkProviders.class);
+    assertThat(skylarkProviders).isNotNull();
+    SkylarkClassObject declaredProvider = skylarkProviders.getDeclaredProvider(key);
     assertThat(declaredProvider).isNotNull();
     assertThat(declaredProvider.getConstructor().getKey()).isEqualTo(key);
     assertThat(declaredProvider.getValue("x")).isEqualTo(1);

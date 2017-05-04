@@ -84,14 +84,20 @@ public final class ParamFileHelper {
    * <p>Call this with the result of {@link #getParamsFileMaybe} if it is not null.
    *
    * @param executableArgs leading arguments that should never be wrapped in a parameter file
+   * @param isShellCommand true if this is a shell command
    * @param paramFileInfo parameter file information
    * @param parameterFile the output parameter file artifact
+   * @param paramFileWriteAction the action that generates the parameter file
    */
   public static CommandLine createWithParamsFile(
-      List<String> executableArgs, ParamFileInfo paramFileInfo, Artifact parameterFile) {
+      List<String> executableArgs,
+      boolean isShellCommand,
+      ParamFileInfo paramFileInfo,
+      Artifact parameterFile,
+      ParameterFileWriteAction paramFileWriteAction) {
     String pathWithFlag = paramFileInfo.getFlag() + parameterFile.getExecPathString();
     Iterable<String> commandArgv = Iterables.concat(executableArgs, ImmutableList.of(pathWithFlag));
-    return CommandLine.of(commandArgv);
+    return CommandLine.ofInternal(commandArgv, isShellCommand, paramFileWriteAction);
   }
 
   /**
@@ -110,7 +116,8 @@ public final class ParamFileHelper {
       ActionOwner owner,
       Artifact parameterFile,
       ParamFileInfo paramFileInfo) {
-    CommandLine paramFileContents = (commandLine != null) ? commandLine : CommandLine.of(arguments);
+    CommandLine paramFileContents =
+        (commandLine != null) ? commandLine : CommandLine.ofInternal(arguments, false, null);
 
     return new ParameterFileWriteAction(owner, parameterFile, paramFileContents,
         paramFileInfo.getFileType(), paramFileInfo.getCharset());
@@ -124,20 +131,21 @@ public final class ParamFileHelper {
    * @param executableArgs leading arguments that should never be wrapped in a parameter file
    * @param arguments arguments to the command (in addition to executableArgs), OR
    * @param commandLine a {@link CommandLine} that provides the arguments (in addition to
-   *     executableArgs)
+   *        executableArgs)
+   * @param isShellCommand true if this is a shell command
    */
-  public static CommandLine createWithoutParamsFile(
-      List<String> executableArgs, Iterable<String> arguments, CommandLine commandLine) {
+  public static CommandLine createWithoutParamsFile(List<String> executableArgs,
+      Iterable<String> arguments, CommandLine commandLine, boolean isShellCommand) {
     if (commandLine == null) {
       Iterable<String> commandArgv = Iterables.concat(executableArgs, arguments);
-      return CommandLine.of(commandArgv);
+      return CommandLine.ofInternal(commandArgv, isShellCommand, null);
     }
 
     if (executableArgs.isEmpty()) {
       return commandLine;
     }
 
-    return CommandLine.concat(ImmutableList.copyOf(executableArgs), commandLine);
+    return CommandLine.ofMixed(ImmutableList.copyOf(executableArgs), commandLine, isShellCommand);
   }
 
   /**

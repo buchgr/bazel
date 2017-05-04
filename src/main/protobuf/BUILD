@@ -45,13 +45,6 @@ cc_grpc_library(
     src = "command_server.proto",
 )
 
-# TODO(olaola): add Golang support.
-java_proto_library(
-    name = "remote_protocol_java_proto",
-    src = "remote_protocol.proto",
-    use_grpc_plugin = True,
-)
-
 py_proto_library(
     name = "build_pb_py",
     srcs = ["build.proto"],
@@ -68,6 +61,5 @@ filegroup(
     name = "dist_jars",
     srcs = [
         "command_server_java_proto_srcjar",
-        "remote_protocol_java_proto_srcjar",
     ] + [s + "_java_proto_srcjar" for s in FILES],
 )

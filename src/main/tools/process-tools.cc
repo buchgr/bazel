@@ -18,37 +18,35 @@
 #include <fcntl.h>
 #include <math.h>
 #include <signal.h>
-#include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
+#if defined(__FreeBSD__)
+#include <sys/procctl.h>
+#endif
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-extern bool global_debug;
+#include <string>
+#include <vector>
 
-int SwitchToEuid() {
-  int uid = getuid();
-  int euid = geteuid();
-  if (uid != euid) {
-    if (setreuid(euid, euid) < 0) {
-      DIE("setreuid");
-    }
-  }
-  return euid;
-}
+using std::vector;
 
-int SwitchToEgid() {
-  int gid = getgid();
-  int egid = getegid();
-  if (gid != egid) {
-    if (setregid(egid, egid) < 0) {
-      DIE("setregid");
-    }
+// Drops privileges irrevocably to the real uid / gid by setting the effective
+// and saved uid / gid to the real uid / gid. Useful if we happen to have been
+// called as a setuid-/setgid-root binary.
+void DropPrivileges() {
+  if (setgid(getgid()) < 0) {
+    DIE("setgid");
   }
-  return egid;
+  if (setuid(getuid()) < 0) {
+    DIE("setuid");
+  }
 }
 
 void Redirect(const std::string &target_path, int fd) {
@@ -68,83 +66,39 @@ void Redirect(const std::string &target_path, int fd) {
           target_path.c_str());
     }
     if (dup2(fd_out, fd) < 0) {
-      DIE("dup2");
+      DIE("dup2()");
     }
     if (close(fd_out) < 0) {
-      DIE("close");
+      DIE("close()");
     }
   }
 }
 
-void KillEverything(pid_t pgrp, bool gracefully, double graceful_kill_delay) {
-  if (gracefully) {
-    kill(-pgrp, SIGTERM);
-
-    // Round up fractional seconds in this polling implementation.
-    int kill_delay = static_cast<int>(ceil(graceful_kill_delay));
-
-    // If the process is still alive, give it some time to die gracefully.
-    while (kill_delay-- > 0 && kill(-pgrp, 0) == 0) {
-      sleep(1);
-    }
+void WriteFile(const std::string &filename, const char *fmt, ...) {
+  FILE *stream = fopen(filename.c_str(), "w");
+  if (stream == nullptr) {
+    DIE("fopen(%s)", filename.c_str());
   }
 
-  kill(-pgrp, SIGKILL);
-}
+  va_list ap;
+  va_start(ap, fmt);
+  // Use a local variable to make sure we call va_end before DIE() in case this
+  // returns an error.
+  int r = vfprintf(stream, fmt, ap);
+  va_end(ap);
 
-void HandleSignal(int sig, void (*handler)(int)) {
-  struct sigaction sa = {};
-  sa.sa_handler = handler;
-  if (sigemptyset(&sa.sa_mask) < 0) {
-    DIE("sigemptyset");
-  }
-  if (sigaction(sig, &sa, nullptr) < 0) {
-    DIE("sigaction");
-  }
-}
-
-void UnHandle(int sig) {
-  switch (sig) {
-    case SIGSTOP:
-    case SIGKILL:
-      // These signals can't be handled, so they'll always have a valid default
-      // handler. In fact, even trying to install SIG_DFL again will result in
-      // EINVAL, so we'll just not do anything for these.
-      return;
-    default:
-      HandleSignal(sig, SIG_DFL);
-  }
-}
-
-void ClearSignalMask() {
-  // Use an empty signal mask for the process.
-  sigset_t empty_sset;
-  if (sigemptyset(&empty_sset) < 0) {
-    DIE("sigemptyset");
-  }
-  if (sigprocmask(SIG_SETMASK, &empty_sset, nullptr) < 0) {
-    DIE("sigprocmask");
+  if (r < 0) {
+    DIE("vfprintf");
   }
 
-  // Set the default signal handler for all signals.
-  for (int i = 1; i < NSIG; ++i) {
-    if (i == SIGKILL || i == SIGSTOP) {
-      continue;
-    }
-    struct sigaction sa = {};
-    sa.sa_handler = SIG_DFL;
-    if (sigemptyset(&sa.sa_mask) < 0) {
-      DIE("sigemptyset");
-    }
-    // Ignore possible errors, because we might not be allowed to set the
-    // handler for certain signals, but we still want to try.
-    sigaction(i, &sa, nullptr);
+  if (fclose(stream) != 0) {
+    DIE("fclose(%s)", filename.c_str());
   }
 }
 
 void SetTimeout(double timeout_secs) {
   if (timeout_secs <= 0) {
-    return;
+    DIE("timeout_secs must be positive");
   }
 
   double int_val, fraction_val;
@@ -153,24 +107,174 @@ void SetTimeout(double timeout_secs) {
   struct itimerval timer;
   timer.it_interval.tv_sec = 0;
   timer.it_interval.tv_usec = 0;
-  timer.it_value.tv_sec = static_cast<time_t>(int_val),
-  timer.it_value.tv_usec = static_cast<suseconds_t>(fraction_val * 1e6);
+  timer.it_value.tv_sec = (time_t)int_val,
+  timer.it_value.tv_usec = (suseconds_t)(fraction_val * 1e6);
 
   if (setitimer(ITIMER_REAL, &timer, nullptr) < 0) {
     DIE("setitimer");
   }
 }
 
-int WaitChild(pid_t pid) {
-  int err, status;
+void InstallSignalHandler(int signum, void (*handler)(int)) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = handler;
+  if (handler == SIG_IGN || handler == SIG_DFL) {
+    // No point in blocking signals when using the default handler or ignoring
+    // the signal.
+    if (sigemptyset(&sa.sa_mask) < 0) {
+      DIE("sigemptyset");
+    }
+  } else {
+    // When using a custom handler, block all signals from firing while the
+    // handler is running.
+    if (sigfillset(&sa.sa_mask) < 0) {
+      DIE("sigfillset");
+    }
+  }
+  // sigaction may fail for certain reserved signals. Ignore failure in this
+  // case.
+  sigaction(signum, &sa, nullptr);
+}
 
-  do {
-    err = waitpid(pid, &status, 0);
-  } while (err == -1 && errno == EINTR);
+void IgnoreSignal(int signum) { InstallSignalHandler(signum, SIG_IGN); }
 
-  if (err == -1) {
-    DIE("wait");
+void RestoreSignalHandlersAndMask() {
+  // Use an empty signal mask for the process (= unblock all signals).
+  sigset_t empty_set;
+  if (sigemptyset(&empty_set) < 0) {
+    DIE("sigemptyset");
+  }
+  if (sigprocmask(SIG_SETMASK, &empty_set, nullptr) < 0) {
+    DIE("sigprocmask(SIG_SETMASK, <empty set>, nullptr)");
   }
 
-  return status;
+  // Set the default signal handler for all signals.
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  if (sigemptyset(&sa.sa_mask) < 0) {
+    DIE("sigemptyset");
+  }
+  sa.sa_handler = SIG_DFL;
+  for (int i = 1; i < NSIG; ++i) {
+    // Ignore possible errors, because we might not be allowed to set the
+    // handler for certain signals, but we still want to try.
+    sigaction(i, &sa, nullptr);
+  }
+}
+
+void KillMeWhenMyParentDies(int signum) {
+#if defined(__linux__)
+  if (prctl(PR_SET_PDEATHSIG, signum) < 0) {
+    DIE("prctl");
+  }
+#endif
+}
+
+void BecomeSubreaper() {
+#if defined(__FreeBSD__)
+  if (procctl(P_PID, getpid(), PROC_REAP_ACQUIRE, 0) < 0) {
+    DIE("procctl");
+  }
+#endif
+#if defined(PR_SET_CHILD_SUBREAPER)
+  // The "child subreaper" feature needs Linux 3.4 or higher.
+  // TODO(philwo) print a warning when this fails.
+  prctl(PR_SET_CHILD_SUBREAPER, 1);
+#endif
+}
+
+int SpawnCommand(const vector<char *> &args) {
+  int child_pid = fork();
+  if (child_pid < 0) {
+    DIE("fork");
+  } else if (child_pid == 0) {
+    // Put the child into its own process group.
+    if (setpgid(0, 0) < 0) {
+      DIE("setpgid");
+    }
+
+    // Try to assign our terminal to the child process.
+    if (tcsetpgrp(STDIN_FILENO, getpgrp()) < 0 && errno != ENOTTY) {
+      DIE("tcsetpgrp")
+    }
+
+    // Unblock all signals, restore default handlers.
+    RestoreSignalHandlersAndMask();
+
+    // Force umask to include read and execute for everyone, to make output
+    // permissions predictable.
+    umask(022);
+
+    if (execvp(args[0], args.data()) < 0) {
+      DIE("execvp(%s, %p)", args[0], args.data());
+    }
+  }
+  return child_pid;
+}
+
+static void KillAllRemainingChildren(int main_child_pid) {
+  // If the child process we spawned earlier terminated, we want to make
+  // sure all remaining (grand)children are killed, too.
+  if (getpid() == 1) {
+    // If we're PID 1, this is easy.
+    if (kill(-1, SIGKILL) < 0 && errno != ESRCH) {
+      DIE("kill");
+    }
+  } else {
+#if defined(__FreeBSD__)
+    // FreeBSD is cool, because it has an API to kill all our descendants in one
+    // go.
+    struct procctl_reaper_kill data;
+    data.rk_sig = SIGKILL;
+    if (procctl(P_PID, getpid(), PROC_REAP_KILL, &data) < 0 && errno != ESRCH) {
+      DIE("procctl")
+    }
+#else
+    // On other operating systems, we have to resort to sending SIGKILL to the
+    // process group of our child and hope that this kills them all.
+    // TODO(philwo) - what if a child switched to a different process group
+    // and we can't kill it like this? Maybe parse /proc/*/stat and filter
+    // by "their PPID = my PID"?
+    if (kill(-main_child_pid, SIGKILL) < 0 && errno != ESRCH) {
+      DIE("kill");
+    }
+#endif
+  }
+}
+
+int WaitForChild(int main_child_pid) {
+  // This will be overwritten by the real exitcode from the child in the loop
+  // below. In case something goes horribly wrong and that doesn't happen, at
+  // least exit with a failure.
+  int exitcode = EXIT_FAILURE;
+  while (1) {
+    // Check for zombies to be reaped and exit, if our own child exited.
+    int status;
+    pid_t killed_pid = wait(&status);
+
+    if (killed_pid < 0) {
+      // Our PID1 process got a signal that interrupted the wait() call and that
+      // was either ignored or forwarded to the child. This is expected and
+      // fine, just continue waiting.
+      if (errno == EINTR) {
+        continue;
+      } else if (errno == ECHILD) {
+        // No children left to wait for, we're done here.
+        break;
+      }
+      DIE("waitpid")
+    } else {
+      if (killed_pid == main_child_pid) {
+        KillAllRemainingChildren(main_child_pid);
+
+        if (WIFSIGNALED(status)) {
+          exitcode = 128 + WTERMSIG(status);
+        } else {
+          exitcode = WEXITSTATUS(status);
+        }
+      }
+    }
+  }
+  return exitcode;
 }

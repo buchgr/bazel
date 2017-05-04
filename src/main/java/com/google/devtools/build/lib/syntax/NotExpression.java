@@ -14,9 +14,9 @@
 package com.google.devtools.build.lib.syntax;
 
 /**
- * Syntax node for the not boolean operation.
+ * As syntax node for the not boolean operation.
  */
-public final class NotExpression extends Expression {
+public class NotExpression extends Expression {
 
   private final Expression expression;
 
@@ -24,7 +24,7 @@ public final class NotExpression extends Expression {
     this.expression = expression;
   }
 
-  public Expression getExpression() {
+  Expression getExpression() {
     return expression;
   }
 

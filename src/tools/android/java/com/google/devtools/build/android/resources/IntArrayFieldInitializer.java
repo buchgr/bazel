@@ -20,7 +20,6 @@ import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
 import java.io.Writer;
-import java.util.Objects;
 import java.util.Set;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Type;
@@ -84,7 +83,7 @@ public final class IntArrayFieldInitializer implements FieldInitializer {
   }
 
   @Override
-  public void writeInitSource(Writer writer, boolean finalFields) throws IOException {
+  public void writeInitSource(Writer writer) throws IOException {
     StringBuilder builder = new StringBuilder();
     boolean first = true;
     for (Integer attrId : values) {
@@ -96,10 +95,8 @@ public final class IntArrayFieldInitializer implements FieldInitializer {
       }
     }
 
-    writer.write(
-        String.format(
-            "        public static %sint[] %s = { %s };\n",
-            finalFields ? "final " : "", fieldName, builder.toString()));
+    writer.write(String.format("        public static int[] %s = { %s };\n",
+        fieldName, builder.toString()));
   }
 
   @Override
@@ -113,29 +110,5 @@ public final class IntArrayFieldInitializer implements FieldInitializer {
         .add("fieldName", fieldName)
         .add("values", values)
         .toString();
-  }
-
-  @Override
-  public int compareTo(FieldInitializer other) {
-    if (other instanceof IntArrayFieldInitializer) {
-      return fieldName.compareTo(((IntArrayFieldInitializer) other).fieldName);
-    }
-    // IntArrays will go after IntFields
-    return 1;
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hash(fieldName, values);
-  }
-  
-  @Override
-  public boolean equals(Object obj) {
-    if (obj instanceof IntArrayFieldInitializer) {
-      IntArrayFieldInitializer other = (IntArrayFieldInitializer) obj;
-      return Objects.equals(fieldName, other.fieldName)
-          && Objects.equals(values, other.values);
-    }
-    return false;
   }
 }

@@ -119,9 +119,7 @@ public final class ConfigFeatureFlagConfiguration extends BuildConfiguration.Fra
 
     for (Map.Entry<Label, String> flag : flagValues.entrySet()) {
       hasher.putUnencodedChars(flag.getKey().toString());
-      hasher.putByte((byte) 0);
       hasher.putUnencodedChars(flag.getValue());
-      hasher.putByte((byte) 0);
     }
     return hasher.hash().toString();
   }

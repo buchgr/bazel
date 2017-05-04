@@ -72,7 +72,6 @@ import com.google.devtools.build.lib.analysis.SourceManifestAction;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.analysis.WorkspaceStatusAction;
-import com.google.devtools.build.lib.analysis.actions.ParameterFileWriteAction;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.analysis.actions.SymlinkTreeAction;
 import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoFactory.BuildInfoKey;
@@ -160,7 +159,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import javax.annotation.Nullable;
 import org.junit.Before;
 
 /**
@@ -647,17 +645,6 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
     } else {
       return null;
     }
-  }
-
-  @Nullable
-  protected final ParameterFileWriteAction findParamsFileAction(SpawnAction spawnAction) {
-    for (Artifact input : spawnAction.getInputs()) {
-      Action generatingAction = getGeneratingAction(input);
-      if (generatingAction instanceof ParameterFileWriteAction) {
-        return (ParameterFileWriteAction) generatingAction;
-      }
-    }
-    return null;
   }
 
   protected Action getGeneratingAction(ConfiguredTarget target, String outputName) {
@@ -1465,12 +1452,8 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
     return Iterables.getOnlyElement(masterConfig.getTargetConfigurations());
   }
 
-  protected BuildConfiguration getDataConfiguration() {
-    BuildConfiguration targetConfig = getTargetConfiguration();
-    // TODO(bazel-team): do a proper data transition for dynamic configurations.
-    return targetConfig.useDynamicConfigurations()
-        ? targetConfig
-        : targetConfig.getConfiguration(ConfigurationTransition.DATA);
+  protected BuildConfiguration getDataConfiguration() throws InterruptedException {
+    return getConfiguration(getTargetConfiguration(), ConfigurationTransition.DATA);
   }
 
   protected BuildConfiguration getHostConfiguration() {
@@ -1500,7 +1483,6 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
 
   /**
    * Returns an attribute value retriever for the given rule for the target configuration.
-
    */
   protected AttributeMap attributes(RuleConfiguredTarget ct) {
     return ConfiguredAttributeMapper.of(ct);

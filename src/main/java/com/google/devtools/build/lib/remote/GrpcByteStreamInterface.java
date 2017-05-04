@@ -13,13 +13,19 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
-import com.google.devtools.remoteexecution.v1test.ExecuteRequest;
-import com.google.longrunning.Operation;
+import com.google.bytestream.ByteStreamProto.ReadRequest;
+import com.google.bytestream.ByteStreamProto.ReadResponse;
+import com.google.bytestream.ByteStreamProto.WriteRequest;
+import com.google.bytestream.ByteStreamProto.WriteResponse;
+import io.grpc.stub.StreamObserver;
+import java.util.Iterator;
 
 /**
  * An abstraction layer between the remote execution client and gRPC to support unit testing. This
- * interface covers the remote execution RPC methods, see {@link ExecuteServiceBlockingStub}.
+ * interface covers the ByteStream RPC methods, see {@link ByteStreamBlockingStub} and
+ * {@link ByteStreamStub}.
  */
-public interface GrpcExecutionInterface {
-  Operation execute(ExecuteRequest request);
+public interface GrpcByteStreamInterface {
+  Iterator<ReadResponse> read(ReadRequest request);
+  StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> responseObserver);
 }

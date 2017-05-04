@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.syntax;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.util.Preconditions;
+import java.io.Serializable;
 import java.util.Collection;
 
 /**
@@ -27,12 +28,11 @@ import java.util.Collection;
  *    for lvalue in exp: pass
  * An LValue can be a simple variable or something more complex like a tuple.
  */
-public class LValue extends ASTNode {
+public class LValue implements Serializable {
   private final Expression expr;
 
   public LValue(Expression expr) {
     this.expr = expr;
-    setLocation(expr.getLocation());
   }
 
   public Expression getExpression() {
@@ -178,11 +178,6 @@ public class LValue extends ASTNode {
               ident.getName()));
     }
     env.update(ident.getName(), result);
-  }
-
-  @Override
-  public void accept(SyntaxTreeVisitor visitor) {
-    visitor.visit(this);
   }
 
   void validate(ValidationEnvironment env, Location loc) throws EvalException {

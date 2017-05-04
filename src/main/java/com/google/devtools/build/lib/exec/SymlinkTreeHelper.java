@@ -140,7 +140,7 @@ public final class SymlinkTreeHelper {
     Preconditions.checkNotNull(path, BUILD_RUNFILES + " not found in embedded tools");
 
     List<String> args = Lists.newArrayList();
-    args.add(path.getPathString());
+    args.add(execRoot.getRelative(path).getPathString());
 
     if (filesetTree) {
       args.add("--allow_relative");

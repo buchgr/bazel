@@ -20,7 +20,7 @@ import com.google.devtools.build.android.AndroidResourceMerger.MergingException;
  */
 public interface DataResource extends DataValue {
   /** Write as a resource using the supplied {@link AndroidDataWritingVisitor}. */
-  void writeResource(FullyQualifiedName key, AndroidDataWritingVisitor writer)
+  void writeResource(FullyQualifiedName key, AndroidDataWritingVisitor mergedDataWriter)
       throws MergingException;
 
   /**
@@ -32,8 +32,12 @@ public interface DataResource extends DataValue {
    */
   DataResource combineWith(DataResource resource);
 
-  /** Queue up writing the resource to the given {@link AndroidResourceSymbolSink}. */
-  void writeResourceToClass(FullyQualifiedName key, AndroidResourceSymbolSink sink);
+  /**
+   * Queue up writing the resource to the given {@link AndroidResourceClassWriter}.
+   */
+  void writeResourceToClass(
+      FullyQualifiedName key,
+      AndroidResourceClassWriter resourceClassWriter);
   
   /** Overwrite another {@link DataResource}. */
   DataResource overwrite(DataResource other);

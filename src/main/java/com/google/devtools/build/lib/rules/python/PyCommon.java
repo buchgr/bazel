@@ -30,6 +30,7 @@ import com.google.devtools.build.lib.analysis.PseudoAction;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.analysis.SkylarkProviders;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.Util;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -293,13 +294,12 @@ public final class PyCommon {
   private NestedSet<Artifact> getTransitivePythonSourcesFromSkylarkProvider(
       TransitiveInfoCollection dep) {
     SkylarkClassObject pythonSkylarkProvider = null;
+    SkylarkProviders skylarkProviders = dep.getProvider(SkylarkProviders.class);
     try {
-      pythonSkylarkProvider = SkylarkType.cast(
-              dep.get(PYTHON_SKYLARK_PROVIDER_NAME),
-              SkylarkClassObject.class,
-              null,
-              "%s should be a struct", PYTHON_SKYLARK_PROVIDER_NAME
-      );
+      if (skylarkProviders != null) {
+        pythonSkylarkProvider = skylarkProviders.getValue(PYTHON_SKYLARK_PROVIDER_NAME,
+            SkylarkClassObject.class);
+      }
 
       if (pythonSkylarkProvider != null) {
         Object sourceFiles = pythonSkylarkProvider.getValue(TRANSITIVE_PYTHON_SRCS);
@@ -472,10 +472,13 @@ public final class PyCommon {
   public static boolean checkForSharedLibraries(Iterable<TransitiveInfoCollection> deps)
           throws EvalException{
     for (TransitiveInfoCollection dep : deps) {
-      Object providerObject = dep.get(PYTHON_SKYLARK_PROVIDER_NAME);
-      if (providerObject != null) {
-        SkylarkType.checkType(providerObject, SkylarkClassObject.class, null);
-        SkylarkClassObject provider = (SkylarkClassObject) providerObject;
+      SkylarkProviders providers = dep.getProvider(SkylarkProviders.class);
+      SkylarkClassObject provider = null;
+      if (providers != null) {
+        provider = providers.getValue(PYTHON_SKYLARK_PROVIDER_NAME,
+                SkylarkClassObject.class);
+      }
+      if (provider != null) {
         Boolean isUsingSharedLibrary = provider.getValue(IS_USING_SHARED_LIBRARY, Boolean.class);
         if (Boolean.TRUE.equals(isUsingSharedLibrary)) {
           return true;

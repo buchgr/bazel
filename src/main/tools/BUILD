@@ -53,6 +53,17 @@ cc_binary(
         ],
     }),
     linkopts = ["-lm"],
+    deps = select({
+        "//src:darwin": [],
+        "//src:darwin_x86_64": [],
+        "//src:freebsd": [],
+        "//src:windows": [],
+        "//src:windows_msys": [],
+        "//src:windows_msvc": [],
+        "//conditions:default": [
+            ":process-tools",
+        ],
+    }),
 )
 
 filegroup(

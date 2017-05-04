@@ -116,8 +116,9 @@ public class DataValueFile implements DataResource, DataAsset {
   }
 
   @Override
-  public void writeResourceToClass(FullyQualifiedName key, AndroidResourceSymbolSink sink) {
-    sink.acceptSimpleResource(key.type(), key.name());
+  public void writeResourceToClass(FullyQualifiedName key,
+      AndroidResourceClassWriter resourceClassWriter) {
+    resourceClassWriter.writeSimpleResource(key.type(), key.name());
   }
 
   @Override

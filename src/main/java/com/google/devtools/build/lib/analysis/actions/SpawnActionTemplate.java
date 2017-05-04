@@ -131,7 +131,8 @@ public final class SpawnActionTemplate implements ActionTemplate<SpawnAction> {
         /*defaultShellEnvironment=*/ null,
         /*variableShellEnvironment=*/ null,
         /*defaultShellExecutable=*/ null,
-        /*paramsFile=*/ null);
+        /*paramsFile=*/ null,
+        /*paramFileWriteAction=*/ null);
   }
 
   /**
@@ -206,7 +207,7 @@ public final class SpawnActionTemplate implements ActionTemplate<SpawnAction> {
   @Override
   public Iterable<String> getClientEnvironmentVariables() {
     return spawnActionBuilder
-        .buildSpawnAction(getOwner(), null, null, null, null)
+        .buildSpawnAction(getOwner(), null, null, null, null, null)
         .getClientEnvironmentVariables();
   }
 

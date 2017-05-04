@@ -35,8 +35,7 @@ class LambdaClassMaker {
   private final Map<Path, LambdaInfo> generatedClasses = new LinkedHashMap<>();
 
   public LambdaClassMaker(Path rootDirectory) {
-    checkArgument(
-        Files.isDirectory(rootDirectory), "The argument '%s' is not a directory.", rootDirectory);
+    checkArgument(Files.isDirectory(rootDirectory));
     this.rootDirectory = rootDirectory;
   }
 

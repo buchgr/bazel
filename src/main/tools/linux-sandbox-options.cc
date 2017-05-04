@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "src/main/tools/linux-sandbox-options.h"
+
 #define DIE(args...)                                     \
   {                                                      \
     fprintf(stderr, __FILE__ ":" S__LINE__ ": \"" args); \
@@ -19,8 +21,6 @@
     perror(nullptr);                                     \
     exit(EXIT_FAILURE);                                  \
   }
-
-#include "src/main/tools/linux-sandbox-options.h"
 
 #include <errno.h>
 #include <sched.h>
@@ -31,6 +31,7 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -199,6 +200,7 @@ static void ParseCommandLine(unique_ptr<vector<char *>> args) {
   if (optind < static_cast<int>(args->size())) {
     if (opt.args.empty()) {
       opt.args.assign(args->begin() + optind, args->end());
+      opt.args.push_back(nullptr);
     } else {
       Usage(args->front(), "Merging commands not supported.");
     }
@@ -207,8 +209,8 @@ static void ParseCommandLine(unique_ptr<vector<char *>> args) {
 
 // Expands a single argument, expanding options @filename to read in the content
 // of the file and add it to the list of processed arguments.
-unique_ptr<vector<char *>> ExpandArgument(unique_ptr<vector<char *>> expanded,
-                                          char *arg) {
+static unique_ptr<vector<char *>> ExpandArgument(
+    unique_ptr<vector<char *>> expanded, char *arg) {
   if (arg[0] == '@') {
     const char *filename = arg + 1;  // strip off the '@'.
     ifstream f(filename);
@@ -236,7 +238,7 @@ unique_ptr<vector<char *>> ExpandArgument(unique_ptr<vector<char *>> expanded,
 // Pre-processes an argument list, expanding options @filename to read in the
 // content of the file and add it to the list of arguments. Stops expanding
 // arguments once it encounters "--".
-unique_ptr<vector<char *>> ExpandArguments(const vector<char *> &args) {
+static unique_ptr<vector<char *>> ExpandArguments(const vector<char *> &args) {
   unique_ptr<vector<char *>> expanded(new vector<char *>());
   expanded->reserve(args.size());
   for (auto arg = args.begin(); arg != args.end(); ++arg) {

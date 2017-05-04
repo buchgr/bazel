@@ -199,7 +199,6 @@ public final class JavaCompileAction extends SpawnAction {
         outputs,
         LOCAL_RESOURCES,
         commandLine,
-        false,
         ImmutableMap.copyOf(UTF8_ENVIRONMENT),
         ImmutableSet.copyOf(ImmutableSet.<String>of()),
         ImmutableMap.copyOf(executionInfo),

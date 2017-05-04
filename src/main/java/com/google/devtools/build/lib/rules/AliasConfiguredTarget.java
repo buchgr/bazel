@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FileProvider;
+import com.google.devtools.build.lib.analysis.SkylarkProviders;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -126,28 +127,24 @@ public final class AliasConfiguredTarget implements ConfiguredTarget, ClassObjec
           ? NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER)
           : getProvider(FileProvider.class).getFilesToBuild());
     }
-    return actual == null ? null : actual.getValue(name);
+    if (actual instanceof ClassObject) {
+      return ((ClassObject) actual).getValue(name);
+    }
+    return actual == null ? null : actual.get(name);
   }
 
   @Override
   public ImmutableCollection<String> getKeys() {
+    ImmutableList.Builder<String> result = ImmutableList.<String>builder().add("label", "files");
     if (actual != null) {
-        return actual.getKeys();
+        result.addAll(actual.getProvider(SkylarkProviders.class).getKeys());
     }
-    return ImmutableList.of();
+    return result.build();
   }
 
   @Override
   public String errorMessage(String name) {
     // Use the default error message.
     return null;
-  }
-
-  /**
-   *  Returns a target this target aliases.
-   */
-  @Nullable
-  public ConfiguredTarget getActual() {
-    return actual;
   }
 }

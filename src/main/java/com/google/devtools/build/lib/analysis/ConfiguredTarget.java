@@ -16,7 +16,6 @@ package com.google.devtools.build.lib.analysis;
 
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.packages.Target;
-import com.google.devtools.build.lib.syntax.ClassObject;
 import javax.annotation.Nullable;
 
 /**
@@ -29,7 +28,7 @@ import javax.annotation.Nullable;
  * {@link TransitiveInfoCollection}s. Also, {@link ConfiguredTarget} objects should not be
  * accessible from the action graph.
  */
-public interface ConfiguredTarget extends TransitiveInfoCollection, ClassObject {
+public interface ConfiguredTarget extends TransitiveInfoCollection {
 
   /**
    *  All <code>ConfiguredTarget</code>s have a "label" field.

@@ -14,13 +14,12 @@
 
 package com.google.devtools.build.buildjar.javac.plugins.dependency;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
+import com.google.common.base.Joiner;
+import com.google.common.base.Splitter;
+import com.google.common.base.Verify;
 import com.google.common.collect.FluentIterable;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Ordering;
 import com.google.devtools.build.buildjar.JarOwner;
 import com.google.devtools.build.buildjar.javac.plugins.BlazeJavaCompilerPlugin;
@@ -29,12 +28,15 @@ import com.google.devtools.build.lib.view.proto.Deps.Dependency.Kind;
 import com.sun.tools.javac.code.Symbol.PackageSymbol;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -80,7 +82,6 @@ public final class DependencyModule {
   private final Set<String> usedClasspath;
   private final Map<String, Deps.Dependency> explicitDependenciesMap;
   private final Map<String, Deps.Dependency> implicitDependenciesMap;
-  private final ImmutableSet<String> platformJars;
   Set<String> requiredClasspath;
   private final FixMessage fixMessage;
   private final Set<String> exemptGenerators;
@@ -92,7 +93,6 @@ public final class DependencyModule {
       Map<String, JarOwner> indirectJarsToTargets,
       boolean strictClasspathMode,
       Set<String> depsArtifacts,
-      ImmutableSet<String> platformJars,
       String ruleKind,
       String targetLabel,
       String outputDepsProtoFile,
@@ -108,7 +108,6 @@ public final class DependencyModule {
     this.outputDepsProtoFile = outputDepsProtoFile;
     this.explicitDependenciesMap = new HashMap<>();
     this.implicitDependenciesMap = new HashMap<>();
-    this.platformJars = platformJars;
     this.usedClasspath = new HashSet<>();
     this.fixMessage = fixMessage;
     this.exemptGenerators = exemptGenerators;
@@ -126,8 +125,7 @@ public final class DependencyModule {
    * <p>We collect precise dependency information to allow Blaze to analyze both strict and unused
    * dependencies, as well as packages contained by the output jar.
    */
-  public void emitDependencyInformation(ImmutableList<String> classpath, boolean successful)
-      throws IOException {
+  public void emitDependencyInformation(String classpath, boolean successful) throws IOException {
     if (outputDepsProtoFile == null) {
       return;
     }
@@ -141,7 +139,7 @@ public final class DependencyModule {
   }
 
   @VisibleForTesting
-  Deps.Dependencies buildDependenciesProto(ImmutableList<String> classpath, boolean successful) {
+  Deps.Dependencies buildDependenciesProto(String classpath, boolean successful) {
     Deps.Dependencies.Builder deps = Deps.Dependencies.newBuilder();
     if (targetLabel != null) {
       deps.setRuleLabel(targetLabel);
@@ -160,7 +158,7 @@ public final class DependencyModule {
             .toSortedList(Ordering.natural()));
 
     // Filter using the original classpath, to preserve ordering.
-    for (String entry : classpath) {
+    for (String entry : classpath.split(":")) {
       if (explicitDependenciesMap.containsKey(entry)) {
         deps.addDependency(explicitDependenciesMap.get(entry));
       } else if (implicitDependenciesMap.containsKey(entry)) {
@@ -206,11 +204,6 @@ public final class DependencyModule {
     return implicitDependenciesMap;
   }
 
-  /** Returns the jars in the platform classpath. */
-  public ImmutableSet<String> getPlatformJars() {
-    return platformJars;
-  }
-
   /** Adds a package to the set of packages built by this target. */
   public boolean addPackage(PackageSymbol packge) {
     return packages.add(packge);
@@ -251,15 +244,29 @@ public final class DependencyModule {
     return strictClasspathMode;
   }
 
+  private static final Splitter CLASSPATH_SPLITTER = Splitter.on(':');
+  private static final Joiner CLASSPATH_JOINER = Joiner.on(File.pathSeparator);
+
   /**
    * Computes a reduced compile-time classpath from the union of direct dependencies and their
    * dependencies, as listed in the associated .deps artifacts.
    */
-  public ImmutableList<String> computeStrictClasspath(ImmutableList<String> originalClasspath)
-      throws IOException {
+  public String computeStrictClasspath(String originalClasspath) throws IOException {
     if (!strictClasspathMode) {
       return originalClasspath;
     }
+
+    return CLASSPATH_JOINER.join(
+        computeStrictClasspath(CLASSPATH_SPLITTER.split(originalClasspath)));
+  }
+
+  /**
+   * Computes a reduced compile-time classpath from the union of direct dependencies and their
+   * dependencies, as listed in the associated .deps artifacts.
+   */
+  public List<String> computeStrictClasspath(Iterable<String> originalClasspath)
+      throws IOException {
+    Verify.verify(strictClasspathMode);
 
     // Classpath = direct deps + runtime direct deps + their .deps
     requiredClasspath = new HashSet<>(directJarsToTargets.keySet());
@@ -269,10 +276,13 @@ public final class DependencyModule {
     }
 
     // Filter the initial classpath and keep the original order
-    return originalClasspath
-        .stream()
-        .filter(requiredClasspath::contains)
-        .collect(toImmutableList());
+    List<String> filteredClasspath = new ArrayList<>();
+    for (String entry : originalClasspath) {
+      if (requiredClasspath.contains(entry)) {
+        filteredClasspath.add(entry);
+      }
+    }
+    return filteredClasspath;
   }
 
   @VisibleForTesting
@@ -316,7 +326,6 @@ public final class DependencyModule {
     private final Map<String, JarOwner> directJarsToTargets = new HashMap<>();
     private final Map<String, JarOwner> indirectJarsToTargets = new HashMap<>();
     private final Set<String> depsArtifacts = new HashSet<>();
-    private ImmutableSet<String> platformJars = ImmutableSet.of();
     private String ruleKind;
     private String targetLabel;
     private String outputDepsProtoFile;
@@ -355,7 +364,6 @@ public final class DependencyModule {
           indirectJarsToTargets,
           strictClasspathMode,
           depsArtifacts,
-          platformJars,
           ruleKind,
           targetLabel,
           outputDepsProtoFile,
@@ -452,12 +460,6 @@ public final class DependencyModule {
      */
     public Builder addDepsArtifacts(Collection<String> depsArtifacts) {
       this.depsArtifacts.addAll(depsArtifacts);
-      return this;
-    }
-
-    /** Sets the platform classpath entries. */
-    public Builder setPlatformJars(ImmutableSet<String> platformJars) {
-      this.platformJars = platformJars;
       return this;
     }
 

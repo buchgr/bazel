@@ -20,10 +20,9 @@ import java.util.List;
 /**
  * Syntax node for dictionary literals.
  */
-public final class DictionaryLiteral extends Expression {
+public class DictionaryLiteral extends Expression {
 
-  /** Node for an individual key-value pair in a dictionary literal. */
-  public static final class DictionaryEntryLiteral extends ASTNode {
+  static final class DictionaryEntryLiteral extends ASTNode {
 
     private final Expression key;
     private final Expression value;
@@ -33,11 +32,11 @@ public final class DictionaryLiteral extends Expression {
       this.value = value;
     }
 
-    public Expression getKey() {
+    Expression getKey() {
       return key;
     }
 
-    public Expression getValue() {
+    Expression getValue() {
       return value;
     }
 

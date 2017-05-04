@@ -15,12 +15,9 @@
 #ifndef PROCESS_TOOLS_H__
 #define PROCESS_TOOLS_H__
 
-#include <stdbool.h>
-#include <sys/types.h>
 #include <string>
+#include <vector>
 
-// see
-// http://stackoverflow.com/questions/5641427/how-to-make-preprocessor-generate-a-string-for-line-keyword
 #define S(x) #x
 #define S_(x) S(x)
 #define S__LINE__ S_(__LINE__)
@@ -35,46 +32,49 @@
 
 #define PRINT_DEBUG(...)                                        \
   do {                                                          \
-    if (global_debug) {                                         \
+    if (opt.debug) {                                            \
       fprintf(stderr, __FILE__ ":" S__LINE__ ": " __VA_ARGS__); \
       fprintf(stderr, "\n");                                    \
     }                                                           \
   } while (0)
 
-// Switch completely to the effective uid.
-// Some programs (notably, bash) ignore the euid and just use the uid. This
-// limits the ability for us to use process-wrapper as a setuid binary for
-// security/user-isolation.
-int SwitchToEuid();
+// Set the effective and saved uid / gid to the real uid / gid.
+void DropPrivileges();
 
-// Switch completely to the effective gid.
-int SwitchToEgid();
-
-// Redirect fd to the file target_path (but not if target_path is empty or "-").
+// Redirect the open file descriptor fd to the file target_path. Do nothing if
+// target_path is '-'.
 void Redirect(const std::string &target_path, int fd);
 
-// Make sure the process group "pgrp" and all its subprocesses are killed.
-// If "gracefully" is true, sends SIGTERM first and after a timeout of
-// "graceful_kill_delay" seconds, sends SIGKILL.
-// If not, send SIGKILL immediately.
-void KillEverything(pid_t pgrp, bool gracefully, double graceful_kill_delay);
+// Write formatted contents into the file filename.
+void WriteFile(const std::string &filename, const char *fmt, ...);
 
-// Set up a signal handler for a signal.
-void HandleSignal(int sig, void (*handler)(int));
-
-// Revert signal handler for a signal to the default.
-void UnHandle(int sig);
-
-// Use an empty signal mask for the process and set all signal handlers to their
-// default.
-void ClearSignalMask();
-
-// Receive SIGALRM after the given timeout. No-op if the timeout is
-// non-positive.
+// Receive SIGALRM after the given timeout. timeout_secs must be positive.
 void SetTimeout(double timeout_secs);
 
-// Wait for "pid" to exit and return its exit code.
-// "name" is used for the error message only.
-int WaitChild(pid_t pid);
+// Installs a signal handler for signum and sets all signals to block during
+// that signal.
+void InstallSignalHandler(int signum, void (*handler)(int));
+
+// Sets the signal handler of signum to SIG_IGN.
+void IgnoreSignal(int signum);
+
+// Reset the signal mask and restore the default handler for all signals.
+void RestoreSignalHandlersAndMask();
+
+// Ask the kernel to kill us with signum if our parent dies.
+void KillMeWhenMyParentDies(int signum);
+
+// This is the magic that makes waiting for all children (even grandchildren)
+// work. By becoming a subreaper, all grandchildren that are not waited for by
+// our direct child will be reparented to us, which allows us to wait for them.
+void BecomeSubreaper();
+
+// Forks and execvp's the process specified in args in its own process group.
+// Returns the pid of the spawned process.
+int SpawnCommand(const std::vector<char *> &args);
+
+// Waits for child_pid to exit, then kills all remaining (grand)children, waits
+// for them to exit, then returns the exitcode of child_pid.
+int WaitForChild(int child_pid);
 
 #endif  // PROCESS_TOOLS_H__

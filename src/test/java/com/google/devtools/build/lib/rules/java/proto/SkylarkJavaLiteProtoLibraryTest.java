@@ -30,6 +30,7 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ExtraActionArtifactsProvider;
+import com.google.devtools.build.lib.analysis.SkylarkProviders;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
@@ -587,8 +588,9 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
 
   private static <P extends TransitiveInfoProvider> P getProvider(
       Class<P> providerClass, ConfiguredTarget target) {
+    SkylarkProviders skylarkProviders = target.getProvider(SkylarkProviders.class);
     JavaProvider javaProvider =
-        (JavaProvider) target.get(JavaProvider.JAVA_PROVIDER.getKey());
+        (JavaProvider) skylarkProviders.getDeclaredProvider(JavaProvider.JAVA_PROVIDER.getKey());
     return javaProvider.getProvider(providerClass);
   }
 }

@@ -669,7 +669,7 @@ public class SkyQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
   }
 
   @ThreadSafe
-  protected Uniquifier<SkyKey> createSkyKeyUniquifier() {
+  Uniquifier<SkyKey> createSkyKeyUniquifier() {
     return new UniquifierImpl<>(SkyKeyKeyExtractor.INSTANCE, DEFAULT_THREAD_COUNT);
   }
 
