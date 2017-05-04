@@ -27,9 +27,6 @@ filegroup(
 java_import(
     name = "protobuf_java_util",
     jars = ["libprotobuf_java_util.jar"],
-    exports = [
-        "//third_party:gson",
-    ],
     visibility = ["//visibility:public"],
 )
 
