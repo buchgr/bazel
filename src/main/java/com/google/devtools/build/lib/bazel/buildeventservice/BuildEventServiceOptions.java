@@ -1,7 +1,6 @@
 package com.google.devtools.build.lib.bazel.buildeventservice;
 
 import com.google.devtools.common.options.Converter;
-import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser.OptionUsageRestrictions;
