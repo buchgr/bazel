@@ -7,7 +7,7 @@ import static java.lang.String.format;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.devtools.build.lib.blaze.google.buildeventservice.client.BuildEventServiceClient;
+import com.google.devtools.build.lib.bazel.buildeventservice.client.BuildEventServiceClient;
 import com.google.devtools.build.lib.buildeventstream.BuildEventTransport;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;

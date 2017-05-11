@@ -51,7 +51,8 @@ public final class BazelMain {
           com.google.devtools.build.lib.runtime.BuildSummaryStatsModule.class,
           com.google.devtools.build.lib.runtime.BuildEventStreamerModule.class,
           com.google.devtools.build.lib.bazel.rules.BazelRulesModule.class,
-          com.google.devtools.build.lib.bazel.rules.BazelStrategyModule.class);
+          com.google.devtools.build.lib.bazel.rules.BazelStrategyModule.class,
+          com.google.devtools.build.lib.bazel.buildeventservice.BazelBuildEventServiceModule.class);
 
   public static void main(String[] args) {
     BlazeVersionInfo.setBuildInfo(tryGetBuildInfo());
