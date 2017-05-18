@@ -1,3 +1,8 @@
+
+load("@io_grpc//:build_defs.bzl", "java_grpc_library")
+
+
+
 licenses(["notice"])
 
 exports_files(["LICENSE"])
@@ -7,6 +12,70 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//third_party:__pkg__"],
 )
+
+java_proto_library(
+    name = "google_rpc_status_java_proto",
+    visibility = ["//visibility:public"],
+    deps = [":google_rpc_status_proto"],
+)
+
+java_proto_library(
+    name = "google_rpc_error_details_java_proto",
+    visibility = ["//visibility:public"],
+    deps = [":google_rpc_error_details_proto"],
+)
+
+java_proto_library(
+    name = "google_rpc_code_java_proto",
+    visibility = ["//visibility:public"],
+    deps = [":google_rpc_code_proto"],
+)
+
+java_grpc_library(
+    name = "google_devtools_remoteexecution_v1test_remote_execution_java_grpc",
+    srcs = [":google_devtools_remoteexecution_v1test_remote_execution_proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":google_devtools_remoteexecution_v1test_remote_execution_java_proto",
+        ":google_longrunning_operations_java_proto",
+    ],
+)
+
+java_proto_library(
+    name = "google_devtools_remoteexecution_v1test_remote_execution_java_proto",
+    visibility = ["//visibility:public"],
+    deps = [":google_devtools_remoteexecution_v1test_remote_execution_proto"],
+)
+
+proto_library(
+    name = "google_devtools_remoteexecution_v1test_remote_execution_proto",
+    srcs = ["google/devtools/remoteexecution/v1test/remote_execution.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+       ":google_longrunning_operations_proto",
+       ":google_api_annotations_proto",
+       "@com_google_protobuf//:well_known_types_duration_proto",
+       ":google_rpc_status_proto",
+    ],
+)
+
+
+proto_library(
+    name = "google_rpc_code_proto",
+    srcs = ["google/rpc/code.proto"],
+    visibility = ["//visibility:public"],
+)
+
+proto_library(
+    name = "google_rpc_error_details_proto",
+    srcs = ["google/rpc/error_details.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_protobuf//:well_known_types_any_proto",
+        "@com_google_protobuf//:well_known_types_duration_proto",
+    ],
+)
+
 
 java_proto_library(
     name = "google_devtools_build_v1_build_status_java_proto",
@@ -23,6 +92,13 @@ java_proto_library(
 java_proto_library(
     name = "google_devtools_build_v1_publish_build_event_java_proto",
     deps = [":google_devtools_build_v1_publish_build_event_proto"],
+    visibility = ["//visibility:public"],
+)
+
+java_grpc_library(
+    name = "google_bytestream_bytestream_java_grpc",
+    srcs = [":google_bytestream_bytestream_proto"],
+    deps = [":google_bytestream_bytestream_java_proto"],
     visibility = ["//visibility:public"],
 )
 
