@@ -3,7 +3,6 @@ package com.google.devtools.build.lib.bazel.buildeventservice;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsBase;
-import com.google.devtools.common.options.OptionsParser.OptionUsageRestrictions;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -13,68 +12,46 @@ import org.joda.time.Duration;
 public class BuildEventServiceOptions extends OptionsBase {
 
   @Option(
-    name = "experimental_bes_backend",
-    defaultValue = "",
-    optionUsageRestrictions = OptionUsageRestrictions.HIDDEN,
-    help =
-        "If non-empty, sends the build event protocol to the specified BES server (defaults to '')."
+      name = "bes_backend",
+      defaultValue = "",
+      help = "Specifies the build event service (BES) backend endpoint as HOST or HOST:PORT. "
+          + "Disabled by default."
   )
   public String besBackend;
 
   @Option(
-    name = "experimental_bes_upload_timeout",
-    defaultValue = "0s",
-    optionUsageRestrictions = OptionUsageRestrictions.HIDDEN,
-    converter = DurationConverter.class,
-    help =
-        "Specifies how long Blaze should wait for the BES upload to finish. A unit must be "
-            + "specified: Days (d), hours (h), minutes (m), seconds (s), and "
-            + "milliseconds (ms). A duration of '0' means the upload is done in the background "
-            + "(defaults to '0s')."
+      name = "bes_timeout",
+      defaultValue = "0s",
+      converter = DurationConverter.class,
+      help = "Specifies how long bazel should wait for the BES upload to finish after the build has "
+          + "finished. A valid timeout is a natural number followed by a unit: Days (d), "
+          + "hours (h), minutes (m), seconds (s), and milliseconds (ms). The default value is '0'"
+          + "which means that there is no timeout and that the upload will continue in the "
+          + "background after a build has finished."
   )
-  public Duration besUploadTimeout;
+  public Duration besTimeout;
 
   @Option(
-    name = "experimental_bes_upload_best_effort",
-    defaultValue = "true",
-    optionUsageRestrictions = OptionUsageRestrictions.HIDDEN,
-    help =
-        "Specifies if the BES upload is treated as best-effort, or if failures should interrupt "
-            + "the current invocation with GoogleExitCode.PUBLISH_ERROR. (defaults to 'true')"
+      name = "bes_best_effort",
+      defaultValue = "true",
+      help = "Specifies whether a failure to upload the BES protocol should also result in a build "
+          + "failure. If 'true', bazel exits with ExitCode.PUBLISH_ERROR. (defaults to 'true')."
   )
-  public boolean besUploadBestEffort;
+  public boolean besBestEffort;
 
   @Option(
-    name = "experimental_bes_upload_credentials",
-    defaultValue = "",
-    optionUsageRestrictions = OptionUsageRestrictions.HIDDEN,
-    help =
-        "Specifies the credentials file to be used to authenticate with BES backends. If empty, "
-            + "it uses the default application credentials (see "
-            + "https://developers.google.com/identity/protocols/OAuth2ServiceAccount and "
-            + "https://developers.google.com/identity/protocols/application-default-credentials "
-            + "for details). (defaults to '')"
+      name = "bes_lifecycle_events",
+      defaultValue = "true",
+      help = "Specifies whether to publish BES lifecycle events. (defaults to 'true')."
   )
-  public String besUploadCredentialsFile;
+  public boolean besLifecycleEvents;
 
   @Option(
-    name = "experimental_bes_upload_api_key",
-    defaultValue = "",
-    optionUsageRestrictions = OptionUsageRestrictions.HIDDEN,
-    help =
-        "Specifies the api key to be used when interacting with BES backends. See "
-            + "https://cloud.google.com/endpoints/docs/restricting-api-access-with-api-keys-grpc "
-            + "(defaults to '')"
+      name = "project_id",
+      defaultValue =  "null",
+      help = "Specifies the BES project identifier. Defaults to null."
   )
-  public String besUploadApiKey;
-
-  @Option(
-    name = "experimental_bes_publish_lifecycle_events",
-    defaultValue = "true",
-    optionUsageRestrictions = OptionUsageRestrictions.HIDDEN,
-    help = "Specifies whether to publish BES lifecyle events. (defaults to 'true')"
-  )
-  public boolean besPublishLifecycleEvents;
+  public String projectId;
 
   /**
    * Simple String to Duration Converter.

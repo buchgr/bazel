@@ -3,7 +3,6 @@ package com.google.devtools.build.lib.bazel.buildeventservice.client;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.devtools.build.lib.util.Preconditions.checkNotNull;
 import static com.google.devtools.build.lib.util.Preconditions.checkState;
-import static io.grpc.stub.MetadataUtils.attachHeaders;
 import static java.lang.System.getenv;
 import static java.nio.file.Files.newInputStream;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -21,18 +20,21 @@ import com.google.devtools.build.v1.PublishBuildToolEventStreamResponse;
 import com.google.devtools.build.v1.PublishLifecycleEventRequest;
 import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
-import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.auth.MoreCallCredentials;
+import io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.StreamObserver;
+import io.netty.handler.ssl.SslContext;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.annotation.Nullable;
+import javax.net.ssl.SSLException;
 import org.joda.time.Duration;
 
 /** Implementation of BuildEventServiceClient that uploads data using gRPC. */
@@ -48,34 +50,32 @@ public class BuildEventServiceGrpcClient implements BuildEventServiceClient {
   /** TODO(eduardocolaco): Scope documentation.* */
   private static final String CREDENTIALS_SCOPE =
       "https://www.googleapis.com/auth/cloud-build-service";
-  /** See https://cloud.google.com/endpoints/docs/restricting-api-access-with-api-keys-grpc * */
-  private static final Metadata.Key<String> API_KEY_HEADER =
-      Metadata.Key.of("x-goog-api-key", Metadata.ASCII_STRING_MARSHALLER);
 
   private final PublishBuildEventStub besAsync;
   private final PublishBuildEventBlockingStub besBlocking;
   private final ManagedChannel channel;
   private final AtomicReference<StreamObserver<OrderedBuildEvent>> streamReference;
 
-  public BuildEventServiceGrpcClient(String serverSpec, String credentialsFile, String apiKey) {
-    this(getChannel(serverSpec), getMetadata(apiKey), getCallCredentials(credentialsFile));
+  public BuildEventServiceGrpcClient(String serverSpec, boolean tlsEnabled,
+      @Nullable String tlsCertificateFile, @Nullable String tlsAuthorityOverride,
+      @Nullable String credentialsFile, @Nullable String credentialsScope) {
+    this(getChannel(serverSpec, tlsEnabled, tlsCertificateFile, tlsAuthorityOverride),
+        getCallCredentials(credentialsFile, credentialsScope));
   }
 
   public BuildEventServiceGrpcClient(
       ManagedChannel channel,
-      @Nullable Metadata metadata,
       @Nullable CallCredentials callCredentials) {
     this.channel = channel;
-    this.besAsync = withMetadataAndCallCredentials(
-        PublishBuildEventGrpc.newStub(channel), metadata, callCredentials);
-    this.besBlocking = withMetadataAndCallCredentials(
-        PublishBuildEventGrpc.newBlockingStub(channel), metadata, callCredentials);
+    this.besAsync = withCallCredentials(
+        PublishBuildEventGrpc.newStub(channel), callCredentials);
+    this.besBlocking = withCallCredentials(
+        PublishBuildEventGrpc.newBlockingStub(channel), callCredentials);
     this.streamReference = new AtomicReference<>(null);
   }
 
-  private static <T extends AbstractStub<T>> T withMetadataAndCallCredentials(
-      T stub, @Nullable Metadata metadata, @Nullable CallCredentials callCredentials) {
-    stub = metadata != null ? attachHeaders(stub, metadata) : stub;
+  private static <T extends AbstractStub<T>> T withCallCredentials(
+      T stub, @Nullable CallCredentials callCredentials) {
     stub = callCredentials != null ? stub.withCallCredentials(callCredentials) : stub;
     return stub;
   }
@@ -160,17 +160,19 @@ public class BuildEventServiceGrpcClient implements BuildEventServiceClient {
    * env(GOOGLE_APPLICATION_CREDENTIALS) otherwise.
    */
   @Nullable
-  private static CallCredentials getCallCredentials(@Nullable String credentialsFile) {
+  private static CallCredentials getCallCredentials(@Nullable String credentialsFile,
+      @Nullable String credentialsScope) {
+    String effectiveScope = credentialsScope != null ? credentialsScope : CREDENTIALS_SCOPE;
     try {
       if (!isNullOrEmpty(credentialsFile)) {
         return MoreCallCredentials.from(
             GoogleCredentials.fromStream(newInputStream(Paths.get(credentialsFile)))
-                .createScoped(ImmutableList.of(CREDENTIALS_SCOPE)));
+                .createScoped(ImmutableList.of(effectiveScope)));
 
       } else if (!isNullOrEmpty(getenv(DEFAULT_APP_CREDENTIALS_ENV_VAR))) {
         return MoreCallCredentials.from(
             GoogleCredentials.getApplicationDefault()
-                .createScoped(ImmutableList.of(CREDENTIALS_SCOPE)));
+                .createScoped(ImmutableList.of(effectiveScope)));
       }
     } catch (IOException e) {
       logger.log(Level.WARNING, "Failed to read credentials", e);
@@ -178,20 +180,28 @@ public class BuildEventServiceGrpcClient implements BuildEventServiceClient {
     return null;
   }
 
-  @Nullable
-  private static Metadata getMetadata(@Nullable String apiKey) {
-    Metadata metadata = new Metadata();
-    if (!isNullOrEmpty(apiKey)) {
-      metadata.put(API_KEY_HEADER, apiKey);
-    }
-    return metadata;
-  }
-
   /**
-   * Returns a ManagedChannel to the specified server with the specified API KEY injected on its
-   * headers (https://cloud.google.com/endpoints/docs/restricting-api-access-with-api-keys-grpc).
+   * Returns a ManagedChannel to the specified server.
    */
-  private static ManagedChannel getChannel(String serverSpec) {
-    return ManagedChannelBuilder.forTarget(serverSpec).build();
+  private static ManagedChannel getChannel(String serverSpec, boolean tlsEnabled,
+      @Nullable String tlsCertificateFile, @Nullable String tlsAuthorityOverride) {
+    //TODO(buchgr): Use ManagedChannelBuilder once bazel uses a newer gRPC version.
+    NettyChannelBuilder builder = NettyChannelBuilder.forTarget(serverSpec);
+    if (tlsEnabled) {
+      builder.usePlaintext(false);
+    }
+    if (tlsCertificateFile != null) {
+      try {
+        SslContext sslContext =
+            GrpcSslContexts.forClient().trustManager(new File(tlsCertificateFile)).build();
+        builder.sslContext(sslContext);
+      } catch (SSLException e) {
+        throw new RuntimeException(e);
+      }
+    }
+    if (tlsAuthorityOverride != null) {
+      builder.overrideAuthority(tlsAuthorityOverride);
+    }
+    return builder.build();
   }
 }

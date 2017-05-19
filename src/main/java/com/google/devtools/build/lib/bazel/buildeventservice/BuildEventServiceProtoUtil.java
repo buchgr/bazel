@@ -20,64 +20,60 @@ import com.google.devtools.build.v1.StreamId.BuildComponent;
 import com.google.protobuf.Any;
 import com.google.protobuf.util.Timestamps;
 import java.util.concurrent.atomic.AtomicInteger;
+import javax.annotation.Nullable;
 
 /** Utility class used to build protobuffs requests that are meant to be sent over BES. */
 public final class BuildEventServiceProtoUtil {
 
   private final String buildRequestId;
   private final String buildInvocationId;
+  private final String projectId;
   private final AtomicInteger streamSequenceNumber;
   private final Clock clock;
 
-  public BuildEventServiceProtoUtil(String buildRequestId, String buildInvocationId, Clock clock) {
+  public BuildEventServiceProtoUtil(String buildRequestId, String buildInvocationId,
+      @Nullable String projectId, Clock clock) {
     this.buildRequestId = buildRequestId;
     this.buildInvocationId = buildInvocationId;
+    this.projectId = projectId;
     this.clock = clock;
     this.streamSequenceNumber = new AtomicInteger(1);
   }
 
-  /** Utility method used to create BuildEnqueued event. */
   public PublishLifecycleEventRequest buildEnqueued() {
-    return lifecycleEvent(
-            1,
-            com.google.devtools.build.v1.BuildEvent.newBuilder()
-                .setEventTime(Timestamps.fromMillis(clock.currentTimeMillis()))
-                .setBuildEnqueued(BuildEnqueued.newBuilder()))
+    return lifecycleEvent(projectId, 1,
+        com.google.devtools.build.v1.BuildEvent.newBuilder()
+            .setEventTime(Timestamps.fromMillis(clock.currentTimeMillis()))
+            .setBuildEnqueued(BuildEnqueued.newBuilder()))
         .build();
   }
 
-  /** Utility method used to create BuildFinished event. */
   public PublishLifecycleEventRequest buildFinished(Result result) {
-    return lifecycleEvent(
-            2,
-            com.google.devtools.build.v1.BuildEvent.newBuilder()
-                .setEventTime(Timestamps.fromMillis(clock.currentTimeMillis()))
-                .setBuildFinished(
-                    BuildFinished.newBuilder()
-                        .setStatus(BuildStatus.newBuilder().setResult(result))))
+    return lifecycleEvent(projectId, 2,
+        com.google.devtools.build.v1.BuildEvent.newBuilder()
+            .setEventTime(Timestamps.fromMillis(clock.currentTimeMillis()))
+            .setBuildFinished(
+                BuildFinished.newBuilder()
+                    .setStatus(BuildStatus.newBuilder().setResult(result))))
         .build();
   }
 
-  /** Utility method used to create InvocationAttemptStarted event. */
   public PublishLifecycleEventRequest invocationStarted() {
-    return lifecycleEvent(
-            1,
-            com.google.devtools.build.v1.BuildEvent.newBuilder()
-                .setEventTime(Timestamps.fromMillis(clock.currentTimeMillis()))
-                .setInvocationAttemptStarted(
-                    InvocationAttemptStarted.newBuilder().setAttemptNumber(1)))
+    return lifecycleEvent(projectId, 1,
+        com.google.devtools.build.v1.BuildEvent.newBuilder()
+            .setEventTime(Timestamps.fromMillis(clock.currentTimeMillis()))
+            .setInvocationAttemptStarted(
+                InvocationAttemptStarted.newBuilder().setAttemptNumber(1)))
         .build();
   }
 
-  /** Utility method used to create InvocationAttemptFinished event. */
   public PublishLifecycleEventRequest invocationFinished(Result result) {
-    return lifecycleEvent(
-            2,
-            com.google.devtools.build.v1.BuildEvent.newBuilder()
-                .setEventTime(Timestamps.fromMillis(clock.currentTimeMillis()))
-                .setInvocationAttemptFinished(
-                    InvocationAttemptFinished.newBuilder()
-                        .setInvocationStatus(BuildStatus.newBuilder().setResult(result))))
+    return lifecycleEvent(projectId, 2,
+        com.google.devtools.build.v1.BuildEvent.newBuilder()
+            .setEventTime(Timestamps.fromMillis(clock.currentTimeMillis()))
+            .setInvocationAttemptFinished(
+                InvocationAttemptFinished.newBuilder()
+                    .setInvocationStatus(BuildStatus.newBuilder().setResult(result))))
         .build();
   }
 
@@ -117,15 +113,19 @@ public final class BuildEventServiceProtoUtil {
   }
 
   @VisibleForTesting
-  public PublishLifecycleEventRequest.Builder lifecycleEvent(
+  public PublishLifecycleEventRequest.Builder lifecycleEvent(@Nullable String projectId,
       int sequenceNumber, BuildEvent.Builder lifecycleEvent) {
-    return PublishLifecycleEventRequest.newBuilder()
+    PublishLifecycleEventRequest.Builder builder = PublishLifecycleEventRequest.newBuilder()
         .setServiceLevel(PublishLifecycleEventRequest.ServiceLevel.INTERACTIVE)
         .setBuildEvent(
             OrderedBuildEvent.newBuilder()
                 .setSequenceNumber(sequenceNumber)
                 .setStreamId(streamId(lifecycleEvent.getEventCase()))
                 .setEvent(lifecycleEvent));
+    if (projectId != null) {
+      builder.setProjectId(projectId);
+    }
+    return builder;
   }
 
   @VisibleForTesting

@@ -19,6 +19,7 @@ java_library(
         "@googleapis//:google_devtools_build_v1_publish_build_event_java_grpc",
         "@googleapis//:google_devtools_build_v1_publish_build_event_java_proto",
         "@io_grpc//:grpc-jar",
+        "@io_netty//:netty",
         "@jsr305//:jar",
     ],
 )

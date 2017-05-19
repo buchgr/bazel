@@ -11,6 +11,7 @@ import com.google.devtools.build.lib.bazel.buildeventservice.client.BuildEventSe
 import com.google.devtools.build.lib.buildeventstream.BuildEventTransport;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.runtime.AuthAndTLSOptions;
 import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.BuildEventStreamer;
 import com.google.devtools.build.lib.runtime.Command;
@@ -39,7 +40,7 @@ public abstract class BuildEventServiceModule<T extends BuildEventServiceOptions
 
   @Override
   public Iterable<Class<? extends OptionsBase>> getCommandOptions(Command command) {
-    return ImmutableList.of(optionsClass());
+    return ImmutableList.of(optionsClass(), AuthAndTLSOptions.class);
   }
 
   @Override
@@ -83,7 +84,10 @@ public abstract class BuildEventServiceModule<T extends BuildEventServiceOptions
       T besOptions =
           checkNotNull(
               optionsProvider.getOptions(optionsClass()),
-              "Could not get BuildEventServiceOptions");
+              "Could not get BuildEventServiceOptions.");
+      AuthAndTLSOptions authTlsOptions =
+          checkNotNull(optionsProvider.getOptions(AuthAndTLSOptions.class),
+              "Could not get AuthAndTLSOptions.");
       if (isNullOrEmpty(besOptions.besBackend)) {
         logger.fine("BuildEventServiceTransport is disabled.");
       } else {
@@ -100,16 +104,17 @@ public abstract class BuildEventServiceModule<T extends BuildEventServiceOptions
                     besOptions.besBackend, buildRequestId, invocationId)));
         BuildEventServiceTransport besTransport =
             new BuildEventServiceTransport(
-                createBesClient(besOptions),
-                besOptions.besUploadTimeout,
-                besOptions.besUploadBestEffort,
-                besOptions.besPublishLifecycleEvents,
+                createBesClient(besOptions, authTlsOptions),
+                besOptions.besTimeout,
+                besOptions.besBestEffort,
+                besOptions.besLifecycleEvents,
                 buildRequestId,
                 invocationId,
                 moduleEnvironment,
                 clock,
                 commandEnvironment.getRuntime().getPathToUriConverter(),
-                commandLineReporter);
+                commandLineReporter,
+                besOptions.projectId);
         logger.fine("BuildEventServiceTransport was created successfully");
         return new BuildEventStreamer(ImmutableSet.of(besTransport),
             commandEnvironment.getReporter());
@@ -122,5 +127,6 @@ public abstract class BuildEventServiceModule<T extends BuildEventServiceOptions
 
   protected abstract Class<T> optionsClass();
 
-  protected abstract BuildEventServiceClient createBesClient(T besOptions);
+  protected abstract BuildEventServiceClient createBesClient(T besOptions,
+      AuthAndTLSOptions authAndTLSOptions);
 }

@@ -1,6 +1,5 @@
 package com.google.devtools.build.lib.bazel.buildeventservice;
 
-import static com.google.common.base.Verify.verify;
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
 import static com.google.devtools.build.lib.events.EventKind.ERROR;
 import static com.google.devtools.build.lib.events.EventKind.INFO;
@@ -12,6 +11,7 @@ import static com.google.devtools.build.v1.BuildStatus.Result.UNKNOWN_STATUS;
 import static java.lang.String.format;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.locks.LockSupport.parkNanos;
+import static org.joda.time.Duration.standardSeconds;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
@@ -50,6 +50,7 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import javax.annotation.Nullable;
 import org.joda.time.Duration;
 
 /** A {@link BuildEventTransport} that streams {@link BuildEvent}s to BuildEventService. */
@@ -57,8 +58,8 @@ public class BuildEventServiceTransport implements BuildEventTransport {
 
   private static final Logger logger = Logger.getLogger(BuildEventServiceTransport.class.getName());
 
-  /** Max blocked wait time for new events from blaze. */
-  private static final Duration NO_EVENTS_TIMEOUT = Duration.standardSeconds(120);
+  /** Max wait time until for the Streaming RPC to finish after all events were enqueued. */
+  private static final Duration PUBLISH_EVENT_STREAM_FINISHED_TIMEOUT = standardSeconds(120);
 
   private final ListeningExecutorService uploaderExecutorService;
   private final Duration uploadTimeout;
@@ -91,14 +92,15 @@ public class BuildEventServiceTransport implements BuildEventTransport {
       ModuleEnvironment moduleEnvironment,
       Clock clock,
       PathConverter pathConverter,
-      EventHandler commandLineReporter) {
+      EventHandler commandLineReporter,
+      @Nullable String projectId) {
     this(
         besClient,
         uploadTimeout,
         bestEffortUpload,
         publishLifecycleEvents,
         moduleEnvironment,
-        new BuildEventServiceProtoUtil(buildRequestId, invocationId, clock),
+        new BuildEventServiceProtoUtil(buildRequestId, invocationId, projectId, clock),
         pathConverter,
         commandLineReporter);
   }
@@ -140,28 +142,31 @@ public class BuildEventServiceTransport implements BuildEventTransport {
     // The future is completed once the close succeeded or failed.
     shutdownFuture = SettableFuture.create();
 
-    uploaderExecutorService.execute(new Runnable() {
-      @Override
-      public void run() {
-        try {
-          sendOrderedBuildEvent(besProtoUtil.streamFinished());
-          if (uploadTimeout.isEqual(Duration.ZERO)) {
-            report(INFO, "Async Build Event Protocol upload.");
-          } else {
-            report(INFO, "Waiting for Build Event Protocol upload to finish.");
+    uploaderExecutorService.execute(
+        new Runnable() {
+          @Override
+          public void run() {
             try {
-              uploadComplete.get(uploadTimeout.getMillis(), MILLISECONDS);
-            } catch (Exception e) {
-              reportFailure(e);
+              sendOrderedBuildEvent(besProtoUtil.streamFinished());
+              if (uploadTimeout.isEqual(Duration.ZERO)) {
+                report(INFO, "Async Build Event Protocol upload.");
+              } else {
+                report(INFO, "Waiting for Build Event Protocol upload to finish.");
+                try {
+                  uploadComplete.get(uploadTimeout.getMillis(), MILLISECONDS);
+                } catch (Exception e) {
+                  // TODO(eduardocolaco): Cancel uploader on error (if not already cancelled)
+                  uploadComplete.cancel(true);
+                  reportFailure(e);
+                }
+                report(INFO, "Build Event Protocol upload finished successfully.");
+              }
+            } finally {
+              shutdownFuture.set(null);
+              uploaderExecutorService.shutdown();
             }
-            report(INFO, "Build Event Protocol upload finished successfully.");
           }
-        } finally {
-          shutdownFuture.set(null);
-          uploaderExecutorService.shutdown();
-        }
-      }
-    });
+        });
 
     return shutdownFuture;
   }
@@ -207,7 +212,7 @@ public class BuildEventServiceTransport implements BuildEventTransport {
       String msg = format("Build Event Protocol upload failed: %s", e.getMessage());
       logger.log(Level.SEVERE, msg, e);
       report(ERROR, msg);
-      moduleEnvironment.exit(new AbruptExitException(ExitCode.BLAZE_INTERNAL_ERROR, e));
+      moduleEnvironment.exit(new AbruptExitException(ExitCode.PUBLISH_ERROR, e));
     }
   }
 
@@ -318,7 +323,7 @@ public class BuildEventServiceTransport implements BuildEventTransport {
     pendingAck = new ConcurrentLinkedDeque<>();
 
     return publishEventStream(pendingAck, pendingSend, besClient)
-        .get(NO_EVENTS_TIMEOUT.getMillis(), MILLISECONDS);
+        .get(PUBLISH_EVENT_STREAM_FINISHED_TIMEOUT.getMillis(), TimeUnit.MILLISECONDS);
   }
 
   /**
@@ -333,10 +338,7 @@ public class BuildEventServiceTransport implements BuildEventTransport {
     ListenableFuture<Status> streamDone = besClient.openStream(ackCallback(pendingAck, besClient));
     try {
       do {
-        verify(
-            (event = pendingSend.poll(NO_EVENTS_TIMEOUT.getMillis(), MILLISECONDS)) != null,
-            "Timed out waiting for events to send (%s).",
-            NO_EVENTS_TIMEOUT);
+        event = pendingSend.takeFirst();
         pendingAck.add(event);
         besClient.sendOverStream(event);
       } while (!isLastEvent(event));
@@ -362,7 +364,7 @@ public class BuildEventServiceTransport implements BuildEventTransport {
         long ackSeq = ack.getSequenceNumber();
         if (pendingSeq != ackSeq) {
           besClient.abortStream(Status.INTERNAL
-            .augmentDescription(format("Expected ack %s but was %s.", pendingSeq, ackSeq)));
+              .augmentDescription(format("Expected ack %s but was %s.", pendingSeq, ackSeq)));
         } else {
           pendingAck.removeFirst();
         }
