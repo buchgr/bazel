@@ -391,6 +391,13 @@ filegroup(
     ],
 )
 
+java_import(
+    name = "instrumentation",
+    jars = [
+        "instrumentation/instrumentation-api-0.3.0.jar",
+    ],
+)
+
 # For bootstrapping JavaBuilder
 filegroup(
     name = "guava-jars",

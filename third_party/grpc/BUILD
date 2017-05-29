@@ -10,12 +10,17 @@ filegroup(
 java_import(
     name = "grpc-jar",
     jars = [
-        "grpc-auth-0.15.0.jar",
-        "grpc-netty-0.15.0.jar",
-        "grpc-protobuf-0.15.0.jar",
-        "grpc-protobuf-lite-0.15.0.jar",
-        "grpc-stub-0.15.0.jar",
-        "grpc-core-0.15.0.jar",
+        "grpc-auth-1.3.0.jar",
+        "grpc-netty-1.3.0.jar",
+        "grpc-protobuf-1.3.0.jar",
+        "grpc-protobuf-lite-1.3.0.jar",
+        "grpc-stub-1.3.0.jar",
+        "grpc-core-1.3.0.jar",
+        "grpc-context-1.3.0.jar",
+    ],
+    deps = [
+        "@com_google_guava//:jar",
+      "@//third_party:instrumentation",
     ],
     runtime_deps = ["@io_netty//:netty"],
 )

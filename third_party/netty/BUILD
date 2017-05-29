@@ -10,6 +10,6 @@ filegroup(
 
 java_import(
     name = "netty",
-    jars = ["netty-all-4.1.0.CR6.jar"],
+    jars = ["netty-all-4.1.8.Final.jar"],
     visibility = ["//visibility:public"],
 )
