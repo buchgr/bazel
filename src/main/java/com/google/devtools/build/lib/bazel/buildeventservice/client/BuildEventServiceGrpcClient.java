@@ -23,6 +23,7 @@ import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.auth.MoreCallCredentials;
 import io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.NegotiationType;
 import io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.StreamObserver;
@@ -188,7 +189,7 @@ public class BuildEventServiceGrpcClient implements BuildEventServiceClient {
     //TODO(buchgr): Use ManagedChannelBuilder once bazel uses a newer gRPC version.
     NettyChannelBuilder builder = NettyChannelBuilder.forTarget(serverSpec);
     if (tlsEnabled) {
-      builder.usePlaintext(false);
+      builder.negotiationType(NegotiationType.TLS);
     }
     if (tlsCertificateFile != null) {
       try {
