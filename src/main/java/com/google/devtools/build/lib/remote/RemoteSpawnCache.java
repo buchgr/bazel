@@ -153,7 +153,7 @@ final class RemoteSpawnCache implements SpawnCache {
                 long deltaBytes = hasher.missingRanges(existingFile.getInputStream(), blocks).stream().mapToInt(
                     MissingRange::len).sum();
                 long transfer = transferBytes.addAndGet(deltaBytes);
-                report(Event.warn(String.format("transfer %d, total %d, ratio %f", transfer, total, transfer / (total * 1.0))));
+                report(Event.info(String.format("transfer %d, total %d, transfer ratio %f", transfer, total, transfer / (total * 1.0))));
               }
             }
           }
