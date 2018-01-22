@@ -50,6 +50,8 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.SortedMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.Nullable;
 
 /**
@@ -75,6 +77,9 @@ final class RemoteSpawnCache implements SpawnCache {
   private final AtomicBoolean warningReported = new AtomicBoolean();
 
   private final DigestUtil digestUtil;
+
+  private AtomicLong totalBytes = new AtomicLong();
+  private AtomicLong transferBytes = new AtomicLong();
 
   RemoteSpawnCache(
       Path execRoot,
@@ -143,7 +148,9 @@ final class RemoteSpawnCache implements SpawnCache {
                 long deltaBytes = hasher.missingRanges(existingFile.getInputStream(), blocks).stream().mapToInt(
                     MissingRange::len).sum();
                 long actualSize = file.getDigest().getSizeBytes();
-                report(Event.warn("Bytes saved: " + (actualSize - deltaBytes)));
+                transferBytes.addAndGet(deltaBytes);
+                totalBytes.addAndGet(actualSize);
+                report(Event.warn(String.format("transfer %d, total %d", transferBytes.get(), totalBytes.get())));
               }
             }
           }
