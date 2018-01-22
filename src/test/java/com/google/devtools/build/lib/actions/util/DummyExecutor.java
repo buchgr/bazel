@@ -58,6 +58,11 @@ public final class DummyExecutor implements Executor {
   }
 
   @Override
+  public Path getOutputBase() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public Clock getClock() {
     return BlazeClock.instance();
   }

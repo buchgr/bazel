@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.exec;
 
 import com.google.devtools.build.lib.actions.ActionContext;
+import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ExecutionStrategy;
 import com.google.devtools.build.lib.actions.Spawn;
@@ -23,6 +24,7 @@ import com.google.devtools.build.lib.vfs.Path;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Map;
 import java.util.NoSuchElementException;
 
 /**
@@ -99,7 +101,7 @@ public interface SpawnCache extends ActionContext {
   )
   public static class NoSpawnCache implements SpawnCache {
     @Override
-    public CacheHandle lookup(Spawn spawn, SpawnExecutionPolicy context) {
+    public CacheHandle lookup(Spawn spawn, SpawnExecutionPolicy context, Map<Artifact, Path> newToOldOutputs) {
       return SpawnCache.NO_RESULT_NO_STORE;
     }
   }
@@ -173,6 +175,6 @@ public interface SpawnCache extends ActionContext {
    * <p>Note that cache stores may be disabled, in which case the returned {@link CacheHandle}
    * instance's {@link CacheHandle#store} is a no-op.
    */
-  CacheHandle lookup(Spawn spawn, SpawnExecutionPolicy context)
+  CacheHandle lookup(Spawn spawn, SpawnExecutionPolicy context, Map<Artifact, Path> newToOldOutputs)
       throws ExecException, IOException, InterruptedException;
 }

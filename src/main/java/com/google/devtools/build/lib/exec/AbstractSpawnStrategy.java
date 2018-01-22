@@ -21,6 +21,7 @@ import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputFileCache;
 import com.google.devtools.build.lib.actions.ActionStatusMessage;
+import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
@@ -42,6 +43,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.SortedMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -58,16 +60,18 @@ public abstract class AbstractSpawnStrategy implements SandboxedSpawnActionConte
   }
 
   @Override
-  public List<SpawnResult> exec(Spawn spawn, ActionExecutionContext actionExecutionContext)
+  public List<SpawnResult> exec(Spawn spawn, ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
       throws ExecException, InterruptedException {
-    return exec(spawn, actionExecutionContext, null);
+    return exec(spawn, actionExecutionContext,null, newToOldOutputs);
   }
 
   @Override
   public List<SpawnResult> exec(
       Spawn spawn,
       ActionExecutionContext actionExecutionContext,
-      AtomicReference<Class<? extends SpawnActionContext>> writeOutputFiles)
+      AtomicReference<Class<? extends SpawnActionContext>> writeOutputFiles,
+      Map<Artifact, Path> newToOldOutputs)
       throws ExecException, InterruptedException {
     if (actionExecutionContext.reportsSubcommands()) {
       actionExecutionContext.reportSubcommand(spawn);
@@ -87,7 +91,7 @@ public abstract class AbstractSpawnStrategy implements SandboxedSpawnActionConte
     }
     SpawnResult spawnResult;
     try {
-      try (CacheHandle cacheHandle = cache.lookup(spawn, policy)) {
+      try (CacheHandle cacheHandle = cache.lookup(spawn, policy, newToOldOutputs)) {
         if (cacheHandle.hasResult()) {
           spawnResult = Preconditions.checkNotNull(cacheHandle.getResult());
         } else {

@@ -1093,6 +1093,14 @@ public class CppCompileAction extends AbstractAction
   @ThreadCompatible
   public ActionResult execute(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
+    return execute(actionExecutionContext, Collections.emptyMap());
+  }
+
+  @Override
+  @ThreadCompatible
+  public ActionResult execute(ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
+      throws ActionExecutionException, InterruptedException {
     setModuleFileFlags();
     CppCompileActionContext.Reply reply;
     ShowIncludesFilter showIncludesFilterForStdout = null;
@@ -1111,7 +1119,7 @@ public class CppCompileAction extends AbstractAction
       CppCompileActionResult cppCompileActionResult =
           actionExecutionContext
               .getContext(actionContext)
-              .execWithReply(this, actionExecutionContext);
+              .execWithReply(this, actionExecutionContext, newToOldOutputs);
       reply = cppCompileActionResult.contextReply();
       spawnResults = cppCompileActionResult.spawnResults();
     } catch (ExecException e) {

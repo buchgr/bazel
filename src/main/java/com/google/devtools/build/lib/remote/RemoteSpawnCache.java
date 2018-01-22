@@ -13,7 +13,10 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
+import com.google.common.hash.HashCode;
+import com.google.common.hash.Hashing;
 import com.google.devtools.build.lib.actions.ActionInput;
+import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ExecutionStrategy;
 import com.google.devtools.build.lib.actions.Spawn;
@@ -27,6 +30,8 @@ import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.SpawnCache;
 import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionPolicy;
 import com.google.devtools.build.lib.remote.DigestUtil.ActionKey;
+import com.google.devtools.build.lib.remote.RsyncHasher.BlockHash;
+import com.google.devtools.build.lib.remote.RsyncHasher.MissingRange;
 import com.google.devtools.build.lib.remote.TreeNodeRepository.TreeNode;
 import com.google.devtools.build.lib.skyframe.FileArtifactValue;
 import com.google.devtools.build.lib.vfs.Path;
@@ -34,9 +39,14 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.remoteexecution.v1test.Action;
 import com.google.devtools.remoteexecution.v1test.ActionResult;
 import com.google.devtools.remoteexecution.v1test.Command;
+import com.google.devtools.remoteexecution.v1test.OutputFile;
+import com.google.devtools.remoteexecution.v1test.RsyncBlock;
 import io.grpc.Context;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.SortedMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -86,7 +96,8 @@ final class RemoteSpawnCache implements SpawnCache {
   }
 
   @Override
-  public CacheHandle lookup(Spawn spawn, SpawnExecutionPolicy policy)
+  public CacheHandle lookup(Spawn spawn, SpawnExecutionPolicy policy,
+      Map<Artifact, Path> newToOldOutputs)
       throws InterruptedException, IOException, ExecException {
     // Temporary hack: the TreeNodeRepository should be created and maintained upstream!
     TreeNodeRepository repository =
@@ -118,6 +129,25 @@ final class RemoteSpawnCache implements SpawnCache {
               ? remoteCache.getCachedActionResult(actionKey)
               : null;
       if (result != null) {
+        for (OutputFile file : result.getOutputFilesList()) {
+          if (file.getBlocksCount() > 0) {
+            for (Path existingFile : newToOldOutputs.values()) {
+              String path = file.getPath();
+              if (existingFile.getPathString().endsWith(path)) {
+                RsyncHasher hasher = new RsyncHasher(Hashing.md5(), 2048);
+                List<BlockHash> blocks = new ArrayList<>();
+                for (RsyncBlock block : file.getBlocksList()) {
+                  BlockHash blockhash = new BlockHash(block.getWeakHash(), HashCode.fromBytes(block.getStrongHash().toByteArray()), block.getSize());
+                  blocks.add(blockhash);
+                }
+                long deltaBytes = hasher.missingRanges(existingFile.getInputStream(), blocks).stream().mapToInt(
+                    MissingRange::len).sum();
+                long actualSize = file.getDigest().getSizeBytes();
+                report(Event.warn("Bytes saved: " + (actualSize - deltaBytes)));
+              }
+            }
+          }
+        }
         // We don't cache failed actions, so we know the outputs exist.
         // For now, download all outputs locally; in the future, we can reuse the digests to
         // just update the TreeNodeRepository and continue the build.

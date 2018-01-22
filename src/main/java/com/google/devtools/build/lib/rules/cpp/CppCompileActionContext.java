@@ -19,7 +19,9 @@ import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.vfs.Path;
 import java.io.IOException;
+import java.util.Map;
 import javax.annotation.Nullable;
 
 /**
@@ -55,6 +57,6 @@ public interface CppCompileActionContext extends ActionContext {
    * @return a CppCompileActionResult with information resulting from the action's execution
    */
   CppCompileActionResult execWithReply(
-      CppCompileAction action, ActionExecutionContext actionExecutionContext)
+      CppCompileAction action, ActionExecutionContext actionExecutionContext, Map<Artifact, Path> newToOldOutputs)
       throws ExecException, InterruptedException;
 }

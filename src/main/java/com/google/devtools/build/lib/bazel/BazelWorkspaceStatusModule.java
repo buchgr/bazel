@@ -59,6 +59,7 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.OptionsBase;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
@@ -174,11 +175,12 @@ public class BazelWorkspaceStatusModule extends BlazeModule {
     }
 
     @Override
-    public void prepare(FileSystem fileSystem, Path execRoot) throws IOException {
+    public Path prepare(FileSystem fileSystem, Path execRoot, Path outputBase, Map<Artifact, Path> m) throws IOException {
       // The default implementation of this method deletes all output files; override it to keep
       // the old stableStatus around. This way we can reuse the existing file (preserving its mtime)
       // if the contents haven't changed.
       deleteOutput(fileSystem, volatileStatus);
+      return null;
     }
 
     @Override

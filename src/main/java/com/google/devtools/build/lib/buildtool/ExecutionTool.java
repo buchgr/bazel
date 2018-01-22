@@ -300,6 +300,7 @@ public class ExecutionTool {
     return new BlazeExecutor(
         runtime.getFileSystem(),
         env.getExecRoot(),
+        env.getOutputBase(),
         getReporter(),
         env.getEventBus(),
         runtime.getClock(),

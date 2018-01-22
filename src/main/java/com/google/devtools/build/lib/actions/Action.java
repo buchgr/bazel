@@ -21,6 +21,7 @@ import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.skyframe.SkyFunction;
 import java.io.IOException;
+import java.util.Map;
 import javax.annotation.Nullable;
 
 /**
@@ -85,7 +86,7 @@ public interface Action extends ActionExecutionMetadata, Describable {
    *
    * @throws IOException if there is an error deleting the outputs.
    */
-  void prepare(FileSystem fileSystem, Path execRoot) throws IOException;
+  Path prepare(FileSystem fileSystem, Path execRoot, Path outputBase, Map<Artifact, Path> newToOldOutputs) throws IOException;
 
   /**
    * Executes this action; called by the Builder when all of this Action's inputs have been
@@ -114,6 +115,11 @@ public interface Action extends ActionExecutionMetadata, Describable {
   @ConditionallyThreadCompatible
   ActionResult execute(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException;
+
+  default ActionResult execute(ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs) throws ActionExecutionException, InterruptedException {
+    return execute(actionExecutionContext);
+  }
 
   /**
    * Returns true iff action must be executed regardless of its current state.

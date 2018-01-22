@@ -39,7 +39,9 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.logging.Logger;
 
@@ -126,6 +128,15 @@ public class FakeCppCompileAction extends CppCompileAction {
   @ThreadCompatible
   public ActionResult execute(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
+    return execute(actionExecutionContext, Collections.emptyMap());
+  }
+
+
+  @Override
+  @ThreadCompatible
+  public ActionResult execute(ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
+      throws ActionExecutionException, InterruptedException {
     setModuleFileFlags();
     List<SpawnResult> spawnResults;
     // First, do a normal compilation, to generate the ".d" file. The generated object file is built
@@ -135,7 +146,7 @@ public class FakeCppCompileAction extends CppCompileAction {
     CppCompileActionContext.Reply reply = null;
     try {
       CppCompileActionResult cppCompileActionResult =
-          context.execWithReply(this, actionExecutionContext);
+          context.execWithReply(this, actionExecutionContext, newToOldOutputs);
       reply = cppCompileActionResult.contextReply();
       spawnResults = cppCompileActionResult.spawnResults();
     } catch (ExecException e) {

@@ -56,11 +56,11 @@ public final class CreateIncSymlinkAction extends AbstractAction {
   }
 
   @Override
-  public void prepare(FileSystem fileSystem, Path execRoot) throws IOException {
+  public Path prepare(FileSystem fileSystem, Path execRoot, Path outputBase, Map<Artifact, Path> newToOldOutputs) throws IOException {
     if (includePath.isDirectory(Symlinks.NOFOLLOW)) {
       FileSystemUtils.deleteTree(includePath);
     }
-    super.prepare(fileSystem, execRoot);
+    return super.prepare(fileSystem, execRoot, outputBase, newToOldOutputs);
   }
 
   @Override

@@ -38,6 +38,7 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -125,7 +126,8 @@ public final class SymlinkTreeHelper {
                   binTools,
                   shellEnvironment,
                   inputManifestArtifact),
-              actionExecutionContext);
+              actionExecutionContext,
+              Collections.emptyMap());
     } else {
       // Pretend we created the runfiles tree by copying the manifest
       try {

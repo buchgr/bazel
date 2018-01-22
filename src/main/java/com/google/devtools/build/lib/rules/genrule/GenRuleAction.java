@@ -28,7 +28,9 @@ import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.analysis.actions.CommandLine;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.vfs.Path;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A spawn action for genrules. Genrules are handled specially in that inputs and outputs are
@@ -68,13 +70,14 @@ public class GenRuleAction extends SpawnAction {
   }
 
   @Override
-  protected List<SpawnResult> internalExecute(ActionExecutionContext actionExecutionContext)
+  protected List<SpawnResult> internalExecute(ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
       throws ExecException, InterruptedException {
     EventHandler reporter = actionExecutionContext.getEventHandler();
     checkInputsForDirectories(reporter, actionExecutionContext.getActionInputFileCache());
     List<SpawnResult> spawnResults = ImmutableList.of();
     try {
-      spawnResults = super.internalExecute(actionExecutionContext);
+      spawnResults = super.internalExecute(actionExecutionContext, newToOldOutputs);
     } catch (CommandLineExpansionException e) {
       throw new AssertionError("GenRuleAction command line expansion cannot fail");
     }

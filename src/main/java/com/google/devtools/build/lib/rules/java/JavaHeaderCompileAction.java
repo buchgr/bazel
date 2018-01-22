@@ -52,10 +52,12 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.util.LazyString;
+import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import javax.annotation.Nullable;
 
 /**
@@ -137,18 +139,19 @@ public class JavaHeaderCompileAction extends SpawnAction {
   }
 
   @Override
-  protected List<SpawnResult> internalExecute(ActionExecutionContext actionExecutionContext)
+  protected List<SpawnResult> internalExecute(ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
       throws ExecException, InterruptedException {
     SpawnActionContext context = getContext(actionExecutionContext);
     try {
-      return context.exec(getDirectSpawn(), actionExecutionContext);
+      return context.exec(getDirectSpawn(), actionExecutionContext, newToOldOutputs);
     } catch (ExecException e) {
       // if the direct input spawn failed, try again with transitive inputs to produce better
       // better messages
       try {
         return context.exec(
             getSpawn(actionExecutionContext.getClientEnv()),
-            actionExecutionContext);
+            actionExecutionContext, newToOldOutputs);
       } catch (CommandLineExpansionException commandLineExpansionException) {
         throw new UserExecException(commandLineExpansionException);
       }

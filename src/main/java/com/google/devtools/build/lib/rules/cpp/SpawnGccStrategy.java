@@ -27,7 +27,10 @@ import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnActionContext;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.UserExecException;
+import com.google.devtools.build.lib.vfs.Path;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A context for C++ compilation that calls into a {@link SpawnActionContext}.
@@ -48,7 +51,8 @@ public class SpawnGccStrategy implements CppCompileActionContext {
 
   @Override
   public CppCompileActionResult execWithReply(
-      CppCompileAction action, ActionExecutionContext actionExecutionContext)
+      CppCompileAction action, ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
       throws ExecException, InterruptedException {
     if (action.getDotdFile() != null && action.getDotdFile().artifact() == null) {
       throw new UserExecException("cannot execute remotely or locally: "
@@ -70,7 +74,7 @@ public class SpawnGccStrategy implements CppCompileActionContext {
     List<SpawnResult> spawnResults =
         actionExecutionContext
             .getSpawnActionContext(action.getMnemonic())
-            .exec(spawn, actionExecutionContext);
+            .exec(spawn, actionExecutionContext, newToOldOutputs);
     return CppCompileActionResult.builder().setSpawnResults(spawnResults).build();
   }
 }

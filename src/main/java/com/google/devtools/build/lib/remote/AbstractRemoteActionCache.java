@@ -13,12 +13,15 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote;
 
+import com.google.common.hash.Hashing;
 import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.concurrent.ThreadSafety;
+import com.google.devtools.build.lib.remote.RsyncHasher.BlockHash;
 import com.google.devtools.build.lib.remote.TreeNodeRepository.TreeNode;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.Dirent;
+import com.google.devtools.build.lib.vfs.FileSystem.HashFunction;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.remoteexecution.v1test.ActionResult;
@@ -29,6 +32,7 @@ import com.google.devtools.remoteexecution.v1test.DirectoryNode;
 import com.google.devtools.remoteexecution.v1test.FileNode;
 import com.google.devtools.remoteexecution.v1test.OutputDirectory;
 import com.google.devtools.remoteexecution.v1test.OutputFile;
+import com.google.devtools.remoteexecution.v1test.RsyncBlock;
 import com.google.devtools.remoteexecution.v1test.Tree;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
@@ -317,11 +321,22 @@ public abstract class AbstractRemoteActionCache implements AutoCloseable {
     }
 
     private void addFile(Digest digest, Path file) throws IOException {
-      result
+      OutputFile.Builder builder = result
           .addOutputFilesBuilder()
           .setPath(file.relativeTo(execRoot).getPathString())
           .setDigest(digest)
           .setIsExecutable(file.isExecutable());
+
+      if (file.getFileSize() > 2048) {
+        RsyncHasher hasher = new RsyncHasher(Hashing.md5(), 2048);
+        List<BlockHash> blocks = hasher.computeBlockHashes(file.getInputStream());
+        for (BlockHash block : blocks) {
+          builder.addBlocksBuilder()
+              .setSize(block.size())
+              .setWeakHash(block.weakHash())
+              .setStrongHash(ByteString.copyFrom(block.strongHash().asBytes()));
+        }
+      }
 
       digestToFile.put(digest, file);
     }

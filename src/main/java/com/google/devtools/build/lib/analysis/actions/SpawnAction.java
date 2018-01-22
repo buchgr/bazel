@@ -62,6 +62,7 @@ import com.google.devtools.build.lib.syntax.SkylarkList;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.util.LazyString;
 import com.google.devtools.build.lib.util.ShellEscaper;
+import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.errorprone.annotations.CompileTimeConstant;
 import com.google.errorprone.annotations.FormatMethod;
@@ -260,17 +261,26 @@ public class SpawnAction extends AbstractAction implements ExecutionInfoSpecifie
    *
    * <p>Called by {@link #execute}.
    */
-  protected List<SpawnResult> internalExecute(ActionExecutionContext actionExecutionContext)
+  protected List<SpawnResult> internalExecute(ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
       throws ExecException, InterruptedException, CommandLineExpansionException {
     return getContext(actionExecutionContext)
-        .exec(getSpawn(actionExecutionContext.getClientEnv()), actionExecutionContext);
+        .exec(getSpawn(actionExecutionContext.getClientEnv()), actionExecutionContext, newToOldOutputs);
   }
 
   @Override
   public ActionResult execute(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
+    return execute(actionExecutionContext, Collections.emptyMap());
+  }
+
+
+  @Override
+  public ActionResult execute(ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
+      throws ActionExecutionException, InterruptedException {
     try {
-      return ActionResult.create(internalExecute(actionExecutionContext));
+      return ActionResult.create(internalExecute(actionExecutionContext, newToOldOutputs));
     } catch (ExecException e) {
       String failMessage;
       if (isShellCommand()) {

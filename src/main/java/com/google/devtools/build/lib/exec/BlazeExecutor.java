@@ -57,6 +57,7 @@ public final class BlazeExecutor implements Executor {
   private final boolean showSubcommands;
   private final FileSystem fileSystem;
   private final Path execRoot;
+  private final Path outputBase;
   private final Reporter reporter;
   private final EventBus eventBus;
   private final Clock clock;
@@ -81,6 +82,7 @@ public final class BlazeExecutor implements Executor {
   public BlazeExecutor(
       FileSystem fileSystem,
       Path execRoot,
+      Path outputBase,
       Reporter reporter,
       EventBus eventBus,
       Clock clock,
@@ -94,6 +96,7 @@ public final class BlazeExecutor implements Executor {
     this.showSubcommands = executionOptions.showSubcommands;
     this.fileSystem = fileSystem;
     this.execRoot = execRoot;
+    this.outputBase = outputBase;
     this.reporter = reporter;
     this.eventBus = eventBus;
     this.clock = clock;
@@ -152,6 +155,11 @@ public final class BlazeExecutor implements Executor {
   @Override
   public Path getExecRoot() {
     return execRoot;
+  }
+
+  @Override
+  public Path getOutputBase() {
+    return outputBase;
   }
 
   @Override

@@ -23,6 +23,8 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
+import java.util.Collections;
+import java.util.Map;
 
 /**
  * Stub action to be used as the generating action for FDO files that are extracted from the
@@ -61,9 +63,10 @@ public final class FdoStubAction extends AbstractAction {
   }
 
   @Override
-  public void prepare(FileSystem fileSystem, Path execRoot) {
+  public Path prepare(FileSystem fileSystem, Path execRoot, Path outputBase, Map<Artifact, Path> m) {
     // The superclass would delete the output files here. We can't let that happen, since this
     // action does not in fact create those files; it is only a placeholder and the actual files
     // are created *before* the execution phase in FdoSupport.extractFdoZip()
+    return null;
   }
 }

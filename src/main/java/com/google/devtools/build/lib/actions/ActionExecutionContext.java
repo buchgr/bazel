@@ -152,6 +152,10 @@ public class ActionExecutionContext implements Closeable {
     return executor.getClock();
   }
 
+  public Path getOutputBase() {
+    return executor.getOutputBase();
+  }
+
   public EventBus getEventBus() {
     return executor.getEventBus();
   }

@@ -14,7 +14,9 @@
 
 package com.google.devtools.build.lib.actions;
 
+import com.google.devtools.build.lib.vfs.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -51,6 +53,7 @@ public interface SandboxedSpawnActionContext extends SpawnActionContext {
   List<SpawnResult> exec(
       Spawn spawn,
       ActionExecutionContext actionExecutionContext,
-      AtomicReference<Class<? extends SpawnActionContext>> writeOutputFiles)
+      AtomicReference<Class<? extends SpawnActionContext>> writeOutputFiles,
+      Map<Artifact, Path> newToOldOutputs)
       throws ExecException, InterruptedException;
 }

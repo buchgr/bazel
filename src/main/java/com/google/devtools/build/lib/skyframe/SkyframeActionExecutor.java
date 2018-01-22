@@ -74,6 +74,7 @@ import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
+import com.google.devtools.build.lib.unix.Directories;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.util.io.OutErr;
@@ -83,9 +84,12 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.protobuf.ByteString;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -807,11 +811,13 @@ public final class SkyframeActionExecutor implements ActionExecutionContextFacto
       throws ActionExecutionException, InterruptedException {
     // Delete the outputs before executing the action, just to ensure that
     // the action really does produce the outputs.
+    Path tempDir = null;
+    Map<Artifact, Path> newToOldOutputs = new HashMap<>();
     try {
-      action.prepare(context.getFileSystem(), context.getExecRoot());
+      tempDir = action.prepare(context.getFileSystem(), context.getExecRoot(), context.getOutputBase(), newToOldOutputs);
       createOutputDirectories(action);
     } catch (IOException e) {
-      reportError("failed to delete output files before executing action", e, action, null);
+      reportError("failed to delete output files before executing action: " + Throwables.getStackTraceAsString(e), e, action, null);
     }
 
     eventHandler.post(new ActionStartedEvent(action, actionStartTime));
@@ -819,7 +825,7 @@ public final class SkyframeActionExecutor implements ActionExecutionContextFacto
     try {
       // Mark the current action as being prepared.
       statusReporter.updateStatus(ActionStatusMessage.preparingStrategy(action));
-      boolean outputDumped = executeActionTask(eventHandler, action, context);
+      boolean outputDumped = executeActionTask(eventHandler, action, context, newToOldOutputs);
       completeAction(
           eventHandler,
           action,
@@ -827,6 +833,15 @@ public final class SkyframeActionExecutor implements ActionExecutionContextFacto
           context.getFileOutErr(),
           outputDumped);
     } finally {
+
+      try {
+        if (tempDir != null) {
+          Directories.deleteRecursively(new File(tempDir.getPathString()));
+        }
+      } catch (IOException e) {
+        reportError("failed to delete output files after executing action", e, action, null);
+      }
+
       statusReporter.remove(action);
       eventHandler.post(new ActionCompletionEvent(actionStartTime, action, actionLookupData));
     }
@@ -880,7 +895,8 @@ public final class SkyframeActionExecutor implements ActionExecutionContextFacto
   private boolean executeActionTask(
       ExtendedEventHandler eventHandler,
       Action action,
-      ActionExecutionContext actionExecutionContext)
+      ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> oldToNewOutputs)
           throws ActionExecutionException, InterruptedException {
     profiler.startTask(ProfilerTask.ACTION_EXECUTE, action);
     // ActionExecutionExceptions that occur as the thread is interrupted are
@@ -888,7 +904,7 @@ public final class SkyframeActionExecutor implements ActionExecutionContextFacto
     // instead.
     FileOutErr outErrBuffer = actionExecutionContext.getFileOutErr();
     try {
-      ActionResult actionResult = action.execute(actionExecutionContext);
+      ActionResult actionResult = action.execute(actionExecutionContext, oldToNewOutputs);
       if (actionResult != ActionResult.EMPTY) {
         eventHandler.post(new ActionResultReceivedEvent(action, actionResult));
       }

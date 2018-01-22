@@ -59,8 +59,10 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import javax.annotation.Nullable;
 
 /** 
@@ -306,6 +308,14 @@ public final class CppLinkAction extends AbstractAction
   @ThreadCompatible
   public ActionResult execute(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
+    return execute(actionExecutionContext, Collections.emptyMap());
+  }
+
+  @Override
+  @ThreadCompatible
+  public ActionResult execute(ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
+      throws ActionExecutionException, InterruptedException {
     if (fake) {
       executeFake(actionExecutionContext.getArtifactExpander());
       return ActionResult.EMPTY;
@@ -323,7 +333,7 @@ public final class CppLinkAction extends AbstractAction
         return ActionResult.create(
             actionExecutionContext
                 .getSpawnActionContext(getMnemonic())
-                .exec(spawn, actionExecutionContext));
+                .exec(spawn, actionExecutionContext, newToOldOutputs));
       } catch (ExecException e) {
         throw e.toActionExecutionException(
             "Linking of rule '" + getOwner().getLabel() + "'",

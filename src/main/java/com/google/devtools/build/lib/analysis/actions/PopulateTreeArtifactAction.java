@@ -41,9 +41,11 @@ import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
+import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -156,6 +158,13 @@ public final class PopulateTreeArtifactAction extends AbstractAction {
   @Override
   public ActionResult execute(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
+    return execute(actionExecutionContext, Collections.emptyMap());
+  }
+
+  @Override
+  public ActionResult execute(ActionExecutionContext actionExecutionContext,
+      Map<Artifact, Path> newToOldOutputs)
+      throws ActionExecutionException, InterruptedException {
     Spawn spawn;
 
     // Create a spawn to unzip the archive file into the output TreeArtifact.
@@ -193,7 +202,7 @@ public final class PopulateTreeArtifactAction extends AbstractAction {
     // Execute the spawn.
     List<SpawnResult> spawnResults;
     try {
-      spawnResults = getContext(actionExecutionContext).exec(spawn, actionExecutionContext);
+      spawnResults = getContext(actionExecutionContext).exec(spawn, actionExecutionContext, newToOldOutputs);
     } catch (ExecException e) {
       throw e.toActionExecutionException(
           getMnemonic() + " action failed for target: " + getOwner().getLabel(),

@@ -50,6 +50,7 @@ import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
 import com.google.devtools.build.lib.view.test.TestStatus.TestResultData.Builder;
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -359,7 +360,7 @@ public class StandaloneTestStrategy extends TestStrategy {
                   Reporter.outErrForReporter(actionExecutionContext.getEventHandler()),
                   testLogPath);
         }
-        spawnResults = spawnActionContext.exec(spawn, actionExecutionContext);
+        spawnResults = spawnActionContext.exec(spawn, actionExecutionContext, Collections.emptyMap());
 
         builder
             .setTestPassed(true)

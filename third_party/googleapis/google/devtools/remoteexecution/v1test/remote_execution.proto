@@ -642,6 +642,14 @@ message OutputFile {
 
   // True if file is executable, false otherwise.
   bool is_executable = 4;
+
+  repeated RsyncBlock blocks = 5;
+}
+
+message RsyncBlock {
+  int32 size = 1;
+  int64 weak_hash = 2;
+  bytes strong_hash = 3;
 }
 
 // A `Tree` contains all the

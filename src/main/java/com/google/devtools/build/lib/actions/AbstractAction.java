@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.actions;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.extra.ExtraActionInfo;
@@ -40,13 +41,16 @@ import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.skyframe.SkyFunction;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.UUID;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
@@ -472,8 +476,26 @@ public abstract class AbstractAction implements Action, SkylarkValue {
   }
 
   @Override
-  public void prepare(FileSystem fileSystem, Path execRoot) throws IOException {
-    deleteOutputs(fileSystem, execRoot);
+  public Path prepare(FileSystem fileSystem, Path execRoot, Path outputBase, Map<Artifact, Path> newToOldOutputs) throws IOException {
+    Path newDir = outputBase.getChild("old_outputs").getChild(UUID.randomUUID().toString());
+    newDir.createDirectoryAndParents();
+    for (Artifact output : getOutputs()) {
+      if (!output.getPath().exists()) {
+        continue;
+      }
+      if (output.getPath().isDirectory(Symlinks.FOLLOW)) {
+        continue;
+      }
+      if (output.isTreeArtifact() || output.isMiddlemanArtifact()) {
+        continue;
+      }
+      PathFragment relativePath = output.getPath().relativeTo(outputBase);
+      Path newName = newDir.getRelative(relativePath);
+      newName.getParentDirectory().createDirectoryAndParents();
+      output.getPath().renameTo(newName);
+      newToOldOutputs.put(output, newName);
+    }
+    return newDir;
   }
 
   @Override

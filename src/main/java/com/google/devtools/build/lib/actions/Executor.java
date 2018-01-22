@@ -48,6 +48,8 @@ public interface Executor {
    */
   Path getExecRoot();
 
+  Path getOutputBase();
+
   /**
    * Returns a clock. This is not hermetic, and should only be used for build info actions or
    * performance measurements / reporting.
