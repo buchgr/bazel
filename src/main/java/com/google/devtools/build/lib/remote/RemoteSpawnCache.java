@@ -141,9 +141,6 @@ final class RemoteSpawnCache implements SpawnCache {
             for (Path existingFile : newToOldOutputs.values()) {
               String path = file.getPath();
               if (existingFile.getPathString().endsWith(path)) {
-                if (path.endsWith("bazel")) {
-                  report(Event.warn(path));
-                }
                 RsyncHasher hasher = new RsyncHasher(Hashing.md5(), 2048);
                 List<BlockHash> blocks = new ArrayList<>();
                 for (RsyncBlock block : file.getBlocksList()) {
