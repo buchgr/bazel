@@ -32,6 +32,7 @@ import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.util.internal.StringUtil;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 
@@ -77,6 +78,9 @@ final class HttpDownloadHandler extends AbstractHttpHandler<HttpObject> {
         return;
       }
       downloadSucceeded = response.status().equals(HttpResponseStatus.OK);
+      if (!downloadSucceeded) {
+        out = new ByteArrayOutputStream();
+      }
       keepAlive = HttpUtil.isKeepAlive((HttpResponse) msg);
       if (HttpUtil.isContentLengthSet(response)) {
         contentLength = HttpUtil.getContentLength(response);
@@ -84,7 +88,7 @@ final class HttpDownloadHandler extends AbstractHttpHandler<HttpObject> {
 
       if (!downloadSucceeded && (contentLength == 0 || HttpUtil.isTransferEncodingChunked(response))) {
         HttpException error =
-            new HttpException(response, "Download failed with status: " + response, null);
+            new HttpException(response, response.status().toString(), null);
         failAndReset(error, ctx);
         return;
       }
@@ -95,15 +99,15 @@ final class HttpDownloadHandler extends AbstractHttpHandler<HttpObject> {
 
       ByteBuf content = ((HttpContent) msg).content();
       bytesReceived += content.readableBytes();
-      if (downloadSucceeded) {
-        content.readBytes(out, content.readableBytes());
-      }
+      content.readBytes(out, content.readableBytes());
       if (bytesReceived == contentLength || msg instanceof LastHttpContent) {
         if (downloadSucceeded) {
           succeedAndReset(ctx);
         } else {
-          HttpException error =
-              new HttpException(response, "Download failed with status: " + response.status(), null);
+          String errorMsg = response.status() + "\n";
+          errorMsg += new String(((ByteArrayOutputStream) out).toByteArray());
+          out.close();
+          HttpException error = new HttpException(response, errorMsg, null);
           failAndReset(error, ctx);
         }
       }

@@ -40,9 +40,10 @@ import com.google.devtools.remoteexecution.v1test.Command;
 import io.grpc.Context;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.SortedMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import javax.annotation.Nullable;
 
 /**
@@ -60,12 +61,11 @@ final class RemoteSpawnCache implements SpawnCache {
   private final AbstractRemoteActionCache remoteCache;
   private final String buildRequestId;
   private final String commandId;
-  private final boolean verboseFailures;
 
   @Nullable private final Reporter cmdlineReporter;
 
-  // Used to ensure that a warning is reported only once.
-  private final AtomicBoolean warningReported = new AtomicBoolean();
+  private final Set<String> reportedErrors = new HashSet<>();
+
 
   private final DigestUtil digestUtil;
 
@@ -81,7 +81,6 @@ final class RemoteSpawnCache implements SpawnCache {
     this.execRoot = execRoot;
     this.options = options;
     this.remoteCache = remoteCache;
-    this.verboseFailures = verboseFailures;
     this.cmdlineReporter = cmdlineReporter;
     this.buildRequestId = buildRequestId;
     this.commandId = commandId;
@@ -136,10 +135,12 @@ final class RemoteSpawnCache implements SpawnCache {
     } catch (CacheNotFoundException e) {
       // There's a cache miss. Fall back to local execution.
     } catch (IOException e) {
-      // There's an IO error. Fall back to local execution.
-      reportOnce(
-          Event.warn(
-              "Some artifacts failed to be downloaded from the remote cache: " + e.getMessage()));
+      String errorMsg = e.getMessage();
+      if (errorMsg == null || errorMsg.length() == 0) {
+        errorMsg = e.getClass().getSimpleName();
+      }
+      errorMsg = "There were errors reading from the remote cache:\n" + errorMsg;
+      report(Event.warn(errorMsg));
     } finally {
       withMetadata.detach(previous);
     }
@@ -179,13 +180,12 @@ final class RemoteSpawnCache implements SpawnCache {
           try {
             remoteCache.upload(actionKey, execRoot, files, context.getFileOutErr(), uploadAction);
           } catch (IOException e) {
-            if (verboseFailures) {
-              report(Event.debug("Upload to remote cache failed: " + e.getMessage()));
-            } else {
-              reportOnce(
-                  Event.warn(
-                      "Some artifacts failed be uploaded to the remote cache: " + e.getMessage()));
+            String errorMsg = e.getMessage();
+            if (errorMsg == null || errorMsg.length() == 0) {
+              errorMsg = e.getClass().getSimpleName();
             }
+            errorMsg = "There were errors writing to the remote cache:\n" + errorMsg;
+            report(Event.warn(errorMsg));
           } finally {
             withMetadata.detach(previous);
           }
@@ -215,14 +215,16 @@ final class RemoteSpawnCache implements SpawnCache {
     }
   }
 
-  private void reportOnce(Event evt) {
-    if (warningReported.compareAndSet(false, true)) {
-      report(evt);
-    }
-  }
-
   private void report(Event evt) {
-    if (cmdlineReporter != null) {
+    if (cmdlineReporter == null) {
+      return;
+    }
+
+    synchronized (this) {
+      if (reportedErrors.contains(evt.getMessage())) {
+        return;
+      }
+      reportedErrors.add(evt.getMessage());
       cmdlineReporter.handle(evt);
     }
   }
