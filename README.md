@@ -1,5 +1,4 @@
-[skip ci]
-
+foo bar
 # [Bazel](https://bazel.build)
 
 *{Fast, Correct} - Choose two*
