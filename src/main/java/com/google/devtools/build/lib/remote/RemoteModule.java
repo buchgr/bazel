@@ -30,6 +30,8 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.ExecutorBuilder;
 import com.google.devtools.build.lib.remote.logging.LoggingInterceptor;
+import com.google.devtools.build.lib.remote.options.RemoteOptions;
+import com.google.devtools.build.lib.remote.options.RemoteOptions.FetchRemoteOutputsStrategy;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.runtime.BlazeModule;
@@ -329,8 +331,15 @@ public final class RemoteModule extends BlazeModule {
 
   @Override
   public void executorInit(CommandEnvironment env, BuildRequest request, ExecutorBuilder builder) {
-    if (actionContextProvider != null) {
-      builder.addActionContextProvider(actionContextProvider);
+    RemoteActionContextProvider actionContextProvider = this.actionContextProvider;
+    if (actionContextProvider == null) {
+      return;
+    }
+    builder.addActionContextProvider(actionContextProvider);
+
+    FetchRemoteOutputsStrategy experimentalRemoteFetchOutputs = env.getOptions().getOptions(RemoteOptions.class).experimentalRemoteFetchOutputs;
+    if (actionContextProvider.getRemoteCache() != null && experimentalRemoteFetchOutputs != FetchRemoteOutputsStrategy.ALL) {
+        builder.setActionInputPrefetcher(new RemoteActionInputFetcher(actionContextProvider.getRemoteCache()));
     }
   }
 

@@ -18,36 +18,53 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import build.bazel.remote.execution.v2.Action;
 import build.bazel.remote.execution.v2.ActionResult;
 import build.bazel.remote.execution.v2.Command;
+import build.bazel.remote.execution.v2.Digest;
+import build.bazel.remote.execution.v2.OutputFile;
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.ActionInput;
+import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ExecutionStrategy;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.FileArtifactValue.RemoteFileArtifactValue;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
 import com.google.devtools.build.lib.actions.Spawns;
+import com.google.devtools.build.lib.actions.cache.MetadataInjector;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.SpawnCache;
+import com.google.devtools.build.lib.exec.SpawnExecException;
 import com.google.devtools.build.lib.exec.SpawnRunner.ProgressStatus;
 import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionContext;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
+import com.google.devtools.build.lib.remote.AbstractRemoteActionCache.ActionOutputMetadata;
+import com.google.devtools.build.lib.remote.AbstractRemoteActionCache.ActionOutputMetadata.OutputFileMetadata;
 import com.google.devtools.build.lib.remote.TreeNodeRepository.TreeNode;
+import com.google.devtools.build.lib.remote.options.RemoteOptions;
+import com.google.devtools.build.lib.remote.options.RemoteOptions.FetchRemoteOutputsStrategy;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.DigestUtil.ActionKey;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
+import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import io.grpc.Context;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.SortedMap;
+import java.util.concurrent.ExecutionException;
 import javax.annotation.Nullable;
 
 /** A remote {@link SpawnCache} implementation. */
@@ -114,6 +131,7 @@ final class RemoteSpawnCache implements SpawnCache {
             spawn.getArguments(),
             spawn.getEnvironment(),
             spawn.getExecutionPlatform());
+    FetchRemoteOutputsStrategy remoteOutputsStrategy = options.experimentalRemoteFetchOutputs;
     Action action;
     final ActionKey actionKey;
     try (SilentCloseable c = Profiler.instance().profile("RemoteCache.buildAction")) {
@@ -140,19 +158,24 @@ final class RemoteSpawnCache implements SpawnCache {
           result = remoteCache.getCachedActionResult(actionKey);
         }
         if (result != null) {
-          // We don't cache failed actions, so we know the outputs exist.
-          // For now, download all outputs locally; in the future, we can reuse the digests to
-          // just update the TreeNodeRepository and continue the build.
-          try (SilentCloseable c = Profiler.instance().profile("RemoteCache.download")) {
-            remoteCache.download(result, execRoot, context.getFileOutErr());
+          switch (remoteOutputsStrategy) {
+            case NONE:
+              remoteCache.injectRemoteMetadata(result, spawn.getOutputFiles(),
+                  context.getRequiredLocalOutputs(), context.getFileOutErr(), execRoot,
+                  context.getMetadataInjector());
+              break;
+            case ALL:
+              try (SilentCloseable c = Profiler.instance().profile("RemoteCache.download")) {
+                remoteCache.download(result, execRoot, context.getFileOutErr());
+              }
+              break;
           }
-          SpawnResult spawnResult =
-              new SpawnResult.Builder()
-                  .setStatus(Status.SUCCESS)
-                  .setExitCode(result.getExitCode())
-                  .setCacheHit(true)
-                  .setRunnerName("remote cache hit")
-                  .build();
+          SpawnResult spawnResult = new SpawnResult.Builder()
+              .setStatus(Status.SUCCESS)
+              .setExitCode(result.getExitCode())
+              .setCacheHit(true)
+              .setRunnerName("remote cache hit")
+              .build();
           return SpawnCache.success(spawnResult);
         }
       } catch (IOException e) {

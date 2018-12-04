@@ -40,6 +40,6 @@ public final class RemoteRetrierUtils {
     }
     e = e.getCause();
     return (e instanceof ExecutionStatusException
-        && ((ExecutionStatusException) e).isExecutionTimeout());
+        && (( ExecutionStatusException) e).isExecutionTimeout());
   }
 }

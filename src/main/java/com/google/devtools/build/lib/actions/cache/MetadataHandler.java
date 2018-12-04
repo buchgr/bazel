@@ -15,11 +15,15 @@ package com.google.devtools.build.lib.actions.cache;
 
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.FileArtifactValue.RemoteFileArtifactValue;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.vfs.FileStatus;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
+import java.util.Map;
 
 /**
  * Retrieves {@link FileArtifactValue} of {@link Artifact}s, and inserts virtual metadata as well.
@@ -31,7 +35,7 @@ import java.io.IOException;
  * <p>Note that implementations of this interface call chmod on output files if {@link
  * #discardOutputMetadata} has been called.
  */
-public interface MetadataHandler extends MetadataProvider {
+public interface MetadataHandler extends MetadataProvider, MetadataInjector {
   @Override
   FileArtifactValue getMetadata(ActionInput actionInput) throws IOException;
 
@@ -55,9 +59,6 @@ public interface MetadataHandler extends MetadataProvider {
    * <p>Must only be called after a call to {@link #discardOutputMetadata}.
    */
   void injectDigest(ActionInput output, FileStatus statNoFollow, byte[] digest);
-
-  /** Injects a file that is only stored remotely. */
-  void injectRemoteFile(Artifact output, byte[] digest, long size, int locationIndex);
 
   /**
    * Marks an artifact as intentionally omitted. Acknowledges that this Artifact could have existed,

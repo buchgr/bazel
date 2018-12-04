@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package com.google.devtools.build.lib.remote;
+package com.google.devtools.build.lib.remote.options;
 
 import com.google.devtools.build.lib.util.OptionsUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
@@ -270,4 +271,36 @@ public final class RemoteOptions extends OptionsBase {
 
   /** The maximum size of an outbound message sent via a gRPC channel. */
   public int maxOutboundMessageSize = 1024 * 1024;
+
+  public enum FetchRemoteOutputsStrategy {
+    ALL,
+    NONE,
+  }
+
+  public static class FetchRemoteOutputsStrategyConverter extends EnumConverter<FetchRemoteOutputsStrategy> {
+    public FetchRemoteOutputsStrategyConverter() {
+      super(FetchRemoteOutputsStrategy.class, "download remote outputs");
+    }
+  }
+
+  @Option(
+      name = "experimental_remote_fetch_outputs",
+      defaultValue = "all",
+      category = "remote",
+      documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
+      converter = FetchRemoteOutputsStrategyConverter.class
+  )
+  public FetchRemoteOutputsStrategy experimentalRemoteFetchOutputs;
+
+  @Option(
+      name = "experimental_remote_no_outputs",
+      defaultValue = "false",
+      category = "remote",
+      documentationCategory = OptionDocumentationCategory.BUILD_TIME_OPTIMIZATION,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
+      help =
+          "If true, don't donwload unnecessary build outputs in remote execution."
+  )
+  public boolean experimentalRemoteNoOutputs;
 }

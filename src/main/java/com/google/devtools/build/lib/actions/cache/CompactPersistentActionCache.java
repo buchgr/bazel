@@ -66,7 +66,7 @@ public class CompactPersistentActionCache implements ActionCache {
 
   private static final int NO_INPUT_DISCOVERY_COUNT = -1;
 
-  private static final int VERSION = 12;
+  private static final int VERSION = 13;
 
   private static final Logger logger =
       Logger.getLogger(CompactPersistentActionCache.class.getName());

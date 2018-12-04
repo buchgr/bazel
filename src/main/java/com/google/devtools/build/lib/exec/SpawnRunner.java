@@ -13,7 +13,9 @@
 // limitations under the License.
 package com.google.devtools.build.lib.exec;
 
+import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.ActionInput;
+import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.actions.ExecException;
@@ -21,10 +23,13 @@ import com.google.devtools.build.lib.actions.FutureSpawn;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
+import com.google.devtools.build.lib.actions.cache.MetadataHandler;
+import com.google.devtools.build.lib.actions.cache.MetadataInjector;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.SortedMap;
 
 /**
@@ -129,6 +134,22 @@ public interface SpawnRunner {
    * by different threads, so they MUST not call any shared non-thread-safe objects.
    */
   interface SpawnExecutionContext {
+
+    default MetadataInjector getMetadataInjector() {
+      throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Returns the collection of files that this command must write and make available via
+     * the local {@link com.google.devtools.build.lib.vfs.FileSystem}. The returned output
+     * artifacts are a subset of the action's output artifacts.
+     *
+     * <p>This is for use with remote execution, where as an optimization we don't want to
+     * download all output files.
+     */
+    default Collection<Artifact> getRequiredLocalOutputs() {
+      return ImmutableList.of();
+    }
     /**
      * Returns a unique id for this spawn, to be used for logging. Note that a single spawn may be
      * passed to multiple {@link SpawnRunner} implementations, so any log entries should also
@@ -155,7 +176,7 @@ public interface SpawnRunner {
      * again. I suppose we could require implementations to memoize getInputMapping (but not compute
      * it eagerly), and that may change in the future.
      */
-    void prefetchInputs() throws IOException;
+    void prefetchInputs() throws IOException, InterruptedException;
 
     /**
      * The input file metadata cache for this specific spawn, which can be used to efficiently
