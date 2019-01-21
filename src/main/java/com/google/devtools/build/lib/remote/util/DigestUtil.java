@@ -48,7 +48,7 @@ public class DigestUtil {
       return digest;
     }
 
-    private ActionKey(Digest digest) {
+    public ActionKey(Digest digest) {
       this.digest = digest;
     }
   }
