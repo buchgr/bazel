@@ -35,6 +35,7 @@ import com.google.devtools.build.lib.clock.JavaClock;
 import com.google.devtools.build.lib.remote.Retrier.Backoff;
 import com.google.devtools.build.lib.remote.blobstore.ConcurrentMapBlobStore;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.DigestUtil.ActionKey;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
@@ -373,7 +374,7 @@ public class SimpleBlobStoreActionCacheTest {
         cmd,
         execRoot,
         ImmutableList.<Path>of(fooFile, barDir),
-        true);
+        /* uploadAction= */ true);
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
@@ -400,12 +401,16 @@ public class SimpleBlobStoreActionCacheTest {
     final SimpleBlobStoreActionCache client = newClient(map);
 
     ActionResult.Builder result = ActionResult.newBuilder();
-    client.upload(result, null, null, null, execRoot, ImmutableList.<Path>of(barDir), false);
+    Action action = Action.newBuilder().build();
+    ActionKey actionKey = DIGEST_UTIL.computeActionKey(action);
+    Command cmd = Command.newBuilder().build();
+    client.upload(result, actionKey, action, cmd, execRoot, ImmutableList.<Path>of(barDir),
+        /* uploadAction= */ true);
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
     assertThat(result.build()).isEqualTo(expectedResult.build());
 
-    assertThat(map.keySet()).containsExactly(barDigest.getHash());
+    assertThat(map.keySet()).contains(barDigest.getHash());
   }
 
   @Test
@@ -443,13 +448,17 @@ public class SimpleBlobStoreActionCacheTest {
     final Path barDir = execRoot.getRelative("bar");
 
     ActionResult.Builder result = ActionResult.newBuilder();
-    client.upload(result, null, null, null, execRoot, ImmutableList.<Path>of(barDir), false);
+    Action action = Action.newBuilder().build();
+    ActionKey actionKey = DIGEST_UTIL.computeActionKey(action);
+    Command cmd = Command.newBuilder().build();
+    client.upload(result, actionKey, action, cmd, execRoot, ImmutableList.<Path>of(barDir),
+        /* uploadAction= */ true);
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
     assertThat(result.build()).isEqualTo(expectedResult.build());
 
     assertThat(map.keySet())
-        .containsExactly(wobbleDigest.getHash(), quxDigest.getHash(), barDigest.getHash());
+        .containsAllOf(wobbleDigest.getHash(), quxDigest.getHash(), barDigest.getHash());
   }
 
   @Test
