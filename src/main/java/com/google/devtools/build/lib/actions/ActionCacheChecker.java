@@ -27,6 +27,8 @@ import com.google.devtools.build.lib.actions.cache.Protos.ActionCacheStatistics.
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.EventKind;
+import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
@@ -342,31 +344,33 @@ public class ActionCacheChecker {
       // This cache entry has already been updated by a shared action. We don't need to do it again.
       return;
     }
-    Map<String, String> usedClientEnv = computeUsedClientEnv(action, clientEnv);
-    ActionCache.Entry entry =
-        new ActionCache.Entry(
-            action.getKey(actionKeyContext), usedClientEnv, action.discoversInputs());
-    for (Artifact output : action.getOutputs()) {
-      // Remove old records from the cache if they used different key.
-      String execPath = output.getExecPathString();
-      if (!key.equals(execPath)) {
-        actionCache.remove(execPath);
+    try (SilentCloseable c = Profiler.instance().profile("updateActionCache")) {
+      Map<String, String> usedClientEnv = computeUsedClientEnv(action, clientEnv);
+      ActionCache.Entry entry =
+          new ActionCache.Entry(
+              action.getKey(actionKeyContext), usedClientEnv, action.discoversInputs());
+      for (Artifact output : action.getOutputs()) {
+        // Remove old records from the cache if they used different key.
+        String execPath = output.getExecPathString();
+        if (!key.equals(execPath)) {
+          actionCache.remove(execPath);
+        }
+        if (!metadataHandler.artifactOmitted(output)) {
+          // Output files *must* exist and be accessible after successful action execution. We use the
+          // 'constant' metadata for the volatile workspace status output. The volatile output
+          // contains information such as timestamps, and even when --stamp is enabled, we don't want
+          // to rebuild everything if only that file changes.
+          FileArtifactValue metadata = getMetadataOrConstant(metadataHandler, output);
+          Preconditions.checkState(metadata != null);
+          entry.addFile(output.getExecPath(), metadata);
+        }
       }
-      if (!metadataHandler.artifactOmitted(output)) {
-        // Output files *must* exist and be accessible after successful action execution. We use the
-        // 'constant' metadata for the volatile workspace status output. The volatile output
-        // contains information such as timestamps, and even when --stamp is enabled, we don't want
-        // to rebuild everything if only that file changes.
-        FileArtifactValue metadata = getMetadataOrConstant(metadataHandler, output);
-        Preconditions.checkState(metadata != null);
-        entry.addFile(output.getExecPath(), metadata);
+      for (Artifact input : action.getInputs()) {
+        entry.addFile(input.getExecPath(), getMetadataMaybe(metadataHandler, input));
       }
+      entry.getFileDigest();
+      actionCache.put(key, entry);
     }
-    for (Artifact input : action.getInputs()) {
-      entry.addFile(input.getExecPath(), getMetadataMaybe(metadataHandler, input));
-    }
-    entry.getFileDigest();
-    actionCache.put(key, entry);
   }
 
   @Nullable
