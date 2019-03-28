@@ -46,6 +46,12 @@ import javax.annotation.Nullable;
  */
 public interface OutputService {
 
+  enum ActionFileSystemSupport {
+    NONE,
+    STAGE_REMOTE_FIlES,
+    FULL,
+  }
+
   /**
    * @return the name of filesystem, akin to what you might see in /proc/mounts
    */
@@ -111,8 +117,8 @@ public interface OutputService {
   /** @return true iff the file actually lives on a remote server */
   boolean isRemoteFile(Artifact file);
 
-  default boolean supportsActionFileSystem() {
-    return false;
+  default ActionFileSystemSupport supportsActionFileSystem() {
+    return ActionFileSystemSupport.NONE;
   }
 
   /**

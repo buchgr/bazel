@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.remote;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
@@ -34,6 +35,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.concurrent.GuardedBy;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Stages output files that are stored remotely to the local filesystem.
@@ -87,18 +89,7 @@ class RemoteActionInputFetcher implements ActionInputPrefetcher {
             if (downloadedPaths.contains(path)) {
               continue;
             }
-
-            ListenableFuture<Void> download = downloadsInProgress.get(path);
-            if (download == null) {
-              Context prevCtx = ctx.attach();
-              try {
-                download = remoteCache.downloadFile(
-                    path, DigestUtil.buildDigest(metadata.getDigest(), metadata.getSize()));
-                downloadsInProgress.put(path, download);
-              } finally {
-                ctx.detach(prevCtx);
-              }
-            }
+            ListenableFuture<Void> download = downloadFileAsync(path, metadata);
             downloadsToWaitFor.putIfAbsent(path, download);
           }
         }
@@ -141,9 +132,42 @@ class RemoteActionInputFetcher implements ActionInputPrefetcher {
     }
   }
 
+
   ImmutableSet<Path> downloadedFiles() {
     synchronized (lock) {
       return ImmutableSet.copyOf(downloadedPaths);
     }
   }
-}
+
+  void downloadFile(Path path, FileArtifactValue metadata) throws IOException, InterruptedException {
+    try {
+      downloadFileAsync(path, metadata).get();
+    } catch (ExecutionException e) {
+      if (e.getCause() instanceof IOException) {
+        throw (IOException) e.getCause();
+      }
+      throw new IOException(e.getCause());
+    }
+  }
+
+  private ListenableFuture<Void> downloadFileAsync(Path path, FileArtifactValue metadata) throws IOException {
+    synchronized (lock) {
+      if (downloadedPaths.contains(path)) {
+        return Futures.immediateFuture(null);
+      }
+
+      ListenableFuture<Void> download = downloadsInProgress.get(path);
+      if (download == null) {
+        Context prevCtx = ctx.attach();
+        try {
+          download = remoteCache.downloadFile(
+              path, DigestUtil.buildDigest(metadata.getDigest(), metadata.getSize()));
+          downloadsInProgress.put(path, download);
+        } finally {
+          ctx.detach(prevCtx);
+        }
+      }
+      return download;
+    }
+  }
+ }

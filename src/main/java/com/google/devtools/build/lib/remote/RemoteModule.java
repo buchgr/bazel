@@ -45,6 +45,7 @@ import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.io.AsynchronousFileOutputStream;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
+import com.google.devtools.build.lib.vfs.OutputService;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParsingResult;
@@ -73,6 +74,8 @@ public final class RemoteModule extends BlazeModule {
 
   private RemoteActionContextProvider actionContextProvider;
   private RemoteActionInputFetcher actionInputFetcher;
+  private FetchRemoteOutputsStrategy remoteOutputsStrategy;
+  private RemoteOutputService remoteOutputService;
 
   private final BuildEventArtifactUploaderFactoryDelegate
       buildEventArtifactUploaderFactoryDelegate = new BuildEventArtifactUploaderFactoryDelegate();
@@ -124,12 +127,15 @@ public final class RemoteModule extends BlazeModule {
   public void beforeCommand(CommandEnvironment env) throws AbruptExitException {
     Preconditions.checkState(actionContextProvider == null, "actionContextProvider must be null");
     Preconditions.checkState(actionInputFetcher == null, "actionInputFetcher must be null");
+    Preconditions.checkState(remoteOutputsStrategy == null, "remoteOutputsStrategy must be null");
 
     RemoteOptions remoteOptions = env.getOptions().getOptions(RemoteOptions.class);
     if (remoteOptions == null) {
       // Quit if no supported command is being used. See getCommandOptions for details.
       return;
     }
+
+    remoteOutputsStrategy = remoteOptions.experimentalRemoteFetchOutputs;
 
     AuthAndTLSOptions authAndTlsOptions = env.getOptions().getOptions(AuthAndTLSOptions.class);
     DigestHashFunction hashFn = env.getRuntime().getFileSystem().getDigestFunction();
@@ -365,6 +371,8 @@ public final class RemoteModule extends BlazeModule {
     buildEventArtifactUploaderFactoryDelegate.reset();
     actionContextProvider = null;
     actionInputFetcher = null;
+    remoteOutputsStrategy = null;
+    remoteOutputService = null;
 
     if (failure != null) {
       throw new AbruptExitException(ExitCode.LOCAL_ENVIRONMENTAL_ERROR, failure);
@@ -405,19 +413,33 @@ public final class RemoteModule extends BlazeModule {
   @Override
   public void executorInit(CommandEnvironment env, BuildRequest request, ExecutorBuilder builder) {
     Preconditions.checkState(actionInputFetcher == null, "actionInputFetcher must be null");
+    Preconditions.checkNotNull(remoteOutputsStrategy, "remoteOutputsStrategy must not be null");
+
     if (actionContextProvider == null) {
       return;
     }
     builder.addActionContextProvider(actionContextProvider);
-    RemoteOptions remoteOptions = Preconditions.checkNotNull(env.getOptions().getOptions(RemoteOptions.class), "RemoteOptions");
-    FetchRemoteOutputsStrategy remoteOutputsStrategy = remoteOptions.experimentalRemoteFetchOutputs;
-    if (remoteOutputsStrategy != FetchRemoteOutputsStrategy.ALL) {
-      Context ctx = TracingMetadataUtils.contextWithMetadata(env.getBuildRequestId(),
-          env.getCommandId().toString(), "fetch-remote-inputs");
-      actionInputFetcher = new RemoteActionInputFetcher(actionContextProvider.getRemoteCache(),
-          env.getExecRoot(), ctx);
+
+    if (FetchRemoteOutputsStrategy.MINIMAL.equals(remoteOutputsStrategy)) {
+      Context ctx =
+          TracingMetadataUtils.contextWithMetadata(
+              env.getBuildRequestId(), env.getCommandId().toString(), "fetch-remote-inputs");
+      actionInputFetcher =
+          new RemoteActionInputFetcher(
+              actionContextProvider.getRemoteCache(), env.getExecRoot(), ctx);
       builder.setActionInputPrefetcher(actionInputFetcher);
+      remoteOutputService.setActionInputFetcher(actionInputFetcher);
     }
+  }
+
+  @Override
+  public OutputService getOutputService() {
+    Preconditions.checkState(remoteOutputService == null, "remoteOutputService must be null");
+
+    if (FetchRemoteOutputsStrategy.MINIMAL.equals(remoteOutputsStrategy)) {
+      remoteOutputService = new RemoteOutputService();
+    }
+    return remoteOutputService;
   }
 
   @Override
