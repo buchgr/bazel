@@ -189,10 +189,11 @@ public class RemoteSpawnRunner implements SpawnRunner {
       try {
         // Try to lookup the action in the action cache.
         ActionResult cachedResult;
-        try (SilentCloseable c = prof.profile(ProfilerTask.REMOTE_CACHE_CHECK, "check cache hit")) {
-          cachedResult = acceptCachedResult ? remoteCache.getCachedActionResult(actionKey) : null;
-        }
+        long startNanos = System.nanoTime();
+        cachedResult = acceptCachedResult ? remoteCache.getCachedActionResult(actionKey) : null;
+        long endNanos = System.nanoTime();
         if (cachedResult != null) {
+          prof.logSimpleTask(startNanos, endNanos, ProfilerTask.REMOTE_CACHE_CHECK, "check cache hit (serialized size " + cachedResult.getSerializedSize() + ")");
           if (cachedResult.getExitCode() != 0) {
             // Failed actions are treated as a cache miss mostly in order to avoid caching flaky
             // actions (tests).
@@ -208,6 +209,8 @@ public class RemoteSpawnRunner implements SpawnRunner {
               acceptCachedResult = false;
             }
           }
+        } else {
+          prof.logSimpleTask(startNanos, endNanos, ProfilerTask.REMOTE_CACHE_CHECK, "check cache hit");
         }
       } catch (IOException e) {
         return execLocallyAndUploadOrFail(

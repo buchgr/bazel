@@ -29,6 +29,8 @@ import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.ExecutorBuilder;
+import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.remote.logging.LoggingInterceptor;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.options.RemoteOutputsMode;
@@ -56,13 +58,17 @@ import io.grpc.ClientInterceptor;
 import io.grpc.Context;
 import io.grpc.Status.Code;
 import io.grpc.protobuf.StatusProto;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.function.Predicate;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import sun.nio.cs.US_ASCII;
 
 /** RemoteModule provides distributed cache and remote execution for Bazel. */
 public final class RemoteModule extends BlazeModule {
@@ -373,6 +379,17 @@ public final class RemoteModule extends BlazeModule {
     if (failure != null) {
       throw new AbruptExitException(ExitCode.LOCAL_ENVIRONMENTAL_ERROR, failure);
     }
+
+    try {
+      FileOutputStream f = new FileOutputStream("/tmp/remote_cache_check", false);
+      String histo = Profiler.instance().getTasksHistograms().get(ProfilerTask.REMOTE_CACHE_CHECK.ordinal()).toString();
+      f.write(histo.getBytes(StandardCharsets.US_ASCII));
+      f.flush();
+      f.close();
+    } catch (IOException e) {
+      e.printStackTrace();
+    }
+
   }
 
   /**

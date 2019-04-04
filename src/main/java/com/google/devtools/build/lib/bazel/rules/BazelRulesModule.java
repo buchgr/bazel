@@ -331,7 +331,7 @@ public class BazelRulesModule extends BlazeModule {
 
   @Override
   public void beforeCommand(CommandEnvironment env) throws AbruptExitException {
-    validateRemoteOutputsMode(env);
+    //validateRemoteOutputsMode(env);
   }
 
   @Override
