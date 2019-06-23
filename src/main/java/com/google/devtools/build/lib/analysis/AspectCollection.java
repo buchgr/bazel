@@ -23,7 +23,7 @@ import com.google.devtools.build.lib.packages.AspectDescriptor;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.Map.Entry;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -55,11 +55,11 @@ import java.util.Set;
  * Let's look is the {@link AspectCollection} for a Dependency representing a jpl->pl edge
  * for ide_info_aspect application to target <code>jpl</code>:
  * <ul>
- *   <li>the full list of aspects is [java_proto_aspect, DaxProtoAspect, ide_info_aspect]
+ *   <li>the full list of aspects is [java_proto_aspect, DexArchiveAspect, ide_info_aspect]
  *       in this order (the order is determined by the order in which aspects originate on
  *       <code>ab->...->pl</code> path.
  *   </li>
- *   <li>however, DaxProtoAspect is not visible to either ide_info_aspect or java_proto_aspect,
+ *   <li>however, DexArchiveAspect is not visible to either ide_info_aspect or java_proto_aspect,
  *        so the reduced list(and a result of {@link #getAllAspects()}) will be
  *        [java_proto_aspect, ide_info_aspect]
  *   </li>
@@ -254,7 +254,7 @@ public final class AspectCollection {
     // the original list in reverse).
     //
     // deps[aspect] contains all aspects that 'aspect' needs, in reverse order.
-    for (Entry<AspectDescriptor, Aspect> aspect :
+    for (Map.Entry<AspectDescriptor, Aspect> aspect :
         ImmutableList.copyOf(aspectMap.entrySet()).reverse()) {
       boolean needed = visibleAspects.contains(aspect.getKey());
       for (AspectDescriptor depAspectDescriptor : deps.keySet()) {
@@ -352,11 +352,11 @@ public final class AspectCollection {
   }
 
   /**
-   * Signals an inconsistency on aspect path: an aspect occurs twice on the path and
-   * the second occurrence sees a different set of aspects.
+   * Signals an inconsistency on aspect path: an aspect occurs twice on the path and the second
+   * occurrence sees a different set of aspects.
    *
-   * {@link #getAspect()} is the aspect occuring twice, and {@link #getPreviousAspect()}
-   * is the aspect that the second occurrence sees but the first does not.
+   * <p>{@link #getAspect()} is the aspect occurring twice, and {@link #getPreviousAspect()} is the
+   * aspect that the second occurrence sees but the first does not.
    */
   public static class AspectCycleOnPathException extends Exception {
 

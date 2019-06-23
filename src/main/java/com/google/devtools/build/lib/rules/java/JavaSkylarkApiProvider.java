@@ -22,31 +22,26 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
+import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.packages.SkylarkProviderIdentifier;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skylarkbuildapi.java.JavaSkylarkApiProviderApi;
+import com.google.devtools.build.lib.syntax.EvalException;
+import com.google.devtools.build.lib.syntax.StarlarkSemantics;
 import javax.annotation.Nullable;
 
 /**
  * A class that exposes the Java providers to Skylark. It is intended to provide a simple and stable
  * interface for Skylark users.
  */
-@SkylarkModule(
-  name = "JavaSkylarkApiProvider",
-  title = "java",
-  category = SkylarkModuleCategory.PROVIDER,
-  doc =
-      "Provides access to information about Java rules. Every Java-related target provides "
-          + "this struct, accessible as a <code>java</code> field on a "
-          + "<a href=\"Target.html\">target</a>."
-)
-public final class JavaSkylarkApiProvider extends SkylarkApiProvider {
+@AutoCodec
+public final class JavaSkylarkApiProvider extends SkylarkApiProvider
+    implements JavaSkylarkApiProviderApi<Artifact> {
   /** The name of the field in Skylark used to access this class. */
   public static final String NAME = "java";
   /** The name of the field in Skylark proto aspects used to access this class. */
-  public static final SkylarkProviderIdentifier PROTO_NAME =
-      SkylarkProviderIdentifier.forLegacy("proto_java");
+  public static final SkylarkProviderIdentifier SKYLARK_NAME =
+      SkylarkProviderIdentifier.forLegacy(NAME);
 
   @Nullable private final TransitiveInfoProviderMap transitiveInfoProviderMap;
 
@@ -57,9 +52,8 @@ public final class JavaSkylarkApiProvider extends SkylarkApiProvider {
     return new JavaSkylarkApiProvider(null);
   }
 
-  /**
-   * Creates a Skylark API provider that reads information from an explicit provider map.
-   */
+  /** Creates a Skylark API provider that reads information from an explicit provider map. */
+  @AutoCodec.Instantiator
   public static JavaSkylarkApiProvider fromProviderMap(
       TransitiveInfoProviderMap transitiveInfoProviderMap) {
     return new JavaSkylarkApiProvider(transitiveInfoProviderMap);
@@ -77,12 +71,10 @@ public final class JavaSkylarkApiProvider extends SkylarkApiProvider {
     return JavaInfo.getProvider(provider, getInfo());
   }
 
-  @SkylarkCallable(
-    name = "source_jars",
-    doc = "Returns the Jars containing Java source files for the target.",
-    structField = true
-  )
-  public NestedSet<Artifact> getSourceJars() {
+  @Override
+  public NestedSet<Artifact> getSourceJars(Location location, StarlarkSemantics semantics)
+      throws EvalException {
+    checkLegacyJavaProviderFlag(location, semantics);
     JavaSourceJarsProvider sourceJarsProvider = getProvider(JavaSourceJarsProvider.class);
     if (sourceJarsProvider == null) {
       return NestedSetBuilder.emptySet(Order.STABLE_ORDER);
@@ -90,42 +82,34 @@ public final class JavaSkylarkApiProvider extends SkylarkApiProvider {
     return NestedSetBuilder.wrap(Order.STABLE_ORDER, sourceJarsProvider.getSourceJars());
   }
 
-  @SkylarkCallable(
-    name = "transitive_deps",
-    doc = "Returns the transitive set of Jars required to build the target.",
-    structField = true
-  )
-  public NestedSet<Artifact> getTransitiveDeps() {
+  @Override
+  public NestedSet<Artifact> getTransitiveDeps(Location location, StarlarkSemantics semantics)
+      throws EvalException {
+    checkLegacyJavaProviderFlag(location, semantics);
     JavaCompilationArgsProvider compilationArgsProvider =
         getProvider(JavaCompilationArgsProvider.class);
     if (compilationArgsProvider == null) {
       return NestedSetBuilder.emptySet(Order.STABLE_ORDER);
     }
-    return compilationArgsProvider.getRecursiveJavaCompilationArgs().getCompileTimeJars();
+    return compilationArgsProvider.getTransitiveCompileTimeJars();
   }
 
-  @SkylarkCallable(
-    name = "transitive_runtime_deps",
-    doc = "Returns the transitive set of Jars required on the target's runtime classpath.",
-    structField = true
-  )
-  public NestedSet<Artifact> getTransitiveRuntimeDeps() {
+  @Override
+  public NestedSet<Artifact> getTransitiveRuntimeDeps(
+      Location location, StarlarkSemantics semantics) throws EvalException {
+    checkLegacyJavaProviderFlag(location, semantics);
     JavaCompilationArgsProvider compilationArgsProvider =
         getProvider(JavaCompilationArgsProvider.class);
     if (compilationArgsProvider == null) {
       return NestedSetBuilder.emptySet(Order.STABLE_ORDER);
     }
-    return compilationArgsProvider.getRecursiveJavaCompilationArgs().getRuntimeJars();
+    return compilationArgsProvider.getRuntimeJars();
   }
 
-  @SkylarkCallable(
-    name = "transitive_source_jars",
-    doc =
-        "Returns the Jars containing Java source files for the target and all of its transitive "
-            + "dependencies.",
-    structField = true
-  )
-  public NestedSet<Artifact> getTransitiveSourceJars() {
+  @Override
+  public NestedSet<Artifact> getTransitiveSourceJars(Location location, StarlarkSemantics semantics)
+      throws EvalException {
+    checkLegacyJavaProviderFlag(location, semantics);
     JavaSourceJarsProvider sourceJarsProvider = getProvider(JavaSourceJarsProvider.class);
     if (sourceJarsProvider == null) {
       return NestedSetBuilder.emptySet(Order.STABLE_ORDER);
@@ -133,21 +117,17 @@ public final class JavaSkylarkApiProvider extends SkylarkApiProvider {
     return sourceJarsProvider.getTransitiveSourceJars();
   }
 
-  @SkylarkCallable(
-    name = "outputs",
-    doc = "Returns information about outputs of this Java target.",
-    structField = true
-  )
-  public JavaRuleOutputJarsProvider getOutputJars() {
+  @Override
+  public JavaRuleOutputJarsProvider getOutputJars(Location location, StarlarkSemantics semantics)
+      throws EvalException {
+    checkLegacyJavaProviderFlag(location, semantics);
     return getProvider(JavaRuleOutputJarsProvider.class);
   }
 
-  @SkylarkCallable(
-    name = "transitive_exports",
-    structField = true,
-    doc = "Returns transitive set of labels that are being exported from this rule."
-  )
-  public NestedSet<Label> getTransitiveExports() {
+  @Override
+  public NestedSet<Label> getTransitiveExports(Location location, StarlarkSemantics semantics)
+      throws EvalException {
+    checkLegacyJavaProviderFlag(location, semantics);
     JavaExportsProvider exportsProvider = getProvider(JavaExportsProvider.class);
     if (exportsProvider != null) {
       return exportsProvider.getTransitiveExports();
@@ -156,23 +136,28 @@ public final class JavaSkylarkApiProvider extends SkylarkApiProvider {
     }
   }
 
-  @SkylarkCallable(
-    name = "annotation_processing",
-    structField = true,
-    allowReturnNones = true,
-    doc = "Returns information about annotation processing for this Java target."
-  )
-  public JavaGenJarsProvider getGenJarsProvider() {
+  @Override
+  public JavaGenJarsProvider getGenJarsProvider(Location location, StarlarkSemantics semantics)
+      throws EvalException {
+    checkLegacyJavaProviderFlag(location, semantics);
     return getProvider(JavaGenJarsProvider.class);
   }
 
-  @SkylarkCallable(
-    name = "compilation_info",
-    structField = true,
-    allowReturnNones = true,
-    doc = "Returns compilation information for this Java target."
-  )
-  public JavaCompilationInfoProvider getCompilationInfoProvider() {
+  @Override
+  public JavaCompilationInfoProvider getCompilationInfoProvider(
+      Location location, StarlarkSemantics semantics) throws EvalException {
+    checkLegacyJavaProviderFlag(location, semantics);
     return getProvider(JavaCompilationInfoProvider.class);
+  }
+
+  private void checkLegacyJavaProviderFlag(Location location, StarlarkSemantics semantics)
+      throws EvalException {
+    if (semantics.incompatibleDisallowLegacyJavaProvider()) {
+      throw new EvalException(
+          location,
+          "The .java provider is deprecated and cannot be used "
+              + "when --incompatible_disallow_legacy_java_provider is set. "
+              + "Please migrate to the JavaInfo Skylark provider.");
+    }
   }
 }

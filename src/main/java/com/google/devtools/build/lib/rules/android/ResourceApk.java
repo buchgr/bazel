@@ -14,8 +14,12 @@
 package com.google.devtools.build.lib.rules.android;
 
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.OutputGroupInfo;
+import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.rules.android.databinding.DataBindingContext;
+import java.util.Optional;
 import javax.annotation.Nullable;
 
 /**
@@ -27,47 +31,121 @@ public final class ResourceApk {
   // TODO(bazel-team): The only fields that are legitimately nullable are javaSrcJar and
   // mainDexProguardConfig. The rest are marked as such due to .fromTransitiveResources().
   // It seems like there should be a better way to do this.
-  @Nullable private final Artifact resourceApk;  // The .ap_ file
-  @Nullable private final Artifact resourceJavaSrcJar;  // Source jar containing R.java and friends
-  @Nullable private final Artifact resourceJavaClassJar;  // Class jar containing R.class files
+  @Nullable private final Artifact resourceApk; // The .ap_ file
+  @Nullable private final Artifact resourceJavaSrcJar; // Source jar containing R.java and friends
+  @Nullable private final Artifact resourceJavaClassJar; // Class jar containing R.class files
   private final ResourceDependencies resourceDeps;
-  @Nullable private final ResourceContainer primaryResource;
-  @Nullable private final Artifact manifest;  // The non-binary XML version of AndroidManifest.xml
+  private final AssetDependencies assetDeps;
+  /**
+   * Validated Android resource information. Will be null when this class is built from transitive
+   * resources only, and will be equal to primaryResources otherwise.
+   */
+  @Nullable private final ValidatedAndroidResources validatedResources;
+
+  private final AndroidResources primaryResources;
+  private final AndroidAssets primaryAssets;
+
+  // The non-binary XML version of AndroidManifest.xml
+  private final ProcessedAndroidManifest manifest;
+  private final Artifact rTxt;
   @Nullable private final Artifact resourceProguardConfig;
   @Nullable private final Artifact mainDexProguardConfig;
-  private final boolean legacy;
+  private final DataBindingContext dataBindingContext;
 
-  public ResourceApk(
+  public static ResourceApk of(
+      ValidatedAndroidResources resources,
+      MergedAndroidAssets assets,
+      @Nullable Artifact resourceProguardConfig,
+      @Nullable Artifact mainDexProguardConfig) {
+    return new ResourceApk(
+        resources.getApk(),
+        resources.getJavaSourceJar(),
+        resources.getJavaClassJar(),
+        resources.getResourceDependencies(),
+        assets.getAssetDependencies(),
+        resources,
+        resources,
+        assets,
+        resources.getProcessedManifest(),
+        resources.getRTxt(),
+        resourceProguardConfig,
+        mainDexProguardConfig,
+        resources.asDataBindingContext());
+  }
+
+  private ResourceApk(
       @Nullable Artifact resourceApk,
       @Nullable Artifact resourceJavaSrcJar,
       @Nullable Artifact resourceJavaClassJar,
       ResourceDependencies resourceDeps,
-      @Nullable ResourceContainer primaryResource,
-      @Nullable Artifact manifest,
+      AssetDependencies assetDeps,
+      @Nullable ValidatedAndroidResources validatedResources,
+      AndroidResources primaryResources,
+      AndroidAssets primaryAssets,
+      ProcessedAndroidManifest manifest,
+      Artifact rTxt,
       @Nullable Artifact resourceProguardConfig,
       @Nullable Artifact mainDexProguardConfig,
-      boolean legacy) {
+      DataBindingContext dataBindingContext) {
     this.resourceApk = resourceApk;
     this.resourceJavaSrcJar = resourceJavaSrcJar;
     this.resourceJavaClassJar = resourceJavaClassJar;
     this.resourceDeps = resourceDeps;
-    this.primaryResource = primaryResource;
+    this.assetDeps = assetDeps;
+    this.validatedResources = validatedResources;
+    this.primaryResources = primaryResources;
+    this.primaryAssets = primaryAssets;
     this.manifest = manifest;
+    this.rTxt = rTxt;
     this.resourceProguardConfig = resourceProguardConfig;
     this.mainDexProguardConfig = mainDexProguardConfig;
-    this.legacy = legacy;
+    this.dataBindingContext = dataBindingContext;
+  }
+
+  ResourceApk withApk(Artifact apk) {
+    return new ResourceApk(
+        apk,
+        resourceJavaSrcJar,
+        resourceJavaClassJar,
+        resourceDeps,
+        assetDeps,
+        validatedResources,
+        primaryResources,
+        primaryAssets,
+        manifest,
+        rTxt,
+        resourceProguardConfig,
+        mainDexProguardConfig,
+        asDataBindingContext());
   }
 
   public Artifact getArtifact() {
     return resourceApk;
   }
 
-  public ResourceContainer getPrimaryResource() {
-    return primaryResource;
+  @Nullable
+  public ValidatedAndroidResources getValidatedResources() {
+    return validatedResources;
+  }
+
+  public AndroidResources getPrimaryResources() {
+    return primaryResources;
+  }
+
+  public AndroidAssets getPrimaryAssets() {
+    return primaryAssets;
+  }
+
+  public ProcessedAndroidManifest getProcessedManifest() {
+    return manifest;
   }
 
   public Artifact getManifest() {
-    return manifest;
+    return manifest.getManifest();
+  }
+
+  public Artifact getRTxt() {
+    return rTxt;
   }
 
   public Artifact getResourceJavaSrcJar() {
@@ -78,13 +156,26 @@ public final class ResourceApk {
     return resourceJavaClassJar;
   }
 
-  public boolean isLegacy() {
-    return legacy;
-  }
-
-  public static ResourceApk fromTransitiveResources(
-      ResourceDependencies resourceDeps) {
-    return new ResourceApk(null, null, null, resourceDeps, null, null, null, null, false);
+  static ResourceApk fromTransitiveResources(
+      ResourceDependencies resourceDeps,
+      AssetDependencies assetDeps,
+      ProcessedAndroidManifest manifest,
+      Artifact rTxt,
+      DataBindingContext dataBindingContext) {
+    return new ResourceApk(
+        null,
+        null,
+        null,
+        resourceDeps,
+        assetDeps,
+        null,
+        AndroidResources.empty(),
+        AndroidAssets.empty(),
+        manifest,
+        rTxt,
+        null,
+        null,
+        dataBindingContext);
   }
 
   public Artifact getResourceProguardConfig() {
@@ -99,6 +190,14 @@ public final class ResourceApk {
     return resourceDeps;
   }
 
+  public AssetDependencies getAssetDependencies() {
+    return assetDeps;
+  }
+
+  public DataBindingContext asDataBindingContext() {
+    return dataBindingContext;
+  }
+
   /**
    * Creates an provider from the resources in the ResourceApk.
    *
@@ -106,16 +205,93 @@ public final class ResourceApk {
    * contain the "forwarded" resources: The merged transitive and merged direct dependencies of this
    * library.
    *
-   * <p>If the ResourceApk was generated from a "resources" attribute, it will contain the
-   * "resources" container in the direct dependencies and the rest as transitive.
-   *
-   * <p>If the ResourceApk was generated from local resources, that will be the direct dependencies and
-   * the rest will be transitive.
+   * <p>If the ResourceApk was generated from local resources, that will be the direct dependencies
+   * and the rest will be transitive.
    */
-  public AndroidResourcesProvider toResourceProvider(Label label, boolean isResourcesOnly) {
-    if (primaryResource == null) {
-      return resourceDeps.toProvider(label, isResourcesOnly);
+  AndroidResourcesInfo toResourceInfo(Label label) {
+    if (validatedResources == null) {
+      return resourceDeps.toInfo(label, manifest, rTxt);
     }
-    return resourceDeps.toProvider(label, primaryResource, isResourcesOnly);
+    return resourceDeps.toInfo(validatedResources);
+  }
+
+  AndroidAssetsInfo toAssetsInfo(Label label) {
+    if (primaryAssets instanceof MergedAndroidAssets) {
+      MergedAndroidAssets merged = (MergedAndroidAssets) primaryAssets;
+      return merged.toProvider();
+    }
+    return assetDeps.toInfo(label);
+  }
+
+  // TODO(b/77574966): Remove this cast once we get rid of ResourceContainer and can guarantee
+  // that only properly merged resources are passed into this object.
+  Optional<AndroidManifestInfo> toManifestInfo() {
+    if (validatedResources instanceof ValidatedAndroidResources) {
+      ValidatedAndroidResources validated = (ValidatedAndroidResources) validatedResources;
+
+      return Optional.of(validated.getStampedManifest().toProvider());
+    }
+
+    return Optional.empty();
+  }
+
+  public void addToConfiguredTargetBuilder(
+      RuleConfiguredTargetBuilder builder,
+      Label label,
+      boolean includeSkylarkApiProvider,
+      boolean isLibrary) {
+    AndroidResourcesInfo resourceInfo = toResourceInfo(label);
+    builder.addNativeDeclaredProvider(resourceInfo);
+
+    Optional<AndroidManifestInfo> manifestInfo = toManifestInfo();
+    manifestInfo.ifPresent(builder::addNativeDeclaredProvider);
+
+    AndroidAssetsInfo assetsInfo = toAssetsInfo(label);
+    builder.addNativeDeclaredProvider(assetsInfo);
+    if (assetsInfo.getValidationResult() != null) {
+      // Asset merging output isn't consumed by anything. Require it to be run by top-level
+      // targets
+      // so we can validate there are no asset merging conflicts.
+      builder.addOutputGroup(OutputGroupInfo.HIDDEN_TOP_LEVEL, assetsInfo.getValidationResult());
+    }
+
+    if (manifestInfo.isPresent() && !isLibrary) {
+      builder.addNativeDeclaredProvider(
+          AndroidBinaryDataInfo.of(
+              resourceApk, resourceProguardConfig, resourceInfo, assetsInfo, manifestInfo.get()));
+    }
+
+    if (includeSkylarkApiProvider) {
+      builder.addSkylarkTransitiveInfo(
+          AndroidSkylarkApiProvider.NAME, new AndroidSkylarkApiProvider(resourceInfo));
+    }
+  }
+
+  /**
+   * Registers an action to process just the transitive resources and assets of a library.
+   *
+   * <p>Any local resources and assets will be ignored.
+   */
+  public static ResourceApk processFromTransitiveLibraryData(
+      AndroidDataContext dataContext,
+      DataBindingContext dataBindingContext,
+      ResourceDependencies resourceDeps,
+      AssetDependencies assetDeps,
+      StampedAndroidManifest manifest)
+      throws InterruptedException {
+
+    return new AndroidResourcesProcessorBuilder()
+        .setLibrary(true)
+        .setRTxtOut(dataContext.createOutputArtifact(AndroidRuleClasses.ANDROID_R_TXT))
+        .setManifestOut(
+            dataContext.createOutputArtifact(AndroidRuleClasses.ANDROID_PROCESSED_MANIFEST))
+        .setSourceJarOut(
+            dataContext.createOutputArtifact(AndroidRuleClasses.ANDROID_JAVA_SOURCE_JAR))
+        .setJavaPackage(manifest.getPackage())
+        .withResourceDependencies(resourceDeps)
+        .withAssetDependencies(assetDeps)
+        .setDebug(dataContext.useDebug())
+        .setThrowOnResourceConflict(dataContext.throwOnResourceConflict())
+        .buildWithoutLocalResources(dataContext, manifest, dataBindingContext);
   }
 }

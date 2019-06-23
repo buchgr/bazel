@@ -31,7 +31,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.EnumMap;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Objects;
 
 /**
@@ -73,7 +72,7 @@ public class PublicXmlResourceValue implements XmlResourceValue {
   @Override
   public void write(
       FullyQualifiedName key, DataSource source, AndroidDataWritingVisitor mergedDataWriter) {
-    for (Entry<ResourceType, Optional<Integer>> entry : typeToId.entrySet()) {
+    for (Map.Entry<ResourceType, Optional<Integer>> entry : typeToId.entrySet()) {
       Integer value = entry.getValue().orNull();
       mergedDataWriter
           .define(key)
@@ -92,7 +91,7 @@ public class PublicXmlResourceValue implements XmlResourceValue {
 
   @Override
   public void writeResourceToClass(FullyQualifiedName key, AndroidResourceSymbolSink sink) {
-    for (Entry<ResourceType, Optional<Integer>> entry : typeToId.entrySet()) {
+    for (Map.Entry<ResourceType, Optional<Integer>> entry : typeToId.entrySet()) {
       sink.acceptPublicResource(entry.getKey(), key.name(), entry.getValue());
     }
   }
@@ -120,7 +119,7 @@ public class PublicXmlResourceValue implements XmlResourceValue {
   public static XmlResourceValue from(SerializeFormat.DataValueXml proto) {
     Map<String, String> protoValues = proto.getMappedStringValue();
     ImmutableMap.Builder<ResourceType, Optional<Integer>> typeToId = ImmutableMap.builder();
-    for (Entry<String, String> entry : protoValues.entrySet()) {
+    for (Map.Entry<String, String> entry : protoValues.entrySet()) {
       ResourceType type = ResourceType.getEnum(entry.getKey());
       Preconditions.checkNotNull(type);
       Optional<Integer> id =
@@ -132,11 +131,17 @@ public class PublicXmlResourceValue implements XmlResourceValue {
     return of(typeToId.build());
   }
 
+  public static XmlResourceValue from(ResourceType resourceType, int id) {
+    ImmutableMap.Builder<ResourceType, Optional<Integer>> typeToId = ImmutableMap.builder();
+    typeToId.put(resourceType, Optional.of(id));
+    return of(typeToId.build());
+  }
+
   @Override
   public int serializeTo(int sourceId, Namespaces namespaces, OutputStream output)
       throws IOException {
     Map<String, String> assignments = Maps.newLinkedHashMapWithExpectedSize(typeToId.size());
-    for (Entry<ResourceType, Optional<Integer>> entry : typeToId.entrySet()) {
+    for (Map.Entry<ResourceType, Optional<Integer>> entry : typeToId.entrySet()) {
       Optional<Integer> value = entry.getValue();
       String stringValue = value.isPresent() ? value.get().toString() : MISSING_ID_VALUE;
       assignments.put(entry.getKey().toString(), stringValue);
@@ -160,7 +165,7 @@ public class PublicXmlResourceValue implements XmlResourceValue {
     PublicXmlResourceValue other = (PublicXmlResourceValue) value;
     Map<ResourceType, Optional<Integer>> combined = new EnumMap<>(ResourceType.class);
     combined.putAll(typeToId);
-    for (Entry<ResourceType, Optional<Integer>> entry : other.typeToId.entrySet()) {
+    for (Map.Entry<ResourceType, Optional<Integer>> entry : other.typeToId.entrySet()) {
       Optional<Integer> existing = combined.get(entry.getKey());
       if (existing != null && !existing.equals(entry.getValue())) {
         throw new IllegalArgumentException(
@@ -172,7 +177,12 @@ public class PublicXmlResourceValue implements XmlResourceValue {
     }
     return of(combined);
   }
-  
+
+  @Override
+  public int compareMergePriorityTo(XmlResourceValue value) {
+    return 0;
+  }
+
   @Override
   public String asConflictStringWith(DataSource source) {
     return source.asConflictString();

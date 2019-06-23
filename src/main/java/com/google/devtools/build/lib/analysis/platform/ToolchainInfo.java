@@ -20,8 +20,9 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.packages.NativeInfo;
 import com.google.devtools.build.lib.packages.NativeProvider;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skylarkbuildapi.platform.ToolchainInfoApi;
+import com.google.devtools.build.lib.syntax.Environment;
 import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.FunctionSignature;
 import com.google.devtools.build.lib.syntax.SkylarkDict;
@@ -29,16 +30,11 @@ import com.google.devtools.build.lib.syntax.SkylarkType;
 import java.util.Map;
 
 /**
- * A provider that supplied information about a specific language toolchain, including what platform
+ * A provider that supplies information about a specific language toolchain, including what platform
  * constraints are required for execution and for the target platform.
  */
-@SkylarkModule(
-  name = "ToolchainInfo",
-  doc = "Provides access to data about a specific toolchain.",
-  category = SkylarkModuleCategory.PROVIDER
-)
 @Immutable
-public class ToolchainInfo extends NativeInfo {
+public class ToolchainInfo extends NativeInfo implements ToolchainInfoApi {
 
   /** Name used in Skylark for accessing this provider. */
   public static final String SKYLARK_NAME = "ToolchainInfo";
@@ -56,19 +52,20 @@ public class ToolchainInfo extends NativeInfo {
           /*types=*/ ImmutableList.<SkylarkType>of(SkylarkType.DICT));
 
   /** Skylark constructor and identifier for this provider. */
+  @AutoCodec
   public static final NativeProvider<ToolchainInfo> PROVIDER =
       new NativeProvider<ToolchainInfo>(ToolchainInfo.class, SKYLARK_NAME, SIGNATURE) {
         @Override
-        protected ToolchainInfo createInstanceFromSkylark(Object[] args, Location loc)
-            throws EvalException {
+        protected ToolchainInfo createInstanceFromSkylark(
+            Object[] args, Environment env, Location loc) throws EvalException {
           Map<String, Object> data =
               SkylarkDict.castSkylarkDictOrNoneToDict(args[0], String.class, Object.class, "data");
           return ToolchainInfo.create(data, loc);
         }
       };
 
-  public ToolchainInfo(Map<String, Object> toolchainData, Location loc) {
-    super(PROVIDER, ImmutableMap.copyOf(toolchainData), loc);
+  public ToolchainInfo(Map<String, Object> values, Location location) {
+    super(PROVIDER, ImmutableMap.copyOf(values), location);
   }
 
   public static ToolchainInfo create(Map<String, Object> toolchainData) {
@@ -78,4 +75,7 @@ public class ToolchainInfo extends NativeInfo {
   public static ToolchainInfo create(Map<String, Object> toolchainData, Location loc) {
     return new ToolchainInfo(toolchainData, loc);
   }
+
+  /** Add make variables to be exported to dependers. */
+  public void addGlobalMakeVariables(ImmutableMap.Builder<String, String> globalMakeEnvBuilder) {}
 }

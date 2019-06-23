@@ -22,28 +22,6 @@
 
 set -o errexit
 
-# Check that the bintools can be found, otherwise we would see very confusing
-# error messages.
-# For example on Windows we would find "FIND.EXE" instead of "/usr/bin/find"
-# when running "find".
-hash tr >&/dev/null || {
-  echo >&2 "ERROR: cannot locate GNU coreutils; check your PATH."
-  echo >&2 "       (You may need to run 'export PATH=/bin:/usr/bin:\$PATH)'"
-  exit 1
-}
-
-# Ensure Python is on the PATH on Windows,otherwise we would see
-# "LAUNCHER ERROR" messages from py_binary exe launchers.
-case "$(uname -s | tr [:upper:] [:lower:])" in
-msys*|mingw*|cygwin*)
-  which python.exe >&/dev/null || {
-    echo >&2 "ERROR: cannot locate python.exe; check your PATH."
-    echo >&2 "       (You may need to run 'export PATH=/c/Python27:\$PATH)' or similar,"
-    echo >&2 "       depending on where you installed Python)."
-    exit 1
-  }
-esac
-
 cd "$(dirname "$0")"
 
 # Set the default verbose mode in buildenv.sh so that we do not display command
@@ -85,11 +63,12 @@ display "."
 log "Building output/bazel"
 # We set host and target platform directly since the defaults in @bazel_tools
 # have not yet been generated.
-bazel_build "src:bazel${EXE_EXT}" \
-  --experimental_host_platform=//tools/platforms:host_platform \
-  --experimental_platforms=//tools/platforms:target_platform \
+bazel_build "src:bazel_nojdk${EXE_EXT}" \
+  --action_env=PATH \
+  --host_platform=@bazel_tools//platforms:host_platform \
+  --platforms=@bazel_tools//platforms:target_platform \
   || fail "Could not build Bazel"
-bazel_bin_path="$(get_bazel_bin_path)/src/bazel${EXE_EXT}"
+bazel_bin_path="$(get_bazel_bin_path)/src/bazel_nojdk${EXE_EXT}"
 [ -e "$bazel_bin_path" ] \
   || fail "Could not find freshly built Bazel binary at '$bazel_bin_path'"
 cp -f "$bazel_bin_path" "output/bazel${EXE_EXT}" \

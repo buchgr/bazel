@@ -13,14 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.lib.packages.util;
 
+import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.testutil.BlazeTestUtils;
 import com.google.devtools.build.lib.testutil.TestConstants;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
-
 import java.io.IOException;
-
 import javax.annotation.Nullable;
 
 /**
@@ -95,9 +93,19 @@ public final class MockToolsConfig {
   public Path overwrite(String relativePath, String... lines) throws IOException {
     Path path = rootDirectory.getRelative(relativePath);
     if (path.exists()) {
-      FileSystemUtils.deleteTree(path);
+      path.deleteTree();
     }
     return create(relativePath, lines);
+  }
+
+  public Path append(String relativePath, String... lines) throws IOException {
+    Path path = rootDirectory.getRelative(relativePath);
+    if (!path.exists()) {
+      return create(relativePath, lines);
+    }
+
+    FileSystemUtils.appendIsoLatin1(path, lines);
+    return path;
   }
 
   /**

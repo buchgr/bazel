@@ -46,11 +46,7 @@ public interface MemoizingEvaluator {
    * missing.
    */
   <T extends SkyValue> EvaluationResult<T> evaluate(
-      Iterable<? extends SkyKey> roots,
-      Version version,
-      boolean keepGoing,
-      int numThreads,
-      ExtendedEventHandler reporter)
+      Iterable<? extends SkyKey> roots, Version version, EvaluationContext evaluationContext)
       throws InterruptedException;
 
   /**
@@ -93,10 +89,28 @@ public interface MemoizingEvaluator {
 
   /**
    * Returns the node entries in the graph. Should only be called between evaluations. The returned
-   * map is mutable, but do not mutate it unless you know what you are doing! Naively deleting an
-   * entry will break graph invariants and cause a crash.
+   * iterable is mutable, but do not mutate it unless you know what you are doing! Naively deleting
+   * an entry will break graph invariants and cause a crash.
    */
-  Map<SkyKey, ? extends NodeEntry> getGraphMap();
+  Iterable<? extends Map.Entry<SkyKey, ? extends NodeEntry>> getGraphEntries();
+
+  /**
+   * Informs the evaluator that a sequence of evaluations at the same version has finished.
+   * Evaluators may make optimizations under the assumption that successive evaluations are all at
+   * the same version. A call of this method tells the evaluator that the next evaluation is not
+   * guaranteed to be at the same version.
+   */
+  default void noteEvaluationsAtSameVersionMayBeFinished(ExtendedEventHandler eventHandler)
+      throws InterruptedException {
+    postLoggingStats(eventHandler);
+  }
+
+  /**
+   * Tells the evaluator to post any logging statistics that it may have accumulated over the last
+   * sequence of evaluations. Normally called internally by {@link
+   * #noteEvaluationsAtSameVersionMayBeFinished}.
+   */
+  default void postLoggingStats(ExtendedEventHandler eventHandler) {}
 
   /**
    * Returns the done (without error) values in the graph.
@@ -115,6 +129,9 @@ public interface MemoizingEvaluator {
   @Nullable
   SkyValue getExistingValue(SkyKey key) throws InterruptedException;
 
+  @Nullable
+  NodeEntry getExistingEntryAtLatestVersion(SkyKey key) throws InterruptedException;
+
   /**
    * Returns an error if and only if an earlier call to {@link #evaluate} created it; null
    * otherwise.
@@ -125,9 +142,6 @@ public interface MemoizingEvaluator {
   @VisibleForTesting
   @Nullable
   ErrorInfo getExistingErrorForTesting(SkyKey key) throws InterruptedException;
-
-  @Nullable
-  NodeEntry getExistingEntryForTesting(SkyKey key) throws InterruptedException;
 
   /**
    * Tests that want finer control over the graph being used may provide a {@code transformer} here.
@@ -156,7 +170,9 @@ public interface MemoizingEvaluator {
     MemoizingEvaluator create(
         ImmutableMap<SkyFunctionName, ? extends SkyFunction> skyFunctions,
         Differencer differencer,
-        @Nullable EvaluationProgressReceiver progressReceiver,
+        EvaluationProgressReceiver progressReceiver,
+        GraphInconsistencyReceiver graphInconsistencyReceiver,
+        EventFilter eventFilter,
         EmittedEventState emittedEventState,
         boolean keepEdges);
   }

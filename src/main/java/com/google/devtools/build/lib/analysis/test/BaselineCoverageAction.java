@@ -17,8 +17,8 @@ package com.google.devtools.build.lib.analysis.test;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
-import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.NotifyOnActionCacheHit;
@@ -29,6 +29,9 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.events.ExtendedEventHandler;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
@@ -37,18 +40,18 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Generates baseline (empty) coverage for the given non-test target.
- */
+/** Generates baseline (empty) coverage for the given non-test target. */
 @VisibleForTesting
+@AutoCodec
 @Immutable
 public final class BaselineCoverageAction extends AbstractFileWriteAction
     implements NotifyOnActionCacheHit {
   private final NestedSet<Artifact> instrumentedFiles;
 
-  private BaselineCoverageAction(
-      ActionOwner owner, NestedSet<Artifact> instrumentedFiles, Artifact output) {
-    super(owner, ImmutableList.<Artifact>of(), output, false);
+  @VisibleForSerialization
+  BaselineCoverageAction(
+      ActionOwner owner, NestedSet<Artifact> instrumentedFiles, Artifact primaryOutput) {
+    super(owner, ImmutableList.<Artifact>of(), primaryOutput, false);
     this.instrumentedFiles = instrumentedFiles;
   }
 
@@ -58,10 +61,8 @@ public final class BaselineCoverageAction extends AbstractFileWriteAction
   }
 
   @Override
-  public String computeKey() {
-    return new Fingerprint()
-        .addStrings(getInstrumentedFilePathStrings())
-        .hexDigestAndReset();
+  public void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp) {
+    fp.addStrings(getInstrumentedFilePathStrings());
   }
 
   private Iterable<String> getInstrumentedFilePathStrings() {
@@ -89,21 +90,19 @@ public final class BaselineCoverageAction extends AbstractFileWriteAction
 
   @Override
   protected void afterWrite(ActionExecutionContext actionExecutionContext) {
-    notifyAboutBaselineCoverage(actionExecutionContext.getEventBus());
+    notifyAboutBaselineCoverage(actionExecutionContext.getEventHandler());
   }
 
   @Override
   public void actionCacheHit(ActionCachedContext context) {
-    notifyAboutBaselineCoverage(context.getEventBus());
+    notifyAboutBaselineCoverage(context.getEventHandler());
   }
 
-  /**
-   * Notify interested parties about new baseline coverage data.
-   */
-  private void notifyAboutBaselineCoverage(EventBus eventBus) {
+  /** Notify interested parties about new baseline coverage data. */
+  private void notifyAboutBaselineCoverage(ExtendedEventHandler eventHandler) {
     Artifact output = Iterables.getOnlyElement(getOutputs());
     String ownerString = Label.print(getOwner().getLabel());
-    eventBus.post(new BaselineCoverageResult(output, ownerString));
+    eventHandler.post(new BaselineCoverageResult(output, ownerString));
   }
 
   /**

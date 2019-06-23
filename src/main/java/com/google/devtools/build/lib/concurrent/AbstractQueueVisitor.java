@@ -14,80 +14,81 @@
 package com.google.devtools.build.lib.concurrent;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
-import com.google.common.util.concurrent.AtomicLongMap;
+import com.google.common.collect.Sets;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.devtools.build.lib.concurrent.ErrorClassifier.ErrorClassification;
-import com.google.devtools.build.lib.util.Preconditions;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /** A {@link QuiescingExecutor} implementation that wraps an {@link ExecutorService}. */
 public class AbstractQueueVisitor implements QuiescingExecutor {
-
   /**
-   * Default factory function for constructing {@link ThreadPoolExecutor}s. The {@link
-   * ThreadPoolExecutor}s this creates have the same value for {@code corePoolSize} and {@code
-   * maximumPoolSize} because that results in a fixed-size thread pool, and the current use cases
-   * for {@link AbstractQueueVisitor} don't require any more sophisticated thread pool size
-   * management.
-   *
-   * <p>If client use cases change, they may invoke one of the {@link
-   * AbstractQueueVisitor#AbstractQueueVisitor} constructors that accepts a pre-constructed {@link
-   * ThreadPoolExecutor}.
-   */
-  public static final Function<ExecutorParams, ThreadPoolExecutor> EXECUTOR_FACTORY =
-      p ->
-          new ThreadPoolExecutor(
-              /*corePoolSize=*/ p.getParallelism(),
-              /*maximumPoolSize=*/ p.getParallelism(),
-              p.getKeepAliveTime(),
-              p.getUnits(),
-              p.getWorkQueue(),
-              new ThreadFactoryBuilder().setNameFormat(p.getPoolName() + " %d").build());
-  /**
-   * The most severe unhandled exception thrown by a worker thread, according to
-   * {@link #errorClassifier}. This exception gets propagated to the calling thread of
-   * {@link #awaitQuiescence} . We use the most severe error for the sake of not masking e.g.
-   * crashes in worker threads after the first critical error that can occur due to race conditions
-   * in client code.
+   * The most severe unhandled exception thrown by a worker thread, according to {@link
+   * #errorClassifier}. This exception gets propagated to the calling thread of {@link
+   * #awaitQuiescence} . We use the most severe error for the sake of not masking e.g. crashes in
+   * worker threads after the first critical error that can occur due to race conditions in client
+   * code.
    *
    * <p>Field updates happen only in blocks that are synchronized on the {@link
    * AbstractQueueVisitor} object.
    *
    * <p>If {@link AbstractQueueVisitor} clients don't like the semantics of storing and propagating
    * the most severe error, then they should be provide an {@link ErrorClassifier} that does the
-   * right thing (e.g. to cause the _first_ error to be propagated, you'd want to provide an
-   * {@link ErrorClassifier} that gives all errors the exact same {@link ErrorClassification}).
+   * right thing (e.g. to cause the _first_ error to be propagated, you'd want to provide an {@link
+   * ErrorClassifier} that gives all errors the exact same {@link ErrorClassification}).
    *
    * <p>Note that this is not a performance-critical path.
    */
   private volatile Throwable unhandled = null;
 
   /**
-   * An uncaught exception when submitting a job to the {@link ExecutorService} is catastrophic,
-   * and usually indicates a lack of stack space on which to allocate a native thread. The {@link
-   * ExecutorService} may reach an inconsistent state in such circumstances, so we avoid blocking
-   * on its termination when this field is non-{@code null}.
+   * An uncaught exception when submitting a job to the {@link ExecutorService} is catastrophic, and
+   * usually indicates a lack of stack space on which to allocate a native thread. The {@link
+   * ExecutorService} may reach an inconsistent state in such circumstances, so we avoid blocking on
+   * its termination when this field is non-{@code null}.
    */
   private volatile Throwable catastrophe;
 
   /**
    * An object used in the manner of a {@link java.util.concurrent.locks.Condition} object, for the
-   * condition {@code remainingTasks.get() == 0 || jobsMustBeStopped}.
-   * TODO(bazel-team): Replace with an actual {@link java.util.concurrent.locks.Condition} object.
+   * condition {@code remainingTasks.get() == 0 || jobsMustBeStopped}. TODO(bazel-team): Replace
+   * with an actual {@link java.util.concurrent.locks.Condition} object.
    */
   private final Object zeroRemainingTasks = new Object();
 
   /** The number of {@link Runnable}s {@link #execute}-d that have not finished evaluation. */
   private final AtomicLong remainingTasks = new AtomicLong(0);
+
+  /**
+   * A thread that wants to add or remove a future from {@code outstandingFutures} must first obtain
+   * the <em>read</em> lock and then check the {@code threadInterrupted} flag. The thread that
+   * cancels all futures must first set the {@code threadInterrupted} flag, and then obtain the
+   * <em>write</em> lock. Only once both have happened is the main thread allowed to iterate over
+   * the {@code outstandingFutures}. This allows concurrent future registration, but ensures that
+   * canceling only happens when there are no concurrent modifications to the set since that
+   * requires iterating over all elements.
+   */
+  private final ReadWriteLock outstandingFuturesLock = new ReentrantReadWriteLock();
+
+  private final Set<ListenableFuture<?>> outstandingFutures = Sets.newConcurrentHashSet();
 
   /**
    * Flag used to record when all threads were killed by failed action execution. Only ever
@@ -99,24 +100,27 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
   private volatile boolean jobsMustBeStopped = false;
 
   /** Map from thread to number of jobs executing in the thread. Used for interrupt handling. */
-  private final AtomicLongMap<Thread> jobs = AtomicLongMap.create();
+  private final Map<Thread, AtomicLong> jobs = new ConcurrentHashMap<>();
 
   private final ExecutorService executorService;
 
+  private final boolean usingPriorityQueue;
+
   /**
-   * Flag used to record when the main thread (the thread which called {@link #awaitQuiescence})
-   * is interrupted.
+   * Flag used to record when the main thread (the thread which called {@link #awaitQuiescence}) is
+   * interrupted.
    *
-   * When this is {@code true}, adding tasks to the {@link ExecutorService} will fail quietly as
+   * <p>When this is {@code true}, adding tasks to the {@link ExecutorService} will fail quietly as
    * a part of the process of shutting down the worker threads.
    */
-  private volatile boolean threadInterrupted = false;
+  private volatile boolean threadInterrupted;
 
   /**
    * Latches used to signal when the visitor has been interrupted or seen an exception. Used only
    * for testing.
    */
   private final CountDownLatch interruptedLatch = new CountDownLatch(1);
+
   private final CountDownLatch exceptionLatch = new CountDownLatch(1);
 
   /** If {@code true}, don't run new actions after an uncaught exception. */
@@ -129,21 +133,67 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
 
   private static final Logger logger = Logger.getLogger(AbstractQueueVisitor.class.getName());
 
+  /**
+   * Default function for constructing {@link ThreadPoolExecutor}s. The {@link ThreadPoolExecutor}s
+   * this creates have the same value for {@code corePoolSize} and {@code maximumPoolSize} because
+   * that results in a fixed-size thread pool, and the current use cases for {@link
+   * AbstractQueueVisitor} don't require any more sophisticated thread pool size management.
+   *
+   * <p>If client use cases change, they may invoke one of the {@link
+   * AbstractQueueVisitor#AbstractQueueVisitor} constructors that accepts a pre-constructed {@link
+   * ThreadPoolExecutor}.
+   */
   private static ExecutorService createExecutorService(
       int parallelism,
       long keepAliveTime,
       TimeUnit units,
-      String poolName,
-      Function<ExecutorParams, ? extends ExecutorService> executorFactory) {
-    return Preconditions.checkNotNull(executorFactory)
-        .apply(
-            new ExecutorParams(
-                parallelism,
-                keepAliveTime,
-                units,
-                Preconditions.checkNotNull(poolName),
-                new BlockingStack<Runnable>()));
+      BlockingQueue<Runnable> workQueue,
+      String poolName) {
+
+    if ("1".equals(System.getProperty("experimental_use_fork_join_pool"))) {
+      return new NamedForkJoinPool(poolName, parallelism);
+    }
+    return new ThreadPoolExecutor(
+        /*corePoolSize=*/ parallelism,
+        /*maximumPoolSize=*/ parallelism,
+        keepAliveTime,
+        units,
+        workQueue,
+        new ThreadFactoryBuilder()
+            .setNameFormat(Preconditions.checkNotNull(poolName) + " %d")
+            .build());
   }
+
+  public static ExecutorService createExecutorService(
+      int parallelism, String poolName, boolean useForkJoinPool) {
+    if (useForkJoinPool) {
+      return new NamedForkJoinPool(poolName, parallelism);
+    }
+    return createExecutorService(parallelism, poolName);
+  }
+
+  public static ExecutorService createExecutorService(int parallelism, String poolName) {
+    return createExecutorService(
+        parallelism,
+        /*keepAliveTime=*/ 1,
+        TimeUnit.SECONDS,
+        new PriorityBlockingQueue<>(),
+        poolName);
+  }
+
+  public static AbstractQueueVisitor createWithExecutorService(
+      ExecutorService executorService,
+      boolean failFastOnException,
+      ErrorClassifier errorClassifier) {
+    if (executorService instanceof ForkJoinPool) {
+      return ForkJoinQuiescingExecutor.newBuilder()
+          .withOwnershipOf((ForkJoinPool) executorService)
+          .setErrorClassifier(errorClassifier)
+          .build();
+    }
+    return new AbstractQueueVisitor(executorService, true, failFastOnException, errorClassifier);
+  }
+
   /**
    * Create the {@link AbstractQueueVisitor}.
    *
@@ -155,7 +205,6 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
    * @param failFastOnException if {@code true}, don't run new actions after an uncaught exception.
    * @param poolName sets the name of threads spawned by the {@link ExecutorService}. If {@code
    *     null}, default thread naming will be used.
-   * @param executorFactory the factory for constructing the executor service.
    * @param errorClassifier an error classifier used to determine whether to log and/or stop jobs.
    */
   public AbstractQueueVisitor(
@@ -164,10 +213,9 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
       TimeUnit units,
       boolean failFastOnException,
       String poolName,
-      Function<ExecutorParams, ? extends ExecutorService> executorFactory,
       ErrorClassifier errorClassifier) {
     this(
-        createExecutorService(parallelism, keepAliveTime, units, poolName, executorFactory),
+        createExecutorService(parallelism, keepAliveTime, units, new BlockingStack<>(), poolName),
         true,
         failFastOnException,
         errorClassifier);
@@ -188,10 +236,25 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
       boolean shutdownOnCompletion,
       boolean failFastOnException,
       ErrorClassifier errorClassifier) {
+    this(
+        executorService,
+        shutdownOnCompletion,
+        failFastOnException,
+        errorClassifier,
+        /*usingPriorityQueue=*/ false);
+  }
+
+  private AbstractQueueVisitor(
+      ExecutorService executorService,
+      boolean shutdownOnCompletion,
+      boolean failFastOnException,
+      ErrorClassifier errorClassifier,
+      boolean usingPriorityQueue) {
     this.failFastOnException = failFastOnException;
     this.ownExecutorService = shutdownOnCompletion;
     this.executorService = Preconditions.checkNotNull(executorService);
     this.errorClassifier = Preconditions.checkNotNull(errorClassifier);
+    this.usingPriorityQueue = usingPriorityQueue;
   }
 
   @Override
@@ -216,48 +279,31 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
   /** Schedules a call. Called in a worker thread. */
   @Override
   public final void execute(Runnable runnable) {
-    if (runConcurrently()) {
-      WrappedRunnable wrappedRunnable = new WrappedRunnable(runnable);
-      try {
-        // It's impossible for this increment to result in remainingTasks.get <= 0 because
-        // remainingTasks is never negative. Therefore it isn't necessary to check its value for
-        // the purpose of updating zeroRemainingTasks.
-        long tasks = remainingTasks.incrementAndGet();
-        Preconditions.checkState(
-            tasks > 0,
-            "Incrementing remaining tasks counter resulted in impossible non-positive number.");
-        executeRunnable(wrappedRunnable);
-      } catch (Throwable e) {
-        if (!wrappedRunnable.ran) {
-          // Note that keeping track of ranTask is necessary to disambiguate the case where
-          // execute() itself failed, vs. a caller-runs policy on pool exhaustion, where the
-          // runnable threw. To be extra cautious, we decrement the task count in a finally
-          // block, even though the CountDownLatch is unlikely to throw.
-          recordError(e);
-        }
+    if (usingPriorityQueue) {
+      Preconditions.checkState(runnable instanceof Comparable);
+    }
+    WrappedRunnable wrappedRunnable = new WrappedRunnable(runnable);
+    try {
+      // It's impossible for this increment to result in remainingTasks.get <= 0 because
+      // remainingTasks is never negative. Therefore it isn't necessary to check its value for
+      // the purpose of updating zeroRemainingTasks.
+      long tasks = remainingTasks.incrementAndGet();
+      Preconditions.checkState(
+          tasks > 0,
+          "Incrementing remaining tasks counter resulted in impossible non-positive number.");
+      executeRunnable(wrappedRunnable);
+    } catch (Throwable e) {
+      if (!wrappedRunnable.ran) {
+        // Note that keeping track of ranTask is necessary to disambiguate the case where
+        // execute() itself failed, vs. a caller-runs policy on pool exhaustion, where the
+        // runnable threw. To be extra cautious, we decrement the task count in a finally
+        // block, even though the CountDownLatch is unlikely to throw.
+        recordError(e);
       }
-    } else {
-      runnable.run();
     }
   }
 
-  /**
-   * Subclasses may override this to make dynamic decisions about whether to run tasks
-   * asynchronously versus in-thread.
-   */
-  protected boolean runConcurrently() {
-    return true;
-  }
-
-  /**
-   * Returns an approximate count of how many threads in the queue visitor's thread pool are
-   * occupied with tasks.
-   */
-  protected final int activeParallelTasks() {
-    return jobs.asMap().size();
-  }
-
-  protected void executeRunnable(Runnable runnable) {
+  protected void executeRunnable(WrappedRunnable runnable) {
     executorService.execute(runnable);
   }
 
@@ -265,16 +311,16 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
     boolean critical = false;
     ErrorClassification errorClassification = errorClassifier.classify(e);
     switch (errorClassification) {
-        case AS_CRITICAL_AS_POSSIBLE:
+      case AS_CRITICAL_AS_POSSIBLE:
       case CRITICAL_AND_LOG:
         critical = true;
         logger.log(Level.WARNING, "Found critical error in queue visitor", e);
         break;
-        case CRITICAL:
-          critical = true;
-          break;
-        default:
-          break;
+      case CRITICAL:
+        critical = true;
+        break;
+      default:
+        break;
     }
     if (unhandled == null
         || errorClassification.compareTo(errorClassifier.classify(unhandled)) > 0) {
@@ -314,19 +360,20 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
 
   /**
    * A wrapped {@link Runnable} that:
+   *
    * <ul>
    *   <li>Sets {@link #run} to {@code true} when {@code WrappedRunnable} is run,
    *   <li>Records the thread evaluating {@code r} in {@link #jobs} while {@code r} is evaluated,
    *   <li>Prevents {@link #originalRunnable} from being invoked if {@link #blockNewActions} returns
-   *   {@code true},
+   *       {@code true},
    *   <li>Synchronously invokes {@code runnable.run()},
    *   <li>Catches any {@link Throwable} thrown by {@code runnable.run()}, and if it is the most
-   *   severe {@link Throwable} seen by this {@link AbstractQueueVisitor}, assigns it to
-   *   {@link #unhandled}, and sets {@link #jobsMustBeStopped} if necessary,
+   *       severe {@link Throwable} seen by this {@link AbstractQueueVisitor}, assigns it to {@link
+   *       #unhandled}, and sets {@link #jobsMustBeStopped} if necessary,
    *   <li>And, lastly, calls {@link #decrementRemainingTasks}.
    * </ul>
    */
-  private final class WrappedRunnable implements Runnable {
+  protected final class WrappedRunnable implements Runnable, Comparable<WrappedRunnable> {
     private final Runnable originalRunnable;
     private volatile boolean ran;
 
@@ -362,14 +409,21 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
         }
       }
     }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    public int compareTo(WrappedRunnable o) {
+      // This should only be called when the concrete class is submitting comparable runnables.
+      return ((Comparable) originalRunnable).compareTo(o.originalRunnable);
+    }
   }
 
   private void addJob(Thread thread) {
-    jobs.incrementAndGet(thread);
+    jobs.computeIfAbsent(thread, k -> new AtomicLong()).incrementAndGet();
   }
 
   private void removeJob(Thread thread) {
-    if (jobs.decrementAndGet(thread) == 0) {
+    if (jobs.get(thread).decrementAndGet() == 0) {
       jobs.remove(thread);
     }
   }
@@ -423,6 +477,39 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
     return remainingTasks.get();
   }
 
+  @Override
+  public void dependOnFuture(ListenableFuture<?> future) throws InterruptedException {
+    outstandingFuturesLock.readLock().lock();
+    try {
+      if (threadInterrupted) {
+        future.cancel(/*mayInterruptIfRunning=*/ true);
+        throw new InterruptedException();
+      }
+      remainingTasks.incrementAndGet();
+      outstandingFutures.add(future);
+      future.addListener(() -> markFutureDone(future), MoreExecutors.directExecutor());
+    } finally {
+      outstandingFuturesLock.readLock().unlock();
+    }
+  }
+
+  private void markFutureDone(ListenableFuture<?> future) {
+    decrementRemainingTasks();
+    outstandingFuturesLock.readLock().lock();
+    try {
+      if (threadInterrupted) {
+        // Since futures get worked on asynchronously, there is an inherent race between this method
+        // being called and the future getting canceled. If we get here, the other thread either
+        // already attempted to cancel the future, or is just about to do so. In either case, no
+        // need to throw or do anything with outstandingFutures here.
+        return;
+      }
+      outstandingFutures.remove(future);
+    } finally {
+      outstandingFuturesLock.readLock().unlock();
+    }
+  }
+
   /**
    * Whether all running and pending jobs will be stopped or cancelled. Also newly submitted tasks
    * will be rejected if this is true.
@@ -465,6 +552,13 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
     if (interruptWorkers && !jobs.isEmpty()) {
       interruptInFlightTasks();
     }
+    if (interruptWorkers) {
+      // If the computation is done, this does nothing because there are no outstanding futures. Do
+      // not predicate on outstandingFutures.isEmpty() here: in the case of an interrupt, there may
+      // still be threads concurrently adding futures to the set, and we need to make sure that
+      // those are canceled correctly.
+      cancelAllFutures();
+    }
 
     if (isInterrupted()) {
       interruptedLatch.countDown();
@@ -483,7 +577,7 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
 
     if (ownExecutorService) {
       executorService.shutdown();
-      for (;;) {
+      for (; ; ) {
         try {
           Throwables.propagateIfPossible(catastrophe);
           executorService.awaitTermination(Integer.MAX_VALUE, TimeUnit.SECONDS);
@@ -497,10 +591,23 @@ public class AbstractQueueVisitor implements QuiescingExecutor {
 
   private void interruptInFlightTasks() {
     Thread thisThread = Thread.currentThread();
-    for (Thread thread : jobs.asMap().keySet()) {
+    for (Thread thread : jobs.keySet()) {
       if (thisThread != thread) {
         thread.interrupt();
       }
+    }
+  }
+
+  private void cancelAllFutures() {
+    // Nobody else can modify outstandingFutures while this thread is holding the write lock.
+    outstandingFuturesLock.writeLock().lock();
+    try {
+      for (ListenableFuture<?> future : outstandingFutures) {
+        future.cancel(/*mayInterruptIfRunning=*/ true);
+      }
+      outstandingFutures.clear();
+    } finally {
+      outstandingFuturesLock.writeLock().unlock();
     }
   }
 }

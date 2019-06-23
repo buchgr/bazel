@@ -13,25 +13,23 @@
 // limitations under the License.
 package com.google.devtools.build.lib.runtime;
 
-import com.google.common.base.Predicate;
-import com.google.common.base.Predicates;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.eventbus.SubscriberExceptionHandler;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.WorkspaceStatusAction;
-import com.google.devtools.build.lib.analysis.config.BinTools;
+import com.google.devtools.build.lib.exec.BinTools;
 import com.google.devtools.build.lib.packages.PackageFactory;
 import com.google.devtools.build.lib.profiler.memory.AllocationTracker;
+import com.google.devtools.build.lib.rules.repository.ManagedDirectoriesKnowledge;
 import com.google.devtools.build.lib.skyframe.DiffAwareness;
 import com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutorFactory;
 import com.google.devtools.build.lib.skyframe.SkyValueDirtinessChecker;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutorFactory;
 import com.google.devtools.build.lib.util.AbruptExitException;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import java.util.Map;
@@ -48,7 +46,6 @@ public final class WorkspaceBuilder {
   private WorkspaceStatusAction.Factory workspaceStatusActionFactory;
   private final ImmutableList.Builder<DiffAwareness.Factory> diffAwarenessFactories =
       ImmutableList.builder();
-  private Predicate<PathFragment> allowedMissingInputs;
   // We use an immutable map builder for the nice side effect that it throws if a duplicate key
   // is inserted.
   private final ImmutableMap.Builder<SkyFunctionName, SkyFunction> skyFunctions =
@@ -56,6 +53,7 @@ public final class WorkspaceBuilder {
   private final ImmutableList.Builder<SkyValueDirtinessChecker> customDirtinessCheckers =
       ImmutableList.builder();
   private AllocationTracker allocationTracker;
+  private ManagedDirectoriesKnowledge managedDirectoriesKnowledge;
 
   WorkspaceBuilder(BlazeDirectories directories, BinTools binTools) {
     this.directories = directories;
@@ -69,22 +67,22 @@ public final class WorkspaceBuilder {
       SubscriberExceptionHandler eventBusExceptionHandler) throws AbruptExitException {
     // Set default values if none are set.
     if (skyframeExecutorFactory == null) {
-      skyframeExecutorFactory = new SequencedSkyframeExecutorFactory();
-    }
-    if (allowedMissingInputs == null) {
-      allowedMissingInputs = Predicates.alwaysFalse();
+      skyframeExecutorFactory =
+          new SequencedSkyframeExecutorFactory(runtime.getDefaultBuildOptions());
     }
 
     SkyframeExecutor skyframeExecutor =
         skyframeExecutorFactory.create(
             packageFactory,
+            runtime.getFileSystem(),
             directories,
+            runtime.getActionKeyContext(),
             workspaceStatusActionFactory,
             ruleClassProvider.getBuildInfoFactories(),
             diffAwarenessFactories.build(),
-            allowedMissingInputs,
             skyFunctions.build(),
-            customDirtinessCheckers.build());
+            customDirtinessCheckers.build(),
+            managedDirectoriesKnowledge);
     return new BlazeWorkspace(
         runtime,
         directories,
@@ -139,18 +137,6 @@ public final class WorkspaceBuilder {
     return this;
   }
 
-  /**
-   * Action inputs are allowed to be missing for all inputs where this predicate returns true. Only
-   * one predicate may be set per workspace.
-   */
-  public WorkspaceBuilder setAllowedMissingInputs(Predicate<PathFragment> allowedMissingInputs) {
-    Preconditions.checkArgument(this.allowedMissingInputs == null,
-        "At most one module may set allowed missing inputs. But found two: %s and %s",
-        this.allowedMissingInputs, allowedMissingInputs);
-    this.allowedMissingInputs = Preconditions.checkNotNull(allowedMissingInputs);
-    return this;
-  }
-
   /** Add an "extra" SkyFunction for SkyValues. */
   public WorkspaceBuilder addSkyFunction(SkyFunctionName name, SkyFunction skyFunction) {
     Preconditions.checkNotNull(name);
@@ -168,6 +154,12 @@ public final class WorkspaceBuilder {
   public WorkspaceBuilder addCustomDirtinessChecker(
       SkyValueDirtinessChecker customDirtinessChecker) {
     this.customDirtinessCheckers.add(Preconditions.checkNotNull(customDirtinessChecker));
+    return this;
+  }
+
+  public WorkspaceBuilder setManagedDirectoriesKnowledge(
+      ManagedDirectoriesKnowledge managedDirectoriesKnowledge) {
+    this.managedDirectoriesKnowledge = managedDirectoriesKnowledge;
     return this;
   }
 }

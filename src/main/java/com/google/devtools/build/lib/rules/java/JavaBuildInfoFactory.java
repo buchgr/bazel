@@ -17,12 +17,14 @@ package com.google.devtools.build.lib.rules.java;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.Root;
+import com.google.devtools.build.lib.actions.ArtifactRoot;
 import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoCollection;
 import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoFactory;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.rules.java.WriteBuildInfoPropertiesAction.TimestampFormatter;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -48,61 +50,71 @@ public abstract class JavaBuildInfoFactory implements BuildInfoFactory {
       DateTimeFormatter.ofPattern("EEE MMM d HH:mm:ss yyyy");
 
   // A default formatter that returns a date in UTC format.
-  private static final TimestampFormatter DEFAULT_FORMATTER =
-      new TimestampFormatter() {
-        @Override
-        public String format(long timestamp) {
-          return Instant.ofEpochMilli(timestamp).atZone(ZoneOffset.UTC).format(DEFAULT_TIME_FORMAT)
-              + " ("
-              + timestamp / 1000
-              + ')';
-        }
-      };
+  @AutoCodec
+  @VisibleForSerialization
+  static class DefaultTimestampFormatter implements TimestampFormatter {
+    @Override
+    public String format(long timestamp) {
+      return Instant.ofEpochMilli(timestamp).atZone(ZoneOffset.UTC).format(DEFAULT_TIME_FORMAT)
+          + " ("
+          + timestamp / 1000
+          + ')';
+    }
+  }
+
+  private static final TimestampFormatter DEFAULT_FORMATTER = new DefaultTimestampFormatter();
 
   @Override
-  public final BuildInfoCollection create(BuildInfoContext context, BuildConfiguration config,
-      Artifact stableStatus, Artifact volatileStatus, RepositoryName repositoryName) {
-    WriteBuildInfoPropertiesAction redactedInfo = getHeader(context,
-        config,
-        BUILD_INFO_REDACTED_PROPERTIES_NAME,
-        Artifact.NO_ARTIFACTS,
-        createRedactedTranslator(),
-        true,
-        true,
-        repositoryName);
-    WriteBuildInfoPropertiesAction nonvolatileInfo = getHeader(context,
-        config,
-        BUILD_INFO_NONVOLATILE_PROPERTIES_NAME,
-        ImmutableList.of(stableStatus),
-        createNonVolatileTranslator(),
-        false,
-        true,
-        repositoryName);
-    WriteBuildInfoPropertiesAction volatileInfo = getHeader(context,
-        config,
-        BUILD_INFO_VOLATILE_PROPERTIES_NAME,
-        ImmutableList.of(volatileStatus),
-        createVolatileTranslator(),
-        true,
-        false,
-        repositoryName);
+  public final BuildInfoCollection create(
+      BuildInfoContext context,
+      BuildConfiguration config,
+      Artifact stableStatus,
+      Artifact volatileStatus,
+      RepositoryName repositoryName) {
+    WriteBuildInfoPropertiesAction redactedInfo =
+        getHeader(
+            context,
+            config,
+            BUILD_INFO_REDACTED_PROPERTIES_NAME,
+            Artifact.NO_ARTIFACTS,
+            createRedactedTranslator(),
+            true,
+            true,
+            repositoryName);
+    WriteBuildInfoPropertiesAction nonvolatileInfo =
+        getHeader(
+            context,
+            config,
+            BUILD_INFO_NONVOLATILE_PROPERTIES_NAME,
+            ImmutableList.of(stableStatus),
+            createNonVolatileTranslator(),
+            false,
+            true,
+            repositoryName);
+    WriteBuildInfoPropertiesAction volatileInfo =
+        getHeader(
+            context,
+            config,
+            BUILD_INFO_VOLATILE_PROPERTIES_NAME,
+            ImmutableList.of(volatileStatus),
+            createVolatileTranslator(),
+            true,
+            false,
+            repositoryName);
     List<Action> actions = new ArrayList<>(3);
     actions.add(redactedInfo);
     actions.add(nonvolatileInfo);
     actions.add(volatileInfo);
-    return new BuildInfoCollection(actions,
+    return new BuildInfoCollection(
+        actions,
         ImmutableList.of(nonvolatileInfo.getPrimaryOutput(), volatileInfo.getPrimaryOutput()),
         ImmutableList.of(redactedInfo.getPrimaryOutput()));
   }
 
-  /**
-   * Creates a {@link BuildInfoPropertiesTranslator} to use for volatile keys.
-   */
+  /** Creates a {@link BuildInfoPropertiesTranslator} to use for volatile keys. */
   protected abstract BuildInfoPropertiesTranslator createVolatileTranslator();
 
-  /**
-   * Creates a {@link BuildInfoPropertiesTranslator} to use for non-volatile keys.
-   */
+  /** Creates a {@link BuildInfoPropertiesTranslator} to use for non-volatile keys. */
   protected abstract BuildInfoPropertiesTranslator createNonVolatileTranslator();
 
   /**
@@ -111,14 +123,13 @@ public abstract class JavaBuildInfoFactory implements BuildInfoFactory {
    */
   protected abstract BuildInfoPropertiesTranslator createRedactedTranslator();
 
-  /**
-   * Specifies the {@link TimestampFormatter} to use to output dates in the properties file.
-   */
+  /** Specifies the {@link TimestampFormatter} to use to output dates in the properties file. */
   protected TimestampFormatter getTimestampFormatter() {
     return DEFAULT_FORMATTER;
   }
 
-  private WriteBuildInfoPropertiesAction getHeader(BuildInfoContext context,
+  private WriteBuildInfoPropertiesAction getHeader(
+      BuildInfoContext context,
       BuildConfiguration config,
       PathFragment propertyFileName,
       ImmutableList<Artifact> inputs,
@@ -126,16 +137,16 @@ public abstract class JavaBuildInfoFactory implements BuildInfoFactory {
       boolean includeVolatile,
       boolean includeNonVolatile,
       RepositoryName repositoryName) {
-    Root outputPath = config.getIncludeDirectory(repositoryName);
-    final Artifact output = context.getBuildInfoArtifact(propertyFileName, outputPath,
-        includeVolatile && !inputs.isEmpty() ? BuildInfoType.NO_REBUILD
-            : BuildInfoType.FORCE_REBUILD_IF_CHANGED);
-    return new WriteBuildInfoPropertiesAction(inputs,
-        output,
-        translator,
-        includeVolatile,
-        includeNonVolatile,
-        getTimestampFormatter());
+    ArtifactRoot outputPath = config.getIncludeDirectory(repositoryName);
+    final Artifact output =
+        context.getBuildInfoArtifact(
+            propertyFileName,
+            outputPath,
+            includeVolatile && !inputs.isEmpty()
+                ? BuildInfoType.NO_REBUILD
+                : BuildInfoType.FORCE_REBUILD_IF_CHANGED);
+    return new WriteBuildInfoPropertiesAction(
+        inputs, output, translator, includeVolatile, includeNonVolatile, getTimestampFormatter());
   }
 
   @Override

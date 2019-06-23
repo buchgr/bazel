@@ -32,4 +32,16 @@ EOF
   expect_log "^bazel-testlogs:.*_bazel.*bazel-out.*testlogs\$"
   expect_log "^output_path:.*/execroot/blerp/bazel-out\$"
   expect_log "^execution_root:.*/execroot/blerp\$"
+  expect_log "^server_log:.*/java\.log.*\$"
+}
+
+# This test is for Bazel only and not for Google's internal version (Blaze),
+# because Bazel uses a different way to compute the workspace name.
+function test_server_process_name_has_workspace_name() {
+  mkdir foobarspace
+  cd foobarspace
+  touch WORKSPACE BUILD
+  ps -o cmd= "$(bazel info server_pid)" &>"$TEST_log"
+  expect_log "^bazel(foobarspace)"
+  bazel shutdown
 }

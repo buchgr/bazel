@@ -14,34 +14,37 @@
 
 package com.google.devtools.build.lib.packages;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.LinkedHashMultimap;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
-import com.google.common.collect.SetMultimap;
+import com.google.devtools.build.lib.analysis.config.transitions.ConfigurationTransition;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.ConfigurationFragmentPolicy.MissingFragmentPolicy;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.syntax.Type.LabelClass;
 import com.google.devtools.build.lib.syntax.Type.LabelVisitor;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
 import javax.annotation.Nullable;
 
 /**
- * The definition of an aspect (see {@link Aspect} for moreinformation.)
+ * The definition of an aspect (see {@link Aspect} for more information).
  *
  * <p>Contains enough information to build up the configured target graph except for the actual way
- * to build the Skyframe node (that is the territory of
- * {@link com.google.devtools.build.lib.view AspectFactory}). In particular:
+ * to build the Skyframe node (that is the territory of {@link com.google.devtools.build.lib.view
+ * AspectFactory}). In particular:
+ *
  * <ul>
  *   <li>The condition that must be fulfilled for an aspect to be able to operate on a configured
  *       target
@@ -53,6 +56,7 @@ import javax.annotation.Nullable;
  * <p>The way to build the Skyframe node is not here because this data needs to be accessible from
  * the {@code .packages} package and that one requires references to the {@code .view} package.
  */
+@AutoCodec
 @Immutable
 public final class AspectDefinition {
   private final AspectClass aspectClass;
@@ -77,11 +81,12 @@ public final class AspectDefinition {
     return advertisedProviders;
   }
 
-  private AspectDefinition(
+  @AutoCodec.VisibleForSerialization
+  AspectDefinition(
       AspectClass aspectClass,
       AdvertisedProviderSet advertisedProviders,
       RequiredProviders requiredProviders,
-      RequiredProviders requiredAspectProviders,
+      RequiredProviders requiredProvidersForAspects,
       ImmutableMap<String, Attribute> attributes,
       ImmutableSet<Label> requiredToolchains,
       @Nullable ImmutableSet<String> restrictToAttributes,
@@ -90,7 +95,7 @@ public final class AspectDefinition {
     this.aspectClass = aspectClass;
     this.advertisedProviders = advertisedProviders;
     this.requiredProviders = requiredProviders;
-    this.requiredProvidersForAspects = requiredAspectProviders;
+    this.requiredProvidersForAspects = requiredProvidersForAspects;
 
     this.attributes = attributes;
     this.requiredToolchains = requiredToolchains;
@@ -140,13 +145,10 @@ public final class AspectDefinition {
     return requiredProvidersForAspects;
   }
 
-
-  /**
-   * Returns the set of required aspects for a given attribute.
-   */
-  public boolean propagateAlong(Attribute attribute) {
+  /** Returns the set of required aspects for a given attribute. */
+  public boolean propagateAlong(String attributeName) {
     if (restrictToAttributes != null) {
-      return restrictToAttributes.contains(attribute.getName());
+      return restrictToAttributes.contains(attributeName);
     }
     return true;
   }
@@ -168,40 +170,8 @@ public final class AspectDefinition {
     return applyToFiles;
   }
 
-  /**
-   * Returns the attribute -&gt; set of labels that are provided by aspects of attribute.
-   */
-  public static ImmutableMultimap<Attribute, Label> visitAspectsIfRequired(
-      Target from, Attribute attribute, Target to,
-      DependencyFilter dependencyFilter) {
-    // Aspect can be declared only for Rules.
-    if (!(from instanceof Rule) || !(to instanceof Rule)) {
-      return ImmutableMultimap.of();
-    }
-    RuleClass ruleClass = ((Rule) to).getRuleClassObject();
-    AdvertisedProviderSet providers = ruleClass.getAdvertisedProviders();
-    return visitAspectsIfRequired((Rule) from, attribute,
-        providers, dependencyFilter);
-  }
-
-  /**
-   * Returns the attribute -&gt; set of labels that are provided by aspects of attribute.
-   */
-  public static ImmutableMultimap<Attribute, Label> visitAspectsIfRequired(
-      Rule from, Attribute attribute,
-      AdvertisedProviderSet advertisedProviders,
-      DependencyFilter dependencyFilter) {
-    SetMultimap<Attribute, Label> result = LinkedHashMultimap.create();
-    for (Aspect candidateClass : attribute.getAspects(from)) {
-      // Check if target satisfies condition for this aspect (has to provide all required
-      // TransitiveInfoProviders)
-      RequiredProviders requiredProviders =
-          candidateClass.getDefinition().getRequiredProviders();
-      if (requiredProviders.isSatisfiedBy(advertisedProviders)) {
-        addAllAttributesOfAspect(from, result, candidateClass, dependencyFilter);
-      }
-    }
-    return ImmutableMultimap.copyOf(result);
+  public static boolean satisfies(Aspect aspect, AdvertisedProviderSet advertisedProviderSet) {
+    return aspect.getDefinition().getRequiredProviders().isSatisfiedBy(advertisedProviderSet);
   }
 
   @Nullable
@@ -217,18 +187,23 @@ public final class AspectDefinition {
       final Multimap<Attribute, Label> labelBuilder,
       Aspect aspect,
       DependencyFilter dependencyFilter) {
-    LabelVisitor<Attribute> labelVisitor = new LabelVisitor<Attribute>() {
-      @Override
-      public void visit(Label label, Attribute aspectAttribute) {
-        Label repositoryRelative = maybeGetRepositoryRelativeLabel(from, label);
-        if (repositoryRelative == null) {
-          return;
-        }
-        labelBuilder.put(aspectAttribute, repositoryRelative);
-      }
-    };
-    ImmutableMap<String, Attribute> attributes = aspect.getDefinition().getAttributes();
-    for (final Attribute aspectAttribute : attributes.values()) {
+    forEachLabelDepFromAllAttributesOfAspect(from, aspect, dependencyFilter, labelBuilder::put);
+  }
+
+  public static void forEachLabelDepFromAllAttributesOfAspect(
+      Rule from,
+      Aspect aspect,
+      DependencyFilter dependencyFilter,
+      BiConsumer<Attribute, Label> consumer) {
+    LabelVisitor<Attribute> labelVisitor =
+        (label, aspectAttribute) -> {
+          Label repositoryRelativeLabel = maybeGetRepositoryRelativeLabel(from, label);
+          if (repositoryRelativeLabel == null) {
+            return;
+          }
+          consumer.accept(aspectAttribute, repositoryRelativeLabel);
+        };
+    for (Attribute aspectAttribute : aspect.getDefinition().getAttributes().values()) {
       if (!dependencyFilter.apply(aspect, aspectAttribute)) {
         continue;
       }
@@ -236,13 +211,7 @@ public final class AspectDefinition {
       if (type.getLabelClass() != LabelClass.DEPENDENCY) {
         continue;
       }
-      try {
-        type.visitLabels(labelVisitor, aspectAttribute.getDefaultValue(from), aspectAttribute);
-      } catch (InterruptedException ex) {
-        // Because the LabelVisitor does not throw InterruptedException, it should not be thrown
-        // by visitLabels here.
-        throw new AssertionError(ex);
-      }
+      type.visitLabels(labelVisitor, aspectAttribute.getDefaultValue(from), aspectAttribute);
     }
   }
 
@@ -418,13 +387,19 @@ public final class AspectDefinition {
 
     /**
      * Declares that the implementation of the associated aspect definition requires the given
-     * fragments to be present in the host configuration.
+     * fragments to be present in the given configuration that isn't the aspect's configuration but
+     * is also readable by the aspect.
+     *
+     * <p>You probably don't want to use this, because aspects generally shouldn't read
+     * configurations other than their own. If you want to declare host config fragments, see
+     * {@link com.google.devtools.build.lib.analysis.config.ConfigAwareAspectBuilder}.
      *
      * <p>The value is inherited by subclasses.
      */
-    public Builder requiresHostConfigurationFragments(Class<?>... configurationFragments) {
-      configurationFragmentPolicy
-          .requiresHostConfigurationFragments(ImmutableSet.copyOf(configurationFragments));
+    public Builder requiresConfigurationFragments(ConfigurationTransition transition,
+        Class<?>... configurationFragments) {
+      configurationFragmentPolicy.requiresConfigurationFragments(transition,
+          ImmutableSet.copyOf(configurationFragments));
       return this;
     }
 
@@ -443,16 +418,21 @@ public final class AspectDefinition {
     }
 
     /**
-     * Declares the configuration fragments that are required by this rule for the host
-     * configuration.
+     * Declares that the implementation of the associated aspect definition requires the given
+     * fragments to be present in the given configuration that isn't the aspect's configuration but
+     * is also readable by the aspect.
      *
-     * <p>In contrast to {@link #requiresHostConfigurationFragments(Class...)}, this method takes
-     * the Skylark module names of fragments instead of their classes.
+     * <p>In contrast to {@link #requiresConfigurationFragments(ConfigurationTransition, Class...)},
+     * this method takes the Skylark module names of fragments instead of their classes.
+     *
+     * <p>You probably don't want to use this, because aspects generally shouldn't read
+     * configurations other than their own. If you want to declare host config fragments, see
+     * {@link com.google.devtools.build.lib.analysis.config.ConfigAwareAspectBuilder}.
      */
-    public Builder requiresHostConfigurationFragmentsBySkylarkModuleName(
-        Collection<String> configurationFragmentNames) {
-      configurationFragmentPolicy
-          .requiresHostConfigurationFragmentsBySkylarkModuleName(configurationFragmentNames);
+    public Builder requiresConfigurationFragmentsBySkylarkModuleName(
+        ConfigurationTransition transition, Collection<String> configurationFragmentNames) {
+      configurationFragmentPolicy.requiresConfigurationFragmentsBySkylarkModuleName(transition,
+          configurationFragmentNames);
       return this;
     }
 
@@ -474,6 +454,12 @@ public final class AspectDefinition {
      */
     public Builder applyToFiles(boolean propagateOverGeneratedFiles) {
       this.applyToFiles = propagateOverGeneratedFiles;
+      return this;
+    }
+
+    /** Adds the given toolchains as requirements for this aspect. */
+    public Builder addRequiredToolchains(Label... toolchainLabels) {
+      Iterables.addAll(this.requiredToolchains, Lists.newArrayList(toolchainLabels));
       return this;
     }
 

@@ -17,14 +17,16 @@ package com.google.devtools.build.lib.analysis;
 import com.google.devtools.build.lib.actions.AbstractAction;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.actions.extra.ExtraActionInfo;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.util.Fingerprint;
-import com.google.protobuf.GeneratedMessage.GeneratedExtension;
+import com.google.protobuf.Extension;
 import com.google.protobuf.MessageLite;
 import java.util.Collection;
 import java.util.UUID;
@@ -34,15 +36,22 @@ import java.util.UUID;
  * about rules to extra_actions.
  */
 public class PseudoAction<InfoType extends MessageLite> extends AbstractAction {
-  private final UUID uuid;
+  @AutoCodec.VisibleForSerialization protected final UUID uuid;
   private final String mnemonic;
-  private final GeneratedExtension<ExtraActionInfo, InfoType> infoExtension;
+
+  @AutoCodec.VisibleForSerialization
+  protected final Extension<ExtraActionInfo, InfoType> infoExtension;
+
   private final InfoType info;
 
-  public PseudoAction(UUID uuid, ActionOwner owner,
-      NestedSet<Artifact> inputs, Collection<Artifact> outputs,
+  public PseudoAction(
+      UUID uuid,
+      ActionOwner owner,
+      NestedSet<Artifact> inputs,
+      Collection<Artifact> outputs,
       String mnemonic,
-      GeneratedExtension<ExtraActionInfo, InfoType> infoExtension, InfoType info) {
+      Extension<ExtraActionInfo, InfoType> infoExtension,
+      InfoType info) {
     super(owner, inputs, outputs);
     this.uuid = uuid;
     this.mnemonic = mnemonic;
@@ -63,8 +72,9 @@ public class PseudoAction<InfoType extends MessageLite> extends AbstractAction {
   }
 
   @Override
-  protected String computeKey() {
-    return new Fingerprint().addUUID(uuid).addBytes(getInfo().toByteArray()).hexDigestAndReset();
+  protected void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp) {
+    fp.addUUID(uuid);
+    fp.addBytes(getInfo().toByteArray());
   }
 
   protected InfoType getInfo() {
@@ -72,9 +82,9 @@ public class PseudoAction<InfoType extends MessageLite> extends AbstractAction {
   }
 
   @Override
-  public ExtraActionInfo.Builder getExtraActionInfo() {
+  public ExtraActionInfo.Builder getExtraActionInfo(ActionKeyContext actionKeyContext) {
     try {
-      return super.getExtraActionInfo().setExtension(infoExtension, getInfo());
+      return super.getExtraActionInfo(actionKeyContext).setExtension(infoExtension, getInfo());
     } catch (CommandLineExpansionException e) {
       throw new AssertionError("PsedoAction command line expansion cannot fail");
     }

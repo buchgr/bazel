@@ -13,14 +13,15 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis.util;
 
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
-import com.google.common.base.Predicates;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
-import com.google.devtools.build.lib.actions.Root;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
+import com.google.devtools.build.lib.actions.ArtifactRoot;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ServerDirectories;
@@ -33,23 +34,22 @@ import com.google.devtools.build.lib.analysis.config.InvalidConfigurationExcepti
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.packages.PackageFactory;
-import com.google.devtools.build.lib.packages.SkylarkSemanticsOptions;
+import com.google.devtools.build.lib.packages.StarlarkSemanticsOptions;
 import com.google.devtools.build.lib.packages.util.MockToolsConfig;
 import com.google.devtools.build.lib.pkgcache.PackageCacheOptions;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.rules.repository.RepositoryDelegatorFunction;
 import com.google.devtools.build.lib.skyframe.BazelSkyframeExecutorConstants;
-import com.google.devtools.build.lib.skyframe.DiffAwareness;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor;
-import com.google.devtools.build.lib.skyframe.SkyValueDirtinessChecker;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.common.options.Converters;
-import com.google.devtools.common.options.InvocationPolicyEnforcer;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
@@ -78,7 +78,6 @@ public abstract class ConfigurationTestCase extends FoundationTestCase {
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "",
-      category = "semantics",
       help = "Additional target CPUs."
     )
     public List<String> multiCpus;
@@ -90,58 +89,90 @@ public abstract class ConfigurationTestCase extends FoundationTestCase {
   protected SequencedSkyframeExecutor skyframeExecutor;
   protected List<ConfigurationFragmentFactory> configurationFragmentFactories;
   protected ImmutableList<Class<? extends FragmentOptions>> buildOptionClasses;
+  protected final ActionKeyContext actionKeyContext = new ActionKeyContext();
 
   @Before
   public final void initializeSkyframeExecutor() throws Exception {
     workspace = rootDirectory;
     analysisMock = getAnalysisMock();
+
     ConfiguredRuleClassProvider ruleClassProvider = analysisMock.createRuleClassProvider();
     PathPackageLocator pkgLocator =
-        new PathPackageLocator(outputBase, ImmutableList.of(rootDirectory));
+        new PathPackageLocator(
+            outputBase,
+            ImmutableList.of(Root.fromPath(rootDirectory)),
+            BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY);
     final PackageFactory pkgFactory;
     BlazeDirectories directories =
         new BlazeDirectories(
-            new ServerDirectories(outputBase, outputBase),
+            new ServerDirectories(outputBase, outputBase, outputBase),
             rootDirectory,
+            /* defaultSystemJavabase= */ null,
             analysisMock.getProductName());
+
+    mockToolsConfig = new MockToolsConfig(rootDirectory);
+    mockToolsConfig.create("/bazel_tools_workspace/WORKSPACE", "workspace(name = 'bazel_tools')");
+    mockToolsConfig.create("/bazel_tools_workspace/tools/build_defs/repo/BUILD");
+    mockToolsConfig.create(
+        "/bazel_tools_workspace/tools/build_defs/repo/utils.bzl",
+        "def maybe(repo_rule, name, **kwargs):",
+        "  if name not in native.existing_rules():",
+        "    repo_rule(name = name, **kwargs)");
+    mockToolsConfig.create(
+        "/bazel_tools_workspace/tools/build_defs/repo/http.bzl",
+        "def http_archive(**kwargs):",
+        "  pass",
+        "",
+        "def http_file(**kwargs):",
+        "  pass");
+
+    analysisMock.setupMockClient(mockToolsConfig);
+    analysisMock.setupMockWorkspaceFiles(directories.getEmbeddedBinariesRoot());
+
     pkgFactory =
         analysisMock
             .getPackageFactoryBuilderForTesting(directories)
-            .build(ruleClassProvider, scratch.getFileSystem());
+            .build(ruleClassProvider, fileSystem);
     AnalysisTestUtil.DummyWorkspaceStatusActionFactory workspaceStatusActionFactory =
-        new AnalysisTestUtil.DummyWorkspaceStatusActionFactory(directories);
-
+        new AnalysisTestUtil.DummyWorkspaceStatusActionFactory();
     skyframeExecutor =
-        SequencedSkyframeExecutor.create(
-            pkgFactory,
-            directories,
-            workspaceStatusActionFactory,
-            ruleClassProvider.getBuildInfoFactories(),
-            ImmutableList.<DiffAwareness.Factory>of(),
-            Predicates.<PathFragment>alwaysFalse(),
-            analysisMock.getSkyFunctions(directories),
-            ImmutableList.<SkyValueDirtinessChecker>of(),
-            PathFragment.EMPTY_FRAGMENT,
-            BazelSkyframeExecutorConstants.CROSS_REPOSITORY_LABEL_VIOLATION_STRATEGY,
-            BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY,
-            BazelSkyframeExecutorConstants.ACTION_ON_IO_EXCEPTION_READING_BUILD_FILE);
+        BazelSkyframeExecutorConstants.newBazelSkyframeExecutorBuilder()
+            .setPkgFactory(pkgFactory)
+            .setFileSystem(fileSystem)
+            .setDirectories(directories)
+            .setActionKeyContext(actionKeyContext)
+            .setBuildInfoFactories(ruleClassProvider.getBuildInfoFactories())
+            .setDefaultBuildOptions(
+                DefaultBuildOptionsForTesting.getDefaultBuildOptionsForTest(ruleClassProvider))
+            .setWorkspaceStatusActionFactory(workspaceStatusActionFactory)
+            .setExtraSkyFunctions(analysisMock.getSkyFunctions(directories))
+            .build();
     TestConstants.processSkyframeExecutorForTesting(skyframeExecutor);
-    skyframeExecutor.injectExtraPrecomputedValues(ImmutableList.of(PrecomputedValue.injected(
-        RepositoryDelegatorFunction.REPOSITORY_OVERRIDES,
-        ImmutableMap.<RepositoryName, PathFragment>of())));
+    skyframeExecutor.injectExtraPrecomputedValues(
+        ImmutableList.of(
+            PrecomputedValue.injected(
+                RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE,
+                Optional.<RootedPath>absent()),
+            PrecomputedValue.injected(
+                RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE,
+                Optional.<RootedPath>absent()),
+            PrecomputedValue.injected(
+                RepositoryDelegatorFunction.REPOSITORY_OVERRIDES,
+                ImmutableMap.<RepositoryName, PathFragment>of()),
+            PrecomputedValue.injected(
+                RepositoryDelegatorFunction.DEPENDENCY_FOR_UNCONDITIONAL_FETCHING,
+                RepositoryDelegatorFunction.DONT_FETCH_UNCONDITIONALLY)));
     PackageCacheOptions packageCacheOptions = Options.getDefaults(PackageCacheOptions.class);
     packageCacheOptions.showLoadingProgress = true;
     packageCacheOptions.globbingThreads = 7;
     skyframeExecutor.preparePackageLoading(
         pkgLocator,
         packageCacheOptions,
-        Options.getDefaults(SkylarkSemanticsOptions.class),
-        ruleClassProvider.getDefaultsPackageContent(
-            analysisMock.getInvocationPolicyEnforcer().getInvocationPolicy()),
+        Options.getDefaults(StarlarkSemanticsOptions.class),
         UUID.randomUUID(),
         ImmutableMap.<String, String>of(),
-        ImmutableMap.<String, String>of(),
         new TimestampGranularityMonitor(BlazeClock.instance()));
+    skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
 
     mockToolsConfig = new MockToolsConfig(rootDirectory);
     analysisMock.setupMockClient(mockToolsConfig);
@@ -156,32 +187,28 @@ public abstract class ConfigurationTestCase extends FoundationTestCase {
 
   protected void checkError(String expectedMessage, String... options) throws Exception {
     reporter.removeHandler(failFastHandler);
-    try {
-      create(options);
-      fail();
-    } catch (InvalidConfigurationException e) {
-      assertContainsEvent(expectedMessage);
-    }
+    assertThrows(InvalidConfigurationException.class, () -> create(options));
+    assertContainsEvent(expectedMessage);
   }
 
   protected BuildConfigurationCollection createCollection(String... args) throws Exception {
-    OptionsParser parser = OptionsParser.newOptionsParser(
-        ImmutableList.<Class<? extends OptionsBase>>builder()
-        .addAll(buildOptionClasses)
-        .add(TestOptions.class)
-        .build());
+    OptionsParser parser =
+        OptionsParser.builder()
+            .optionsClasses(
+                ImmutableList.<Class<? extends OptionsBase>>builder()
+                    .addAll(buildOptionClasses)
+                    .add(TestOptions.class)
+                    .build())
+            .build();
+    parser.parse(TestConstants.PRODUCT_SPECIFIC_FLAGS);
     parser.parse(args);
-
-    InvocationPolicyEnforcer optionsPolicyEnforcer = analysisMock.getInvocationPolicyEnforcer();
-    optionsPolicyEnforcer.enforce(parser);
 
     ImmutableSortedSet<String> multiCpu = ImmutableSortedSet.copyOf(
         parser.getOptions(TestOptions.class).multiCpus);
 
-    skyframeExecutor.handleDiffs(reporter);
+    skyframeExecutor.handleDiffsForTesting(reporter);
     BuildConfigurationCollection collection = skyframeExecutor.createConfigurations(
-        reporter, configurationFragmentFactories, BuildOptions.of(buildOptionClasses, parser),
-        multiCpu, false);
+        reporter, BuildOptions.of(buildOptionClasses, parser), multiCpu, false);
     return collection;
   }
 
@@ -195,18 +222,21 @@ public abstract class ConfigurationTestCase extends FoundationTestCase {
 
   public void assertConfigurationsHaveUniqueOutputDirectories(
       BuildConfigurationCollection configCollection) throws Exception {
-    Map<Root, BuildConfiguration> outputPaths = new HashMap<>();
+    Map<ArtifactRoot, BuildConfiguration> outputPaths = new HashMap<>();
     for (BuildConfiguration config : configCollection.getTargetConfigurations()) {
-      if (config.isActionsEnabled()) {
-        BuildConfiguration otherConfig = outputPaths.get(
-            config.getOutputDirectory(RepositoryName.MAIN));
-        if (otherConfig != null) {
-          throw new IllegalStateException("The output path '"
-              + config.getOutputDirectory(RepositoryName.MAIN)
-              + "' is the same for configurations '" + config + "' and '" + otherConfig + "'");
-        } else {
-          outputPaths.put(config.getOutputDirectory(RepositoryName.MAIN), config);
-        }
+      BuildConfiguration otherConfig =
+          outputPaths.get(config.getOutputDirectory(RepositoryName.MAIN));
+      if (otherConfig != null) {
+        throw new IllegalStateException(
+            "The output path '"
+                + config.getOutputDirectory(RepositoryName.MAIN)
+                + "' is the same for configurations '"
+                + config
+                + "' and '"
+                + otherConfig
+                + "'");
+      } else {
+        outputPaths.put(config.getOutputDirectory(RepositoryName.MAIN), config);
       }
     }
   }

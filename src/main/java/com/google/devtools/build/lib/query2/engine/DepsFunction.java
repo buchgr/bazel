@@ -15,8 +15,11 @@ package com.google.devtools.build.lib.query2.engine;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Argument;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.ArgumentType;
+import com.google.devtools.build.lib.query2.engine.QueryEnvironment.CustomFunctionQueryEnvironment;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryTaskFuture;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.ThreadSafeMutableSet;
@@ -27,11 +30,11 @@ import java.util.List;
  * integer-literal second argument may be specified; its value bounds the search from the arguments.
  *
  * <pre>expr ::= DEPS '(' expr ')'</pre>
+ *
  * <pre>       | DEPS '(' expr ',' WORD ')'</pre>
  */
 final class DepsFunction implements QueryFunction {
-  DepsFunction() {
-  }
+  DepsFunction() {}
 
   @Override
   public String getName() {
@@ -40,7 +43,7 @@ final class DepsFunction implements QueryFunction {
 
   @Override
   public int getMandatoryArguments() {
-    return 1;  // last argument is optional
+    return 1; // last argument is optional
   }
 
   @Override
@@ -48,41 +51,68 @@ final class DepsFunction implements QueryFunction {
     return ImmutableList.of(ArgumentType.EXPRESSION, ArgumentType.INTEGER);
   }
 
-  /**
-   * Breadth-first search from the arguments.
-   */
+  /** Breadth-first search from the arguments. */
   @Override
   public <T> QueryTaskFuture<Void> eval(
       final QueryEnvironment<T> env,
-      VariableContext<T> context,
+      QueryExpressionContext<T> context,
       final QueryExpression expression,
       List<Argument> args,
       final Callback<T> callback) {
-    final int depthBound = args.size() > 1 ? args.get(1).getInteger() : Integer.MAX_VALUE;
-    final MinDepthUniquifier<T> minDepthUniquifier = env.createMinDepthUniquifier();
-    return env.eval(args.get(0).getExpression(), context, new Callback<T>() {
-      @Override
-      public void process(Iterable<T> partialResult) throws QueryException, InterruptedException {
-        ThreadSafeMutableSet<T> current = env.createThreadSafeMutableSet();
-        Iterables.addAll(current, partialResult);
-        env.buildTransitiveClosure(expression, current, depthBound);
+    QueryExpression queryExpression = args.get(0).getExpression();
+    if (env instanceof StreamableQueryEnvironment && args.size() == 1) {
+      StreamableQueryEnvironment<T> streamableEnv = (StreamableQueryEnvironment<T>) env;
+      return streamableEnv.getDepsUnboundedParallel(
+          queryExpression,
+          context,
+          /*callback=*/ partialResult -> {
+            callback.process(partialResult);
+            ThreadSafeMutableSet<T> set = env.createThreadSafeMutableSet();
+            Iterables.addAll(set, partialResult);
+            // Ensure the proper error messages are reported.
+            env.buildTransitiveClosure(expression, set, /*maxDepth=*/ 1);
+          });
+    }
 
-        // We need to iterate depthBound + 1 times.
-        for (int i = 0; i <= depthBound; i++) {
-          // Filter already visited nodes: if we see a node in a later round, then we don't need to
-          // visit it again, because the depth at which we see it at must be greater than or equal
-          // to the last visit.
-          ImmutableList<T> toProcess =
-              minDepthUniquifier.uniqueAtDepthLessThanOrEqualTo(current, i);
-          callback.process(toProcess);
-          current = env.createThreadSafeMutableSet();
-          Iterables.addAll(current, env.getFwdDeps(toProcess));
-          if (current.isEmpty()) {
-            // Exit when there are no more nodes to visit.
-            break;
+    final int depthBound = args.size() > 1 ? args.get(1).getInteger() : Integer.MAX_VALUE;
+    if (env instanceof QueryEnvironment.CustomFunctionQueryEnvironment) {
+      return env.eval(
+          queryExpression,
+          context,
+          partialResult ->
+              ((CustomFunctionQueryEnvironment<T>) env)
+                  .deps(partialResult, depthBound, expression, callback));
+    }
+
+    final MinDepthUniquifier<T> minDepthUniquifier = env.createMinDepthUniquifier();
+    return env.eval(
+        queryExpression,
+        context,
+        partialResult -> {
+          ThreadSafeMutableSet<T> current = env.createThreadSafeMutableSet();
+          Iterables.addAll(current, partialResult);
+          try (SilentCloseable closeable =
+              Profiler.instance().profile("env.buildTransitiveClosure")) {
+            env.buildTransitiveClosure(expression, current, depthBound);
           }
-        }
-      }
-    });
+
+          // We need to iterate depthBound + 1 times.
+          for (int i = 0; i <= depthBound; i++) {
+            // Filter already visited nodes: if we see a node in a later round, then we don't need
+            // to visit it again, because the depth at which we see it at must be greater than or
+            // equal to the last visit.
+            ImmutableList<T> toProcess =
+                minDepthUniquifier.uniqueAtDepthLessThanOrEqualTo(current, i);
+            callback.process(toProcess);
+            current = env.createThreadSafeMutableSet();
+            try (SilentCloseable closeable = Profiler.instance().profile("env.getFwdDeps")) {
+              Iterables.addAll(current, env.getFwdDeps(toProcess, context));
+            }
+            if (current.isEmpty()) {
+              // Exit when there are no more nodes to visit.
+              break;
+            }
+          }
+        });
   }
 }

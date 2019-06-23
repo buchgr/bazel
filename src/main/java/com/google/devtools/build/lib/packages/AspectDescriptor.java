@@ -16,22 +16,24 @@ package com.google.devtools.build.lib.packages;
 
 import com.google.common.collect.ImmutableMultimap;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.protobuf.TextFormat;
-import java.util.Map.Entry;
+import java.util.Map;
 import java.util.Objects;
 
 /**
  * A pair of {@link AspectClass} and {@link AspectParameters}.
  *
- * Used for dependency resolution.
+ * <p>Used for dependency resolution.
  */
 @Immutable
+@AutoCodec
 public final class AspectDescriptor {
   private final AspectClass aspectClass;
   private final AspectParameters aspectParameters;
 
-  public AspectDescriptor(AspectClass aspectClass,
-      AspectParameters aspectParameters) {
+  @AutoCodec.Instantiator
+  public AspectDescriptor(AspectClass aspectClass, AspectParameters aspectParameters) {
     this.aspectClass = aspectClass;
     this.aspectParameters = aspectParameters;
   }
@@ -74,11 +76,10 @@ public final class AspectDescriptor {
   }
 
   /**
-   * Creates a presentable description of this aspect, avaliable
-   * to Skylark via "Target.aspects".
+   * Creates a presentable description of this aspect, available to Skylark via "Target.aspects".
    *
-   * The description is designed to be unique for each aspect descriptor,
-   * but not to be parseable.
+   * <p>The description is designed to be unique for each aspect descriptor, but not to be
+   * parseable.
    */
   public String getDescription() {
     if (aspectParameters.isEmpty()) {
@@ -89,7 +90,7 @@ public final class AspectDescriptor {
     builder.append('[');
     ImmutableMultimap<String, String> attributes = aspectParameters.getAttributes();
     boolean first = true;
-    for (Entry<String, String> attribute : attributes.entries()) {
+    for (Map.Entry<String, String> attribute : attributes.entries()) {
       if (!first) {
         builder.append(',');
       } else {

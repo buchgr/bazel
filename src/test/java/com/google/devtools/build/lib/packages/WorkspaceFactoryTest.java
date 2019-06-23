@@ -15,20 +15,11 @@
 package com.google.devtools.build.lib.packages;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.fail;
 
-import com.google.common.collect.ImmutableList;
-import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.events.Event;
-import com.google.devtools.build.lib.events.StoredEventHandler;
-import com.google.devtools.build.lib.packages.Package.Builder;
-import com.google.devtools.build.lib.syntax.Mutability;
-import com.google.devtools.build.lib.syntax.ParserInputSource;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.testutil.Scratch;
-import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
-import com.google.devtools.build.lib.vfs.Path;
-import java.io.IOException;
-import java.util.List;
+import com.google.devtools.build.lib.vfs.Root;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -38,11 +29,20 @@ import org.junit.runners.JUnit4;
  */
 @RunWith(JUnit4.class)
 public class WorkspaceFactoryTest {
+  private Scratch scratch = new Scratch();
+  private WorkspaceFactoryTestHelper helper;
+  private Root root;
+
+  @Before
+  public void setUp() throws Exception {
+    root = Root.fromPath(scratch.dir(""));
+    helper = new WorkspaceFactoryTestHelper(root);
+  }
 
   @Test
   public void testLoadError() throws Exception {
     // WS with a syntax error: '//a' should end with .bzl.
-    WorkspaceFactoryHelper helper = parse("load('//a', 'a')");
+    helper.parse("load('//a', 'a')");
     helper.assertLexingExceptionThrown();
     assertThat(helper.getLexerError())
         .contains("The label must reference a file with extension '.bzl'");
@@ -50,133 +50,199 @@ public class WorkspaceFactoryTest {
 
   @Test
   public void testWorkspaceName() throws Exception {
-    WorkspaceFactoryHelper helper = parse("workspace(name = 'my_ws')");
+    helper.parse("workspace(name = 'my_ws')");
     assertThat(helper.getPackage().getWorkspaceName()).isEqualTo("my_ws");
   }
 
   @Test
   public void testWorkspaceStartsWithNumber() throws Exception {
-    WorkspaceFactoryHelper helper = parse("workspace(name = '123abc')");
+    helper.parse("workspace(name = '123abc')");
     assertThat(helper.getParserError()).contains("123abc is not a legal workspace name");
   }
 
   @Test
   public void testWorkspaceWithIllegalCharacters() throws Exception {
-    WorkspaceFactoryHelper helper = parse("workspace(name = 'a.b.c')");
+    helper.parse("workspace(name = 'a.b.c')");
     assertThat(helper.getParserError()).contains("a.b.c is not a legal workspace name");
   }
 
   @Test
   public void testIllegalRepoName() throws Exception {
-    WorkspaceFactoryHelper helper = parse("local_repository(",
-        "    name = 'foo/bar',",
-        "    path = '/foo/bar',",
-        ")");
+    helper.parse("local_repository(", "    name = 'foo/bar',", "    path = '/foo/bar',", ")");
     assertThat(helper.getParserError()).contains(
         "local_repository rule //external:foo/bar's name field must be a legal workspace name");
   }
 
   @Test
   public void testIllegalWorkspaceFunctionPosition() throws Exception {
-    WorkspaceFactoryHelper helper = new WorkspaceFactoryHelper(
-        false, "workspace(name = 'foo')");
+    helper = new WorkspaceFactoryTestHelper(/*allowOverride=*/ false, root);
+    helper.parse("workspace(name = 'foo')");
     assertThat(helper.getParserError()).contains(
         "workspace() function should be used only at the top of the WORKSPACE file");
   }
 
   @Test
+  public void testRegisterExecutionPlatforms() throws Exception {
+    helper.parse("register_execution_platforms('//platform:ep1')");
+    assertThat(helper.getPackage().getRegisteredExecutionPlatforms())
+        .containsExactly("//platform:ep1");
+  }
+
+  @Test
+  public void testRegisterExecutionPlatforms_multipleLabels() throws Exception {
+    helper.parse("register_execution_platforms(", "  '//platform:ep1',", "  '//platform:ep2')");
+    assertThat(helper.getPackage().getRegisteredExecutionPlatforms())
+        .containsExactly("//platform:ep1", "//platform:ep2");
+  }
+
+  @Test
+  public void testRegisterExecutionPlatforms_multipleCalls() throws Exception {
+    helper.parse(
+        "register_execution_platforms('//platform:ep1')",
+        "register_execution_platforms('//platform:ep2')",
+        "register_execution_platforms('//platform/...')");
+    assertThat(helper.getPackage().getRegisteredExecutionPlatforms())
+        .containsExactly("//platform:ep1", "//platform:ep2", "//platform/...");
+  }
+
+  @Test
   public void testRegisterToolchains() throws Exception {
-    WorkspaceFactoryHelper helper = parse("register_toolchains('//toolchain:tc1')");
-    assertThat(helper.getPackage().getRegisteredToolchainLabels())
-        .containsExactly(Label.parseAbsolute("//toolchain:tc1"));
+    helper.parse("register_toolchains('//toolchain:tc1')");
+    assertThat(helper.getPackage().getRegisteredToolchains()).containsExactly("//toolchain:tc1");
   }
 
   @Test
   public void testRegisterToolchains_multipleLabels() throws Exception {
-    WorkspaceFactoryHelper helper =
-        parse("register_toolchains(", "  '//toolchain:tc1',", "  '//toolchain:tc2')");
-    assertThat(helper.getPackage().getRegisteredToolchainLabels())
-        .containsExactly(
-            Label.parseAbsolute("//toolchain:tc1"), Label.parseAbsolute("//toolchain:tc2"));
+    helper.parse("register_toolchains(", "  '//toolchain:tc1',", "  '//toolchain:tc2')");
+    assertThat(helper.getPackage().getRegisteredToolchains())
+        .containsExactly("//toolchain:tc1", "//toolchain:tc2");
   }
 
   @Test
   public void testRegisterToolchains_multipleCalls() throws Exception {
-    WorkspaceFactoryHelper helper =
-        parse("register_toolchains('//toolchain:tc1')", "register_toolchains('//toolchain:tc2')");
-    assertThat(helper.getPackage().getRegisteredToolchainLabels())
-        .containsExactly(
-            Label.parseAbsolute("//toolchain:tc1"), Label.parseAbsolute("//toolchain:tc2"));
+    helper.parse(
+        "register_toolchains('//toolchain:tc1')",
+        "register_toolchains('//toolchain:tc2')",
+        "register_toolchains('//toolchain/...')");
+    assertThat(helper.getPackage().getRegisteredToolchains())
+        .containsExactly("//toolchain:tc1", "//toolchain:tc2", "//toolchain/...");
   }
 
-  private WorkspaceFactoryHelper parse(String... args) {
-    return new WorkspaceFactoryHelper(args);
+  @Test
+  public void testWorkspaceMappings() throws Exception {
+    helper.parse(
+        "workspace(name = 'bar')",
+        "local_repository(",
+        "    name = 'foo',",
+        "    path = '/foo',",
+        "    repo_mapping = {'@x' : '@y'},",
+        ")");
+    assertMapping(helper, "@foo", "@x", "@y");
   }
 
-  /**
-   * Parses a WORKSPACE file with the given content.
-   */
-  private class WorkspaceFactoryHelper {
-    private final Builder builder;
-    private final WorkspaceFactory factory;
-    private final Exception exception;
-    private final ImmutableList<Event> events;
-
-    public WorkspaceFactoryHelper(String... args) {
-      this(true, args);
-    }
-
-    public WorkspaceFactoryHelper(boolean allowOverride, String... args) {
-      Path root = null;
-      Path workspaceFilePath = null;
-      try {
-        Scratch scratch = new Scratch("/");
-        root = scratch.dir("/workspace");
-        workspaceFilePath = scratch.file("/workspace/WORKSPACE", args);
-      } catch (IOException e) {
-        fail("Shouldn't happen: " + e.getMessage());
-      }
-      StoredEventHandler eventHandler = new StoredEventHandler();
-      builder = Package.newExternalPackageBuilder(
-          Package.Builder.DefaultHelper.INSTANCE, workspaceFilePath, "");
-      this.factory = new WorkspaceFactory(
-          builder,
-          TestRuleClassProvider.getRuleClassProvider(),
-          ImmutableList.<PackageFactory.EnvironmentExtension>of(),
-          Mutability.create("test"),
-          allowOverride,
-          root,
-          root);
-      Exception exception = null;
-      try {
-        factory.parse(ParserInputSource.create(workspaceFilePath), eventHandler);
-      } catch (BuildFileContainsErrorsException e) {
-        exception = e;
-      } catch (IOException | InterruptedException e) {
-        fail("Shouldn't happen: " + e.getMessage());
-      }
-      this.events = eventHandler.getEvents();
-      this.exception = exception;
-    }
-
-    public Package getPackage() throws InterruptedException, NoSuchPackageException {
-      return builder.build();
-    }
-
-    public void assertLexingExceptionThrown() {
-      assertThat(exception).isNotNull();
-      assertThat(exception).hasMessageThat().contains("Failed to parse /workspace/WORKSPACE");
-    }
-
-    public String getLexerError() {
-      assertThat(events).hasSize(1);
-      return events.get(0).getMessage();
-    }
-
-    public String getParserError() {
-      List<Event> events = builder.getEvents();
-      assertThat(events.size()).isGreaterThan(0);
-      return events.get(0).getMessage();
-    }
+  @Test
+  public void testMultipleRepositoriesWithMappings() throws Exception {
+    helper.parse(
+        "local_repository(",
+        "    name = 'foo',",
+        "    path = '/foo',",
+        "    repo_mapping = {'@x' : '@y'},",
+        ")",
+        "local_repository(",
+        "    name = 'bar',",
+        "    path = '/bar',",
+        "    repo_mapping = {'@a' : '@b'},",
+        ")");
+    assertMapping(helper, "@foo", "@x", "@y");
+    assertMapping(helper, "@bar", "@a", "@b");
   }
+
+  @Test
+  public void testMultipleMappings() throws Exception {
+    helper.parse(
+        "local_repository(",
+        "    name = 'foo',",
+        "    path = '/foo',",
+        "    repo_mapping = {'@a' : '@b', '@c' : '@d', '@e' : '@f'},",
+        ")");
+    assertMapping(helper, "@foo", "@a", "@b");
+    assertMapping(helper, "@foo", "@c", "@d");
+    assertMapping(helper, "@foo", "@e", "@f");
+  }
+
+  @Test
+  public void testEmptyMappings() throws Exception {
+    helper.parse(
+        "local_repository(",
+        "    name = 'foo',",
+        "    path = '/foo',",
+        "    repo_mapping = {},",
+        ")");
+    assertThat(helper.getPackage().getRepositoryMapping(RepositoryName.create("@foo"))).isEmpty();
+  }
+
+  @Test
+  public void testMappingsNotAMap() throws Exception {
+    helper.parse(
+        "local_repository(",
+        "    name = 'foo',",
+        "    path = '/foo',",
+        "    repo_mapping = 1",
+        ")");
+    assertThat(helper.getParserError())
+        .contains("Invalid value for 'repo_mapping': '1'. Value must be a dict.");
+
+    helper.parse(
+        "local_repository(",
+        "    name = 'foo',",
+        "    path = '/foo',",
+        "    repo_mapping = 'hello'",
+        ")");
+    assertThat(helper.getParserError())
+        .contains("Invalid value for 'repo_mapping': 'hello'. Value must be a dict.");
+  }
+
+  @Test
+  public void testImplicitMainRepoRename() throws Exception {
+    helper.setSkylarkSemantics("--incompatible_remap_main_repo");
+    helper.parse("workspace(name = 'foo')");
+    assertMapping(helper, "@", "@foo", "@");
+  }
+
+  @Test
+  public void testNoImplicitMainRepoRenameWithoutFlag() throws Exception {
+    helper.parse("workspace(name = 'foo')");
+    RepositoryName foo = RepositoryName.create("@foo");
+    assertThat(helper.getPackage().getRepositoryMapping(RepositoryName.create("@")))
+        .doesNotContainEntry(foo, RepositoryName.MAIN);
+  }
+
+  @Test
+  public void testEmptyRepositoryHasEmptyMap() throws Exception {
+    helper.parse("");
+    assertThat(helper.getPackage().getRepositoryMapping(RepositoryName.create("@"))).isEmpty();
+  }
+
+  @Test
+  public void testOverrideImplicitMainRepoRename() throws Exception {
+    helper.parse(
+        "workspace(name = 'bar')",
+        "local_repository(",
+        "    name = 'foo',",
+        "    path = '/foo',",
+        "    repo_mapping = {'@x' : '@y', '@bar' : '@newname'},",
+        ")");
+    assertMapping(helper, "@foo", "@x", "@y");
+    assertMapping(helper, "@foo", "@bar", "@newname");
+  }
+
+  private void assertMapping(
+      WorkspaceFactoryTestHelper helper, String repo, String local, String global)
+      throws Exception {
+    RepositoryName localRepoName = RepositoryName.create(local);
+    RepositoryName globalRepoName = RepositoryName.create(global);
+    assertThat(helper.getPackage().getRepositoryMapping(RepositoryName.create(repo)))
+        .containsEntry(localRepoName, globalRepoName);
+  }
+
 }

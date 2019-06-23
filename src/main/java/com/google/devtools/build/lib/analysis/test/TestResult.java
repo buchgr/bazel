@@ -14,19 +14,23 @@
 
 package com.google.devtools.build.lib.analysis.test;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.test.TestRunnerAction.ResolvedPaths;
-import com.google.devtools.build.lib.buildeventstream.TestFileNameConstants;
+import com.google.devtools.build.lib.actions.ArtifactPathResolver;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.events.ExtendedEventHandler;
+import com.google.devtools.build.lib.exec.TestAttempt;
 import com.google.devtools.build.lib.util.Pair;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
 import java.util.Collection;
+import java.util.List;
 import javax.annotation.Nullable;
 
 /**
@@ -35,7 +39,7 @@ import javax.annotation.Nullable;
  */
 @ThreadSafe
 @Immutable
-public class TestResult {
+public class TestResult implements ExtendedEventHandler.ProgressLike {
 
   private final TestRunnerAction testAction;
   private final TestResultData data;
@@ -67,42 +71,6 @@ public class TestResult {
     return status == BlazeTestStatus.PASSED || status == BlazeTestStatus.FLAKY;
   }
 
-  public static ImmutableList<Pair<String, Path>> testOutputsFromPaths(
-      ResolvedPaths resolvedPaths) {
-    ImmutableList.Builder<Pair<String, Path>> builder = new ImmutableList.Builder<>();
-    if (resolvedPaths.getXmlOutputPath().exists()) {
-      builder.add(Pair.of(TestFileNameConstants.TEST_XML, resolvedPaths.getXmlOutputPath()));
-    }
-    if (resolvedPaths.getSplitLogsPath().exists()) {
-      builder.add(Pair.of(TestFileNameConstants.SPLIT_LOGS, resolvedPaths.getSplitLogsPath()));
-    }
-    if (resolvedPaths.getTestWarningsPath().exists()) {
-      builder.add(Pair.of(TestFileNameConstants.TEST_WARNINGS,
-            resolvedPaths.getTestWarningsPath()));
-    }
-    if (resolvedPaths.getUndeclaredOutputsZipPath().exists()) {
-      builder.add(Pair.of(TestFileNameConstants.UNDECLARED_OUTPUTS_ZIP,
-          resolvedPaths.getUndeclaredOutputsZipPath()));
-    }
-    if (resolvedPaths.getUndeclaredOutputsManifestPath().exists()) {
-      builder.add(Pair.of(TestFileNameConstants.UNDECLARED_OUTPUTS_MANIFEST,
-          resolvedPaths.getUndeclaredOutputsManifestPath()));
-    }
-    if (resolvedPaths.getUndeclaredOutputsAnnotationsPath().exists()) {
-      builder.add(Pair.of(TestFileNameConstants.UNDECLARED_OUTPUTS_ANNOTATIONS,
-          resolvedPaths.getUndeclaredOutputsAnnotationsPath()));
-    }
-    if (resolvedPaths.getUnusedRunfilesLogPath().exists()) {
-      builder.add(Pair.of(TestFileNameConstants.UNUSED_RUNFILES_LOG,
-          resolvedPaths.getUnusedRunfilesLogPath()));
-    }
-    if (resolvedPaths.getInfrastructureFailureFile().exists()) {
-      builder.add(Pair.of(TestFileNameConstants.TEST_INFRASTRUCTURE_FAILURE,
-          resolvedPaths.getInfrastructureFailureFile()));
-    }
-    return builder.build();
-  }
-
   /**
    * @return The test action.
    */
@@ -116,7 +84,13 @@ public class TestResult {
    *         you need log location.
    */
   public Path getTestLogPath() {
-    return testAction.getTestLog().getPath();
+    Path testLogPath = testAction.getTestLog().getPath();
+    // If we have an exec root we'll use its fileSystem
+    if (execRoot != null) {
+      FileSystem fileSystem = execRoot.getFileSystem();
+      return fileSystem.getPath(testLogPath.getPathString());
+    }
+    return testLogPath;
   }
 
   /**
@@ -124,6 +98,22 @@ public class TestResult {
    */
   public final boolean isCached() {
     return cached;
+  }
+
+  /**
+   * Returns the list of locally cached test attempts. This method must only be called if {@link
+   * #isCached} returns <code>true</code>.
+   */
+  public List<TestAttempt> getCachedTestAttempts() {
+    Preconditions.checkState(isCached());
+    return ImmutableList.of(
+        TestAttempt.fromCachedTestResult(
+            testAction,
+            data,
+            1,
+            getFiles(),
+            BuildEventStreamProtos.TestResult.ExecutionInfo.getDefaultInstance(),
+            /*lastAttempt=*/ true));
   }
 
   /**
@@ -143,7 +133,6 @@ public class TestResult {
     // these artifacts are used to keep track of the number of pending and completed tests.
     return testAction.getCacheStatusArtifact();
   }
-
 
   /**
    * Gets the test name in a user-friendly format.
@@ -185,18 +174,8 @@ public class TestResult {
    * @return Collection of files created by the test, tagged by their name indicating usage (e.g.,
    *     "test.log").
    */
-  public Collection<Pair<String, Path>> getFiles() {
-    ImmutableList.Builder<Pair<String, Path>> builder = new ImmutableList.Builder<>();
-    if (testAction.getTestLog().getPath().exists()) {
-      builder.add(Pair.of(TestFileNameConstants.TEST_LOG, testAction.getTestLog().getPath()));
-    }
-    if (testAction.getCoverageData() != null && testAction.getCoverageData().getPath().exists()) {
-      builder.add(
-          Pair.of(TestFileNameConstants.TEST_COVERAGE, testAction.getCoverageData().getPath()));
-    }
-    if (execRoot != null) {
-      builder.addAll(testOutputsFromPaths(testAction.resolve(execRoot)));
-    }
-    return builder.build();
+  private Collection<Pair<String, Path>> getFiles() {
+    // TODO(ulfjack): Cache the set of generated files in the TestResultData.
+    return testAction.getTestOutputsMapping(ArtifactPathResolver.forExecRoot(execRoot), execRoot);
   }
 }

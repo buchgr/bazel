@@ -13,13 +13,19 @@
 // limitations under the License.
 package com.google.devtools.build.lib.runtime;
 
+import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.eventbus.AllowConcurrentEvents;
 import com.google.common.eventbus.Subscribe;
 import com.google.common.primitives.Bytes;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.devtools.build.lib.actions.ActionCompletionEvent;
+import com.google.devtools.build.lib.actions.ActionScanningCompletedEvent;
 import com.google.devtools.build.lib.actions.ActionStartedEvent;
-import com.google.devtools.build.lib.actions.ActionStatusMessage;
+import com.google.devtools.build.lib.actions.RunningActionEvent;
+import com.google.devtools.build.lib.actions.ScanningActionEvent;
+import com.google.devtools.build.lib.actions.SchedulingActionEvent;
+import com.google.devtools.build.lib.actions.StoppedScanningActionEvent;
 import com.google.devtools.build.lib.analysis.AnalysisPhaseCompleteEvent;
 import com.google.devtools.build.lib.analysis.NoBuildEvent;
 import com.google.devtools.build.lib.analysis.NoBuildRequestFinishedEvent;
@@ -35,7 +41,10 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.events.ExtendedEventHandler.FetchProgress;
+import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.pkgcache.LoadingPhaseCompleteEvent;
+import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
+import com.google.devtools.build.lib.skyframe.ConfigurationPhaseStartedEvent;
 import com.google.devtools.build.lib.skyframe.LoadingPhaseStartedEvent;
 import com.google.devtools.build.lib.util.io.AnsiTerminal;
 import com.google.devtools.build.lib.util.io.AnsiTerminal.Color;
@@ -45,7 +54,9 @@ import com.google.devtools.build.lib.util.io.LineWrappingAnsiTerminalWriter;
 import com.google.devtools.build.lib.util.io.LoggingTerminalWriter;
 import com.google.devtools.build.lib.util.io.OutErr;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -53,8 +64,14 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Logger;
+import javax.annotation.Nullable;
 
 /** An experimental new output stream. */
 public class ExperimentalEventHandler implements EventHandler {
@@ -75,7 +92,7 @@ public class ExperimentalEventHandler implements EventHandler {
 
   private static final DateTimeFormatter TIMESTAMP_FORMAT =
       DateTimeFormatter.ofPattern("(HH:mm:ss) ");
-  private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("YYYY-MM-dd");
+  private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
   private final boolean cursorControl;
   private final Clock clock;
@@ -83,9 +100,11 @@ public class ExperimentalEventHandler implements EventHandler {
   private final AnsiTerminal terminal;
   private final boolean debugAllEvents;
   private final ExperimentalStateTracker stateTracker;
+  private final LocationPrinter locationPrinter;
   private final boolean showProgress;
   private final boolean progressInTermTitle;
   private final boolean showTimestamp;
+  private final boolean deduplicate;
   private final OutErr outErr;
   private long minimalDelayMillis;
   private long minimalUpdateInterval;
@@ -96,21 +115,28 @@ public class ExperimentalEventHandler implements EventHandler {
   private boolean buildRunning;
   // Number of open build even protocol transports.
   private boolean progressBarNeedsRefresh;
-  private Thread updateThread;
+  private volatile boolean shutdown;
+  private final AtomicReference<Thread> updateThread;
+  private final Lock updateLock;
   private byte[] stdoutBuffer;
   private byte[] stderrBuffer;
+  private final Set<String> messagesSeen;
+  private long deduplicateCount;
 
   private final long outputLimit;
+  private long reservedOutputCapacity;
   private final AtomicLong counter;
+  private long droppedEvents;
   /**
    * The following constants determine how the output limiting is done gracefully. They are all
    * values for the remaining relative capacity left at which we start taking given measure.
    *
    * <p>The degrading of progress updates to stay within output limit is done in the following
    * steps.
+   *
    * <ul>
    *   <li>We limit progress updates to at most one per second; this is the granularity at which
-   *       times in he progress bar are shown. So the appearance won't look too bad. Hence we start
+   *       times in the progress bar are shown. So the appearance won't look too bad. Hence we start
    *       that measure relatively early.
    *   <li>We only show the short version of the progress bar, even if curses are enabled.
    *   <li>We reduce the update frequency of the progress bar to at most one update per 5s. This
@@ -119,76 +145,121 @@ public class ExperimentalEventHandler implements EventHandler {
    *   <li>We start decreasing the update frequency to what we would do, if curses were not allowed.
    *       Note that now the time between updates is at least a fixed fraction of the time that
    *       passed so far; so the time between progress updates will continue to increase.
+   *   <li>We do not show any event, except for errors.
+   *   <li>The last small fraction of the output, we reserve for a post-build status messages (in
+   *       particular test summaries).
    * </ul>
    */
-  private static final double CAPACITY_INCREASE_UPDATE_DELAY = 0.7;
+  private static final double CAPACITY_INCREASE_UPDATE_DELAY = 0.9;
 
-  private static final double CAPACITY_SHORT_PROGRESS_BAR = 0.5;
+  private static final double CAPACITY_SHORT_PROGRESS_BAR = 0.6;
   private static final double CAPACITY_UPDATE_DELAY_5_SECONDS = 0.4;
   private static final double CAPACITY_UPDATE_DELAY_AS_NO_CURSES = 0.3;
+  private static final double CAPACITY_ERRORS_ONLY = 0.2;
   /**
    * The degrading of printing stdout/stderr is achieved by limiting the output for an individual
    * event if printing it fully would get us above the threshold. If limited, at most a given
    * fraction of the remaining capacity my be used by any such event; larger events are truncated to
    * their end (this is what the user would anyway only see on the terminal if the output is very
    * large). In any case, we always allow at least twice the terminal width, to make the output at
-   * least somewhat useful.
+   * least somewhat useful. From a given threshold onwards, we always restrict to at most twice the
+   * terminal width.
    */
-  private static final double CAPACITY_LIMIT_OUT_ERR_EVENTS = 0.6;
+  private static final double CAPACITY_LIMIT_OUT_ERR_EVENTS = 0.8;
 
+  private static final double CAPACITY_STRONG_LIMIT_OUT_ERR_EVENTS = 0.5;
   private static final double RELATIVE_OUT_ERR_LIMIT = 0.1;
+
+  /**
+   * The reservation of output capacity for the final status is computed as follows: we always
+   * reserve at least a certain numer of lines, and at least a certain fraction of the overall
+   * capacity, to show more status in scenarios where we have a bigger limit.
+   */
+  private static final long MINIMAL_POST_BUILD_OUTPUT_LINES = 14;
+
+  private static final double MINIMAL_POST_BUILD_OUTPUT_CAPACITY = 0.05;
 
   public final int terminalWidth;
 
-  static class CountingOutputStream extends OutputStream {
-    private final OutputStream stream;
-    private final AtomicLong counter;
+  /**
+   * An output stream that wraps another output stream and that fully buffers writes until flushed.
+   * Additionally, it optionally takes into account a budget for the number of bytes it may still
+   * write to the wrapped stream.
+   */
+  private static class FullyBufferedOutputStreamMaybeWithCounting extends ByteArrayOutputStream {
+    /** The (possibly unbuffered) stream wrapped by this one. */
+    private final OutputStream wrapped;
+    /** The counter for the amount of bytes we're still allowed to write */
+    @Nullable private final AtomicLong counter;
 
-    CountingOutputStream(OutputStream stream, AtomicLong counter) {
-      this.stream = stream;
+    /**
+     * Constructs a new fully-buffered output stream that wraps an unbuffered one.
+     *
+     * @param wrapped the (possibly unbuffered) stream wrapped by this one
+     * @param counter a counter specifying the number of bytes the stream may still write
+     */
+    FullyBufferedOutputStreamMaybeWithCounting(OutputStream wrapped, @Nullable AtomicLong counter) {
+      this.wrapped = wrapped;
       this.counter = counter;
     }
 
     @Override
-    public void write(int b) throws IOException {
-      if (counter.decrementAndGet() >= 0) {
-        stream.write(b);
-      }
-    }
-
-    @Override
     public void flush() throws IOException {
-      stream.flush();
-    }
-
-    @Override
-    public void close() throws IOException {
-      stream.close();
+      super.flush();
+      try {
+        if (counter == null || counter.addAndGet(-count) >= 0) {
+          writeTo(wrapped);
+          wrapped.flush();
+        }
+      } finally {
+        // If we failed to write our current buffered contents to the output, there is not much
+        // we can do because reporting an error would require another write, and that write would
+        // probably fail. So, instead, we silently discard whatever was previously buffered in the
+        // hopes that the data itself was what caused the problem.
+        reset();
+      }
     }
   }
 
   public ExperimentalEventHandler(
-      OutErr outErr, BlazeCommandEventHandler.Options options, Clock clock) {
+      OutErr outErr,
+      BlazeCommandEventHandler.Options options,
+      Clock clock,
+      @Nullable PathFragment workspacePathFragment) {
+    this.terminalWidth = (options.terminalColumns > 0 ? options.terminalColumns : 80);
     this.outputLimit = options.experimentalUiLimitConsoleOutput;
     this.counter = new AtomicLong(outputLimit);
+    this.droppedEvents = 0;
     if (outputLimit > 0) {
       this.outErr =
           OutErr.create(
-              new CountingOutputStream(outErr.getOutputStream(), this.counter),
-              new CountingOutputStream(outErr.getErrorStream(), this.counter));
+              new FullyBufferedOutputStreamMaybeWithCounting(
+                  outErr.getOutputStream(), this.counter),
+              new FullyBufferedOutputStreamMaybeWithCounting(
+                  outErr.getErrorStream(), this.counter));
+      reservedOutputCapacity =
+          Math.max(
+              MINIMAL_POST_BUILD_OUTPUT_LINES * this.terminalWidth,
+              Math.round(MINIMAL_POST_BUILD_OUTPUT_CAPACITY * outputLimit));
     } else {
-      // unlimited output; no need to count and limit
-      this.outErr = outErr;
+      // unlimited output; no need to count, but still fully buffer
+      this.outErr =
+          OutErr.create(
+              new FullyBufferedOutputStreamMaybeWithCounting(outErr.getOutputStream(), null),
+              new FullyBufferedOutputStreamMaybeWithCounting(outErr.getErrorStream(), null));
     }
     this.cursorControl = options.useCursorControl();
     this.terminal = new AnsiTerminal(this.outErr.getErrorStream());
-    this.terminalWidth = (options.terminalColumns > 0 ? options.terminalColumns : 80);
     this.showProgress = options.showProgress;
     this.progressInTermTitle = options.progressInTermTitle && options.useCursorControl();
     this.showTimestamp = options.showTimestamp;
     this.clock = clock;
     this.uiStartTimeMillis = clock.currentTimeMillis();
     this.debugAllEvents = options.experimentalUiDebugAllEvents;
+    this.deduplicate = options.experimentalUiDeduplicate;
+    this.messagesSeen = new HashSet<>();
+    this.locationPrinter =
+        new LocationPrinter(options.attemptToPrintRelativePaths, workspacePathFragment);
     // If we have cursor control, we try to fit in the terminal width to avoid having
     // to wrap the progress bar. We will wrap the progress bar to terminalWidth - 1
     // characters to avoid depending on knowing whether the underlying terminal does the
@@ -213,6 +284,8 @@ public class ExperimentalEventHandler implements EventHandler {
     this.stdoutBuffer = new byte[] {};
     this.stderrBuffer = new byte[] {};
     this.dateShown = false;
+    this.updateThread = new AtomicReference<>();
+    this.updateLock = new ReentrantLock();
     // The progress bar has not been updated yet.
     ignoreRefreshLimitOnce();
   }
@@ -227,7 +300,7 @@ public class ExperimentalEventHandler implements EventHandler {
       // how much we write.
       return 1.0;
     }
-    return (counter.get() - wantWrite) / (double) outputLimit;
+    return (counter.get() - wantWrite - reservedOutputCapacity) / (double) outputLimit;
   }
 
   private double remainingCapacity() {
@@ -274,17 +347,54 @@ public class ExperimentalEventHandler implements EventHandler {
   }
 
   @Override
-  public synchronized void handle(Event event) {
+  public void handle(Event event) {
+    if (!debugAllEvents
+        && !showTimestamp
+        && (event.getKind() == EventKind.START
+            || event.getKind() == EventKind.FINISH
+            || event.getKind() == EventKind.PASS
+            || event.getKind() == EventKind.TIMEOUT
+            || event.getKind() == EventKind.DEPCHECKER)) {
+      // Keep this in sync with the list of no-op event kinds in handleLocked below.
+      return;
+    }
+    handleLocked(event, /* isFollowUp= */ false);
+  }
+
+  private synchronized void handleLocked(Event event, boolean isFollowUp) {
     try {
       if (debugAllEvents) {
         // Debugging only: show all events visible to the new UI.
         clearProgressBar();
         terminal.flush();
         outErr.getOutputStream().write((event + "\n").getBytes(StandardCharsets.UTF_8));
+        if (event.getStdOut() != null) {
+          outErr
+              .getOutputStream()
+              .write(
+                  ("... with STDOUT: " + event.getStdOut() + "\n")
+                      .getBytes(StandardCharsets.UTF_8));
+        }
+        if (event.getStdErr() != null) {
+          outErr
+              .getOutputStream()
+              .write(
+                  ("... with STDERR: " + event.getStdErr() + "\n")
+                      .getBytes(StandardCharsets.UTF_8));
+        }
         outErr.getOutputStream().flush();
         addProgressBar();
         terminal.flush();
       } else {
+        if (!isFollowUp
+            && (remainingCapacity() < CAPACITY_ERRORS_ONLY)
+            && (event.getKind() != EventKind.ERROR)) {
+          droppedEvents++;
+          return;
+        }
+        if (shouldDeduplicate(event)) {
+          return;
+        }
         maybeAddDate();
         switch (event.getKind()) {
           case STDOUT:
@@ -298,10 +408,17 @@ public class ExperimentalEventHandler implements EventHandler {
               stream.flush();
             } else {
               byte[] message = event.getMessageBytes();
-              if (remainingCapacity(message.length) < CAPACITY_LIMIT_OUT_ERR_EVENTS) {
+              if (remainingCapacity() < 0) {
+                return;
+              }
+              double cap = remainingCapacity(message.length);
+              if (cap < CAPACITY_LIMIT_OUT_ERR_EVENTS) {
                 // Have to ensure the message is not too large.
                 long allowedLength =
                     Math.max(2 * terminalWidth, Math.round(RELATIVE_OUT_ERR_LIMIT * counter.get()));
+                if (cap < CAPACITY_STRONG_LIMIT_OUT_ERR_EVENTS) {
+                  allowedLength = Math.min(allowedLength, 2 * terminalWidth);
+                }
                 if (message.length > allowedLength) {
                   // Have to truncate the message
                   message =
@@ -353,6 +470,10 @@ public class ExperimentalEventHandler implements EventHandler {
             if (incompleteLine) {
               crlf();
             }
+            if (remainingCapacity() < 0) {
+              terminal.flush();
+              return;
+            }
             if (showTimestamp) {
               terminal.writeString(
                   TIMESTAMP_FORMAT.format(
@@ -363,8 +484,9 @@ public class ExperimentalEventHandler implements EventHandler {
             terminal.writeString(event.getKind() + ": ");
             terminal.resetTerminal();
             incompleteLine = true;
-            if (event.getLocation() != null) {
-              terminal.writeString(event.getLocation() + ": ");
+            Location location = event.getLocation();
+            if (location != null) {
+              terminal.writeString(locationPrinter.getLocationString(location) + ": ");
             }
             if (event.getMessage() != null) {
               terminal.writeString(event.getMessage());
@@ -389,6 +511,18 @@ public class ExperimentalEventHandler implements EventHandler {
           case TIMEOUT:
           case DEPCHECKER:
             break;
+        }
+        if (event.getStdErr() != null) {
+          handleLocked(
+              Event.of(
+                  EventKind.STDERR, null, event.getStdErr().getBytes(StandardCharsets.ISO_8859_1)),
+              /* isFollowUp= */ true);
+        }
+        if (event.getStdOut() != null) {
+          handleLocked(
+              Event.of(
+                  EventKind.STDOUT, null, event.getStdOut().getBytes(StandardCharsets.ISO_8859_1)),
+              /* isFollowUp= */ true);
         }
       }
     } catch (IOException e) {
@@ -420,6 +554,57 @@ public class ExperimentalEventHandler implements EventHandler {
     }
   }
 
+  private boolean shouldDeduplicate(Event event) {
+    if (!deduplicate) {
+      // deduplication disabled
+      return false;
+    }
+    if (event.getKind() == EventKind.DEBUG) {
+      String message = event.getMessage();
+      synchronized (this) {
+        if (messagesSeen.contains(message)) {
+          deduplicateCount++;
+          return true;
+        } else {
+          messagesSeen.add(message);
+        }
+      }
+    }
+    if (event.getKind() != EventKind.INFO) {
+      // only deduplicate INFO messages
+      return false;
+    }
+    if (event.getStdOut() == null && event.getStdErr() == null) {
+      // We deduplicate on the attached output (assuming the event itself only describes
+      // the source of the output). If no output is attached it is a different kind of event
+      // and should not be deduplicated.
+      return false;
+    }
+    boolean allMessagesSeen = true;
+    if (event.getStdOut() != null) {
+      for (String line : Splitter.on("\n").split(event.getStdOut())) {
+        if (!messagesSeen.contains(line)) {
+          allMessagesSeen = false;
+          messagesSeen.add(line);
+        }
+      }
+    }
+    if (event.getStdErr() != null) {
+      for (String line : Splitter.on("\n").split(event.getStdErr())) {
+        if (!messagesSeen.contains(line)) {
+          allMessagesSeen = false;
+          messagesSeen.add(line);
+        }
+      }
+    }
+    if (allMessagesSeen) {
+      synchronized (this) {
+        deduplicateCount++;
+      }
+    }
+    return allMessagesSeen;
+  }
+
   @Subscribe
   public void buildStarted(BuildStartingEvent event) {
     synchronized (this) {
@@ -436,6 +621,16 @@ public class ExperimentalEventHandler implements EventHandler {
   public void loadingStarted(LoadingPhaseStartedEvent event) {
     maybeAddDate();
     stateTracker.loadingStarted(event);
+    // As a new phase started, inform immediately.
+    ignoreRefreshLimitOnce();
+    refresh();
+    startUpdateThread();
+  }
+
+  @Subscribe
+  public void configurationStarted(ConfigurationPhaseStartedEvent event) {
+    maybeAddDate();
+    stateTracker.configurationStarted(event);
     // As a new phase started, inform immediately.
     ignoreRefreshLimitOnce();
     refresh();
@@ -465,10 +660,11 @@ public class ExperimentalEventHandler implements EventHandler {
   @Subscribe
   public void buildComplete(BuildCompleteEvent event) {
     // The final progress bar will flow into the scroll-back buffer, to if treat
-    // it as an event and add a timestamp, if events are supposed to have a timestmap.
+    // it as an event and add a timestamp, if events are supposed to have a timestamp.
     boolean done = false;
     synchronized (this) {
       stateTracker.buildComplete(event);
+      reservedOutputCapacity = 0;
       ignoreRefreshLimitOnce();
       refresh();
 
@@ -493,7 +689,44 @@ public class ExperimentalEventHandler implements EventHandler {
       buildRunning = false;
     }
     stopUpdateThread();
-    flushStdOutStdErrBuffers();
+    synchronized (this) {
+      try {
+        // If a progress bar is currently present, clean it and redraw it.
+        boolean progressBarPresent = numLinesProgressBar > 0;
+        if (progressBarPresent) {
+          clearProgressBar();
+        }
+        terminal.flush();
+        boolean incompleteLine = flushStdOutStdErrBuffers();
+        if (incompleteLine) {
+          crlf();
+        }
+        if (deduplicateCount > 0) {
+          handle(Event.info(null, "deduplicated " + deduplicateCount + " events"));
+        }
+        if (droppedEvents > 0) {
+          handleLocked(
+              Event.info(
+                  null,
+                  "dropped "
+                      + droppedEvents
+                      + " events on the console,"
+                      + " to stay within output limit."),
+              /* isFollowUp= */ true);
+        }
+        if (progressBarPresent) {
+          addProgressBar();
+        }
+        terminal.flush();
+      } catch (IOException e) {
+        logger.warning("IO Error writing to output stream: " + e);
+      }
+    }
+  }
+
+  @Subscribe
+  public void packageLocatorCreated(PathPackageLocator packageLocator) {
+    locationPrinter.packageLocatorCreated(packageLocator);
   }
 
   @Subscribe
@@ -517,8 +750,7 @@ public class ExperimentalEventHandler implements EventHandler {
     synchronized (this) {
       buildRunning = true;
     }
-    stopUpdateThread();
-    flushStdOutStdErrBuffers();
+    completeBuild();
     try {
       terminal.resetTerminal();
       terminal.flush();
@@ -535,18 +767,49 @@ public class ExperimentalEventHandler implements EventHandler {
   }
 
   @Subscribe
+  @AllowConcurrentEvents
   public void actionStarted(ActionStartedEvent event) {
     stateTracker.actionStarted(event);
     refresh();
   }
 
   @Subscribe
-  public void actionStatusMessage(ActionStatusMessage event) {
-    stateTracker.actionStatusMessage(event);
+  @AllowConcurrentEvents
+  public void scanningAction(ScanningActionEvent event) {
+    stateTracker.scanningAction(event);
     refresh();
   }
 
   @Subscribe
+  @AllowConcurrentEvents
+  public void stopScanningAction(StoppedScanningActionEvent event) {
+    stateTracker.stopScanningAction(event);
+    refresh();
+  }
+
+  @Subscribe
+  @AllowConcurrentEvents
+  public void schedulingAction(SchedulingActionEvent event) {
+    stateTracker.schedulingAction(event);
+    refresh();
+  }
+
+  @Subscribe
+  @AllowConcurrentEvents
+  public void runningAction(RunningActionEvent event) {
+    stateTracker.runningAction(event);
+    refresh();
+  }
+
+  @Subscribe
+  @AllowConcurrentEvents
+  public void actionCompletion(ActionScanningCompletedEvent event) {
+    stateTracker.actionCompletion(event);
+    refreshSoon();
+  }
+
+  @Subscribe
+  @AllowConcurrentEvents
   public void actionCompletion(ActionCompletionEvent event) {
     stateTracker.actionCompletion(event);
     refreshSoon();
@@ -591,7 +854,7 @@ public class ExperimentalEventHandler implements EventHandler {
         setEventKindColor(EventKind.ERROR);
         terminal.writeString("" + summary.getStatus() + ": ");
         terminal.resetTerminal();
-        terminal.writeString(summary.getTarget().getLabel().toString());
+        terminal.writeString(summary.getLabel().toString());
         terminal.writeString(" (Summary)");
         crlf();
         for (Path logPath : summary.getFailedLogs()) {
@@ -652,35 +915,39 @@ public class ExperimentalEventHandler implements EventHandler {
     }
     long nowMillis = clock.currentTimeMillis();
     if (lastRefreshMillis + minimalDelayMillis < nowMillis) {
-      synchronized (this) {
+      if (updateLock.tryLock()) {
         try {
-          if (showProgress && (progressBarNeedsRefresh || timeBasedRefresh())) {
-            progressBarNeedsRefresh = false;
-            clearProgressBar();
-            addProgressBar();
-            terminal.flush();
-            double remaining = remainingCapacity();
-            if (remaining < CAPACITY_INCREASE_UPDATE_DELAY) {
-              // Increase the update interval if the start producing too much output
-              minimalDelayMillis = Math.max(minimalDelayMillis, 1000);
-              if (remaining < CAPACITY_UPDATE_DELAY_5_SECONDS) {
-                minimalDelayMillis = Math.max(minimalDelayMillis, 5000);
+          synchronized (this) {
+            if (showProgress && (progressBarNeedsRefresh || timeBasedRefresh())) {
+              progressBarNeedsRefresh = false;
+              clearProgressBar();
+              addProgressBar();
+              terminal.flush();
+              double remaining = remainingCapacity();
+              if (remaining < CAPACITY_INCREASE_UPDATE_DELAY) {
+                // Increase the update interval if the start producing too much output
+                minimalDelayMillis = Math.max(minimalDelayMillis, 1000);
+                if (remaining < CAPACITY_UPDATE_DELAY_5_SECONDS) {
+                  minimalDelayMillis = Math.max(minimalDelayMillis, 5000);
+                }
               }
-            }
-            if (!cursorControl || remaining < CAPACITY_UPDATE_DELAY_AS_NO_CURSES) {
-              // If we can't update the progress bar in place, make sure we increase the update
-              // interval as time progresses, to avoid too many progress messages in place.
-              minimalDelayMillis =
-                  Math.max(
-                      minimalDelayMillis,
-                      Math.round(
-                          NO_CURSES_MINIMAL_RELATIVE_PROGRESS_RATE_LMIT
-                              * (clock.currentTimeMillis() - uiStartTimeMillis)));
-              minimalUpdateInterval = Math.max(minimalDelayMillis, MAXIMAL_UPDATE_DELAY_MILLIS);
+              if (!cursorControl || remaining < CAPACITY_UPDATE_DELAY_AS_NO_CURSES) {
+                // If we can't update the progress bar in place, make sure we increase the update
+                // interval as time progresses, to avoid too many progress messages in place.
+                minimalDelayMillis =
+                    Math.max(
+                        minimalDelayMillis,
+                        Math.round(
+                            NO_CURSES_MINIMAL_RELATIVE_PROGRESS_RATE_LMIT
+                                * (clock.currentTimeMillis() - uiStartTimeMillis)));
+                minimalUpdateInterval = Math.max(minimalDelayMillis, MAXIMAL_UPDATE_DELAY_MILLIS);
+              }
             }
           }
         } catch (IOException e) {
           logger.warning("IO Error writing to output stream: " + e);
+        } finally {
+          updateLock.unlock();
         }
       }
     } else {
@@ -701,18 +968,13 @@ public class ExperimentalEventHandler implements EventHandler {
     // Schedule an update of the progress bar in the near future, unless there is already
     // a future update scheduled.
     long nowMillis = clock.currentTimeMillis();
-    synchronized (this) {
-      if (mustRefreshAfterMillis <= lastRefreshMillis) {
-        mustRefreshAfterMillis = Math.max(nowMillis + minimalUpdateInterval, lastRefreshMillis + 1);
-      }
+    if (mustRefreshAfterMillis <= lastRefreshMillis) {
+      mustRefreshAfterMillis = Math.max(nowMillis + minimalUpdateInterval, lastRefreshMillis + 1);
     }
     startUpdateThread();
   }
 
-  /**
-   * Decide wheter the progress bar should be redrawn only for the reason
-   * that time has passed.
-   */
+  /** Decide whether the progress bar should be redrawn only for the reason that time has passed. */
   private synchronized boolean timeBasedRefresh() {
     if (!stateTracker.progressBarTimeDependent()) {
       return false;
@@ -736,34 +998,31 @@ public class ExperimentalEventHandler implements EventHandler {
   }
 
   private void startUpdateThread() {
-    Thread threadToStart = null;
-    synchronized (this) {
-      // Refuse to start an update thread once the build is complete; such a situation might
-      // arise if the completion of the build is reported (shortly) before the completion of
-      // the last action is reported.
-      if (buildRunning && updateThread == null) {
-        final ExperimentalEventHandler eventHandler = this;
-        updateThread =
-            new Thread(
-                () -> {
-                  try {
-                    while (true) {
-                      Thread.sleep(minimalUpdateInterval);
-                      if (lastRefreshMillis < mustRefreshAfterMillis
-                          && mustRefreshAfterMillis < clock.currentTimeMillis()) {
-                        progressBarNeedsRefresh = true;
-                      }
-                      eventHandler.doRefresh(/* fromUpdateThread= */ true);
+    // Refuse to start an update thread once the build is complete; such a situation might
+    // arise if the completion of the build is reported (shortly) before the completion of
+    // the last action is reported.
+    if (buildRunning && updateThread.get() == null) {
+      final ExperimentalEventHandler eventHandler = this;
+      Thread threadToStart =
+          new Thread(
+              () -> {
+                try {
+                  while (!shutdown) {
+                    Thread.sleep(minimalUpdateInterval);
+                    if (lastRefreshMillis < mustRefreshAfterMillis
+                        && mustRefreshAfterMillis < clock.currentTimeMillis()) {
+                      progressBarNeedsRefresh = true;
                     }
-                  } catch (InterruptedException e) {
-                    // Ignore
+                    eventHandler.doRefresh(/* fromUpdateThread= */ true);
                   }
-                });
-        threadToStart = updateThread;
+                } catch (InterruptedException e) {
+                  // Ignore
+                }
+              },
+              "cli-update-thread");
+      if (updateThread.compareAndSet(null, threadToStart)) {
+        threadToStart.start();
       }
-    }
-    if (threadToStart != null) {
-      threadToStart.start();
     }
   }
 
@@ -773,13 +1032,8 @@ public class ExperimentalEventHandler implements EventHandler {
    * NOT CALL from a SYNCHRONIZED block, as this will give the opportunity for dead locks.
    */
   private void stopUpdateThread() {
-    Thread threadToWaitFor = null;
-    synchronized (this) {
-      if (updateThread != null) {
-        threadToWaitFor = updateThread;
-        updateThread = null;
-      }
-    }
+    shutdown = true;
+    Thread threadToWaitFor = updateThread.getAndSet(null);
     if (threadToWaitFor != null) {
       threadToWaitFor.interrupt();
       Uninterruptibles.joinUninterruptibly(threadToWaitFor);
@@ -798,12 +1052,15 @@ public class ExperimentalEventHandler implements EventHandler {
     numLinesProgressBar = 0;
   }
 
+  /** Terminate the line in the way appropriate for the operating system. */
   private void crlf() throws IOException {
-    terminal.cr();
-    terminal.writeString("\n");
+    terminal.writeString(System.lineSeparator());
   }
 
   private synchronized void addProgressBar() throws IOException {
+    if (remainingCapacity() < 0) {
+      return;
+    }
     LineCountingAnsiTerminalWriter countingTerminalWriter =
         new LineCountingAnsiTerminalWriter(terminal);
     AnsiTerminalWriter terminalWriter = countingTerminalWriter;

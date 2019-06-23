@@ -13,8 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2.engine;
 
+import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryTaskFuture;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.util.Collection;
 import java.util.Set;
 
@@ -45,7 +45,7 @@ public final class TargetLiteral extends QueryExpression {
   }
 
   private <T> QueryTaskFuture<Void> evalVarReference(
-      QueryEnvironment<T> env, VariableContext<T> context, Callback<T> callback) {
+      QueryEnvironment<T> env, QueryExpressionContext<T> context, Callback<T> callback) {
     String varName = LetExpression.getNameFromReference(pattern);
     Set<T> value = context.get(varName);
     if (value == null) {
@@ -64,7 +64,7 @@ public final class TargetLiteral extends QueryExpression {
 
   @Override
   public <T> QueryTaskFuture<Void> eval(
-      QueryEnvironment<T> env, VariableContext<T> context, Callback<T> callback) {
+      QueryEnvironment<T> env, QueryExpressionContext<T> context, Callback<T> callback) {
     if (isVariableReference()) {
       return evalVarReference(env, context, callback);
     } else {
@@ -80,8 +80,8 @@ public final class TargetLiteral extends QueryExpression {
   }
 
   @Override
-  public <T> T accept(QueryExpressionVisitor<T> visitor) {
-    return visitor.visit(this);
+  public <T, C> T accept(QueryExpressionVisitor<T, C> visitor, C context) {
+    return visitor.visit(this, context);
   }
 
   @Override

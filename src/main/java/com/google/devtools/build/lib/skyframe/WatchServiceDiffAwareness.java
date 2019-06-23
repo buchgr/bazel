@@ -14,10 +14,11 @@
 
 package com.google.devtools.build.lib.skyframe;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.common.options.OptionsClassProvider;
+import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.common.options.OptionsProvider;
 import java.io.IOException;
 import java.nio.file.ClosedWatchServiceException;
 import java.nio.file.FileSystems;
@@ -63,7 +64,7 @@ public final class WatchServiceDiffAwareness extends LocalDiffAwareness {
   }
 
   @Override
-  public View getCurrentView(OptionsClassProvider options) throws BrokenDiffAwarenessException {
+  public View getCurrentView(OptionsProvider options) throws BrokenDiffAwarenessException {
     // We need to consider 4 cases for watchFs:
     // previous view    current view
     //  disabled         disabled  -> EVERYTHING_MODIFIED
@@ -84,7 +85,9 @@ public final class WatchServiceDiffAwareness extends LocalDiffAwareness {
     //      contain files that are modified between init() and poll() below, because those are
     //      already taken into account for the current build, as we ended up with
     //      ModifiedFileSet.EVERYTHING_MODIFIED in the current build.
-    boolean watchFs = options.getOptions(Options.class).watchFS;
+    // Disable WatchFs on Windows, because it is not implemented correctly on Windows.
+    // TODO(pcloudy): Enable watchFs on Windows, https://github.com/bazelbuild/bazel/issues/1931
+    boolean watchFs = options.getOptions(Options.class).watchFS && OS.getCurrent() != OS.WINDOWS;
     if (watchFs && watchService == null) {
       init();
     } else if (!watchFs && (watchService != null)) {

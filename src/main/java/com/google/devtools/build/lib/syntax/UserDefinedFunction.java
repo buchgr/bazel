@@ -14,32 +14,32 @@
 package com.google.devtools.build.lib.syntax;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
+import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
+import com.google.devtools.build.lib.syntax.Environment.LexicalFrame;
 
 /**
- * The actual function registered in the environment. This function is defined in the
- * parsed code using {@link FunctionDefStatement}.
+ * The actual function registered in the environment. This function is defined in the parsed code
+ * using {@link FunctionDefStatement}.
  */
 public class UserDefinedFunction extends BaseFunction {
 
   private final ImmutableList<Statement> statements;
 
   // we close over the globals at the time of definition
-  private final Environment.Frame definitionGlobals;
+  private final Environment.GlobalFrame definitionGlobals;
 
   public UserDefinedFunction(
       String name,
-      Location loc,
+      Location location,
       FunctionSignature.WithValues<Object, SkylarkType> signature,
       ImmutableList<Statement> statements,
-      Environment.Frame definitionGlobals)
-      throws EvalException {
-    super(name, signature, loc);
+      Environment.GlobalFrame definitionGlobals) {
+    super(name, signature, location);
     this.statements = statements;
     this.definitionGlobals = definitionGlobals;
   }
@@ -48,7 +48,7 @@ public class UserDefinedFunction extends BaseFunction {
     return statements;
   }
 
-  public Environment.Frame getDefinitionGlobals() {
+  public Environment.GlobalFrame getDefinitionGlobals() {
     return definitionGlobals;
   }
 
@@ -58,24 +58,25 @@ public class UserDefinedFunction extends BaseFunction {
     if (env.mutability().isFrozen()) {
       throw new EvalException(getLocation(), "Trying to call in frozen environment");
     }
-    if (env.getStackTrace().contains(this)) {
+    if (env.isRecursiveCall(this)) {
       throw new EvalException(getLocation(),
           String.format("Recursion was detected when calling '%s' from '%s'",
-              getName(), Iterables.getLast(env.getStackTrace()).getName()));
+              getName(), env.getCurrentFunction().getName()));
     }
 
-    Profiler.instance().startTask(ProfilerTask.SKYLARK_USER_FN, getName());
-    try {
-      env.enterScope(this, ast, definitionGlobals);
-      ImmutableList<String> names = signature.getSignature().getNames();
+    ImmutableList<String> names = signature.getSignature().getNames();
+    LexicalFrame lexicalFrame = LexicalFrame.create(env.mutability(), /*numArgs=*/ names.size());
+    try (SilentCloseable c =
+        Profiler.instance().profile(ProfilerTask.STARLARK_USER_FN, getName())) {
+      env.enterScope(this, lexicalFrame, ast, definitionGlobals);
 
       // Registering the functions's arguments as variables in the local Environment
-      int i = 0;
-      for (String name : names) {
-        env.update(name, arguments[i++]);
+      // foreach loop is not used to avoid iterator overhead
+      for (int i = 0; i < names.size(); ++i) {
+        env.update(names.get(i), arguments[i]);
       }
 
-      Eval eval = new Eval(env);
+      Eval eval = Eval.fromEnvironment(env);
       try {
         for (Statement stmt : statements) {
           if (stmt instanceof ReturnStatement) {
@@ -95,14 +96,13 @@ public class UserDefinedFunction extends BaseFunction {
       }
       return Runtime.NONE;
     } finally {
-      Profiler.instance().completeTask(ProfilerTask.SKYLARK_USER_FN);
       env.exitScope();
     }
   }
 
   @Override
   public void repr(SkylarkPrinter printer) {
-    Label label = this.definitionGlobals.getTransitiveLabel();
+    Label label = this.definitionGlobals.getLabel();
 
     printer.append("<function " + getName());
     if (label != null) {

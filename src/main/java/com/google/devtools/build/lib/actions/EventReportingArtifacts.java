@@ -20,6 +20,19 @@ import java.util.Collection;
 
 /** Interface for {@link BuildEvent}s reporting artifacts as named sets */
 public interface EventReportingArtifacts extends BuildEvent {
-  /** The sets of artifacts this build event asumes already known in the build event stream. */
-  Collection<NestedSet<Artifact>> reportedArtifacts();
+
+  /** Pair of artifacts and a @{link CompletionContext}. */
+  class ReportedArtifacts {
+    public final Collection<NestedSet<Artifact>> artifacts;
+    public final CompletionContext completionContext;
+
+    public ReportedArtifacts(
+        Collection<NestedSet<Artifact>> artifacts, CompletionContext completionContext) {
+      this.artifacts = artifacts;
+      this.completionContext = completionContext;
+    }
+  }
+
+  /** The sets of artifacts this build event assumes already known in the build event stream. */
+  ReportedArtifacts reportedArtifacts();
 }

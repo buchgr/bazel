@@ -17,30 +17,36 @@
 #include <limits.h>
 #include <stdio.h>
 
-#if defined(COMPILER_MSVC) || defined(__CYGWIN__)
+#if defined(_WIN32) || defined(__CYGWIN__)
 #include <windows.h>
-#else  // !(defined(COMPILER_MSVC) || defined(__CYGWIN__))
+#else  // !(defined(_WIN32) || defined(__CYGWIN__))
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#endif  // defined(COMPILER_MSVC) || defined(__CYGWIN__)
+#endif  // defined(_WIN32) || defined(__CYGWIN__)
 
 #include <string>
 
 #include "src/main/cpp/util/errors.h"
 #include "src/main/cpp/util/file.h"
 #include "src/main/cpp/util/file_platform.h"
+#include "src/main/cpp/util/logging.h"
+#include "src/main/cpp/util/path.h"
+#include "src/main/cpp/util/path_platform.h"
 
 namespace devtools_ijar {
 
 using std::string;
 
 bool stat_file(const char* path, Stat* result) {
-#if defined(COMPILER_MSVC) || defined(__CYGWIN__)
+#if defined(_WIN32) || defined(__CYGWIN__)
   std::wstring wpath;
-  if (!blaze_util::AsAbsoluteWindowsPath(path, &wpath)) {
-    blaze_util::pdie(255, "stat_file: AsAbsoluteWindowsPath(%s)", path);
+  std::string error;
+  if (!blaze_util::AsAbsoluteWindowsPath(path, &wpath, &error)) {
+    BAZEL_DIE(255) << "stat_file: AsAbsoluteWindowsPath(" << path
+                   << ") failed: " << error;
   }
+
   bool success = false;
   BY_HANDLE_FILE_INFORMATION info;
   HANDLE handle = ::CreateFileW(
@@ -51,20 +57,34 @@ bool stat_file(const char* path, Stat* result) {
       /* dwCreationDisposition */ OPEN_EXISTING,
       /* dwFlagsAndAttributes */ FILE_ATTRIBUTE_NORMAL,
       /* hTemplateFile */ NULL);
+
+  if (handle == INVALID_HANDLE_VALUE) {
+    // Opening it as a file failed, try opening it as a directory.
+    handle = ::CreateFileW(
+        /* lpFileName */ wpath.c_str(),
+        /* dwDesiredAccess */ GENERIC_READ,
+        /* dwShareMode */ FILE_SHARE_READ,
+        /* lpSecurityAttributes */ NULL,
+        /* dwCreationDisposition */ OPEN_EXISTING,
+        /* dwFlagsAndAttributes */ FILE_FLAG_BACKUP_SEMANTICS,
+        /* hTemplateFile */ NULL);
+  }
+
   if (handle != INVALID_HANDLE_VALUE &&
       ::GetFileInformationByHandle(handle, &info)) {
     success = true;
+    bool is_dir = (info.dwFileAttributes != INVALID_FILE_ATTRIBUTES) &&
+                  (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
     // TODO(laszlocsomor): use info.nFileSizeHigh after we updated total_size to
     // be u8 type.
-    result->total_size = info.nFileSizeLow;
+    result->total_size = is_dir ? 0 : info.nFileSizeLow;
     // TODO(laszlocsomor): query the actual permissions and write in file_mode.
     result->file_mode = 0777;
-    result->is_directory = (info.dwFileAttributes != INVALID_FILE_ATTRIBUTES) &&
-                           (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+    result->is_directory = is_dir;
   }
   ::CloseHandle(handle);
   return success;
-#else   // !(defined(COMPILER_MSVC) || defined(__CYGWIN__))
+#else   // !(defined(_WIN32) || defined(__CYGWIN__))
   struct stat statst;
   if (stat(path, &statst) < 0) {
     return false;
@@ -73,7 +93,7 @@ bool stat_file(const char* path, Stat* result) {
   result->file_mode = statst.st_mode;
   result->is_directory = (statst.st_mode & S_IFDIR) != 0;
   return true;
-#endif  // defined(COMPILER_MSVC) || defined(__CYGWIN__)
+#endif  // defined(_WIN32) || defined(__CYGWIN__)
 }
 
 bool write_file(const char* path, unsigned int perm, const void* data,
@@ -88,10 +108,10 @@ bool read_file(const char* path, void* buffer, size_t size) {
 string get_cwd() { return blaze_util::GetCwd(); }
 
 bool make_dirs(const char* path, unsigned int mode) {
-#ifndef COMPILER_MSVC
+#ifndef _WIN32
   // TODO(laszlocsomor): respect `mode` on Windows/MSVC.
   mode |= S_IWUSR | S_IXUSR;
-#endif  // not COMPILER_MSVC
+#endif  // not _WIN32
   string spath(path);
   if (spath.empty()) {
     return true;

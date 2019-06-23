@@ -1,4 +1,6 @@
-package(default_visibility = ["//src:__subpackages__"])
+package(default_visibility = [
+    "//src/java_tools/junitrunner:junitrunner_package_group",
+])
 
 # Libraries
 # =========================================================
@@ -119,9 +121,9 @@ sh_test(
         ":TestbedBinary_deploy.jar",
         "//src/test/shell:bashunit",
         "//src/test/shell:unittest.bash",
-        "//tools/defaults:jdk",
+        "@bazel_tools//tools/jdk:current_java_runtime",
     ],
-    toolchains = ["//tools/jdk:current_java_runtime"],
+    toolchains = ["@bazel_tools//tools/jdk:current_java_runtime"],
 )
 
 exports_files([

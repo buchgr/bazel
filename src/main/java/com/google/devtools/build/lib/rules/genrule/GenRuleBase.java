@@ -19,19 +19,22 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.CommandLines;
 import com.google.devtools.build.lib.actions.CompositeRunfilesSupplier;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.AliasProvider;
 import com.google.devtools.build.lib.analysis.CommandHelper;
 import com.google.devtools.build.lib.analysis.ConfigurationMakeVariableContext;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
-import com.google.devtools.build.lib.analysis.MakeVariableInfo;
+import com.google.devtools.build.lib.analysis.MakeVariableSupplier;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
+import com.google.devtools.build.lib.analysis.ShToolchain;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.stringtemplate.ExpansionException;
@@ -40,58 +43,17 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.packages.TargetUtils;
-import com.google.devtools.build.lib.rules.cpp.CcCommon.CcFlagsSupplier;
-import com.google.devtools.build.lib.rules.cpp.CppHelper;
-import com.google.devtools.build.lib.rules.java.JavaHelper;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.LazyString;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 /**
  * A base implementation of genrule, to be used by specific implementing rules which can change some
  * of the semantics around when the execution info and inputs are changed.
  */
 public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
-
-  private static final Pattern CROSSTOOL_MAKE_VARIABLE =
-      Pattern.compile("\\$\\((CC|CC_FLAGS|AR|NM|OBJCOPY|STRIP|GCOVTOOL)\\)");
-  private static final Pattern JDK_MAKE_VARIABLE =
-      Pattern.compile("\\$\\((JAVABASE|JAVA)\\)");
-
-  protected static boolean requiresCrosstool(String command) {
-    return CROSSTOOL_MAKE_VARIABLE.matcher(command).find();
-  }
-
-  protected boolean requiresJdk(String command) {
-    return JDK_MAKE_VARIABLE.matcher(command).find();
-  }
-
-  /**
-   * Returns a {@link Map} of execution info, which will be used in later processing to construct
-   * the actual command line that will be executed.
-   *
-   * <p>GenRule implementations can override this method to include additional specific information
-   * needed.
-   */
-  protected Map<String, String> getExtraExecutionInfo(RuleContext ruleContext, String command) {
-    return ImmutableMap.of();
-  }
-
-  /**
-   * Returns an {@link Iterable} of {@link NestedSet}s, which will be added to the genrule's inputs
-   * using the {@link NestedSetBuilder#addTransitive} method.
-   *
-   * <p>GenRule implementations can override this method to better control what inputs are needed
-   * for specific command inputs.
-   */
-  protected Iterable<NestedSet<Artifact>> getExtraInputArtifacts(
-      RuleContext ruleContext, String command) {
-    return ImmutableList.of();
-  }
 
   /**
    * Returns {@code true} if the rule should be stamped.
@@ -105,7 +67,7 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
    * Updates the {@link RuleConfiguredTargetBuilder} that is used for this rule.
    *
    * <p>GenRule implementations can override this method to enhance and update the builder without
-   * needing to entirely override the {@link #create} method.
+   * needing to entirely override the {@link com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory#create} method.
    */
   protected RuleConfiguredTargetBuilder updateBuilder(
       RuleConfiguredTargetBuilder builder,
@@ -116,7 +78,7 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
 
   @Override
   public ConfiguredTarget create(RuleContext ruleContext)
-      throws RuleErrorException, InterruptedException {
+      throws InterruptedException, RuleErrorException, ActionConflictException {
     NestedSet<Artifact> filesToBuild =
         NestedSetBuilder.wrap(Order.STABLE_ORDER, ruleContext.getOutputArtifacts());
     NestedSetBuilder<Artifact> resolvedSrcsBuilder = NestedSetBuilder.stableOrder();
@@ -146,24 +108,34 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
     NestedSet<Artifact> resolvedSrcs = resolvedSrcsBuilder.build();
 
     CommandHelper commandHelper =
-        new CommandHelper(
-            ruleContext, ruleContext.getPrerequisites("tools", Mode.HOST), labelMap.build());
+        commandHelperBuilder(ruleContext).addLabelMap(labelMap.build()).build();
 
     if (ruleContext.hasErrors()) {
       return null;
     }
 
-    String baseCommand = commandHelper.resolveCommandAndHeuristicallyExpandLabels(
-        ruleContext.attributes().get("cmd", Type.STRING),
-        "cmd",
-        ruleContext.attributes().get("heuristic_label_expansion", Type.BOOLEAN));
+    String baseCommand = ruleContext.attributes().get("cmd", Type.STRING);
+    // Expand template variables and functions.
+    ImmutableList.Builder<MakeVariableSupplier> makeVariableSuppliers =
+        new ImmutableList.Builder<>();
+    CommandResolverContext commandResolverContext =
+        new CommandResolverContext(
+            ruleContext, resolvedSrcs, filesToBuild, makeVariableSuppliers.build());
+    String command =
+        ruleContext
+            .getExpander(commandResolverContext)
+            .withExecLocations(commandHelper.getLabelMap())
+            .expand("cmd", baseCommand);
 
-    // Adds the genrule environment setup script before the actual shell command
-    String command = String.format("source %s; %s",
+    // Heuristically expand things that look like labels.
+    if (ruleContext.attributes().get("heuristic_label_expansion", Type.BOOLEAN)) {
+      command = commandHelper.expandLabelsHeuristically(command);
+    }
+
+    // Add the genrule environment setup script before the actual shell command.
+    command = String.format("source %s; %s",
         ruleContext.getPrerequisiteArtifact("$genrule_setup", Mode.HOST).getExecPath(),
-        baseCommand);
-
-    command = resolveCommand(command, ruleContext, resolvedSrcs, filesToBuild);
+        command);
 
     String messageAttr = ruleContext.attributes().get("message", Type.STRING);
     String message = messageAttr.isEmpty() ? "Executing genrule" : messageAttr;
@@ -183,33 +155,25 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
       executionInfo.put("local", "");
     }
 
-    executionInfo.putAll(getExtraExecutionInfo(ruleContext, baseCommand));
+    ruleContext.getConfiguration().modifyExecutionInfo(executionInfo, GenRuleAction.MNEMONIC);
 
     NestedSetBuilder<Artifact> inputs = NestedSetBuilder.stableOrder();
     inputs.addTransitive(resolvedSrcs);
-    inputs.addAll(commandHelper.getResolvedTools());
+    inputs.addTransitive(commandHelper.getResolvedTools());
     FilesToRunProvider genruleSetup =
         ruleContext.getPrerequisite("$genrule_setup", Mode.HOST, FilesToRunProvider.class);
     inputs.addTransitive(genruleSetup.getFilesToRun());
-    List<String> argv = commandHelper.buildCommandLine(command, inputs, ".genrule_script.sh",
-          ImmutableMap.copyOf(executionInfo));
-
-    // TODO(bazel-team): Make the make variable expander pass back a list of these.
-    if (requiresCrosstool(baseCommand)) {
-      // If cc is used, silently throw in the crosstool filegroup as a dependency.
-      inputs.addTransitive(
-          CppHelper.getToolchainUsingDefaultCcToolchainAttribute(ruleContext)
-              .getCrosstoolMiddleman());
+    PathFragment shExecutable = ShToolchain.getPathOrError(ruleContext);
+    if (ruleContext.hasErrors()) {
+      return null;
     }
-    if (requiresJdk(baseCommand)) {
-      // If javac is used, silently throw in the jdk filegroup as a dependency.
-      // Note we expand Java-related variables with the *host* configuration.
-      inputs.addTransitive(JavaHelper.getHostJavabaseInputs(ruleContext));
-    }
-
-    for (NestedSet<Artifact> extraInputs : getExtraInputArtifacts(ruleContext, baseCommand)) {
-      inputs.addTransitive(extraInputs);
-    }
+    List<String> argv =
+        commandHelper.buildCommandLine(
+            shExecutable,
+            command,
+            inputs,
+            ".genrule_script.sh",
+            ImmutableMap.copyOf(executionInfo));
 
     if (isStampingEnabled(ruleContext)) {
       inputs.add(ruleContext.getAnalysisEnvironment().getStableWorkspaceStatusArtifact());
@@ -222,10 +186,10 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
             ImmutableList.copyOf(commandHelper.getResolvedTools()),
             inputs.build(),
             filesToBuild,
-            argv,
+            CommandLines.of(argv),
             ruleContext.getConfiguration().getActionEnvironment(),
             ImmutableMap.copyOf(executionInfo),
-            new CompositeRunfilesSupplier(commandHelper.getToolsRunfilesSuppliers()),
+            CompositeRunfilesSupplier.fromSuppliers(commandHelper.getToolsRunfilesSuppliers()),
             progressMessage));
 
     RunfilesProvider runfilesProvider = RunfilesProvider.withData(
@@ -250,6 +214,13 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
     return builder.build();
   }
 
+  protected CommandHelper.Builder commandHelperBuilder(RuleContext ruleContext) {
+    return CommandHelper.builder(ruleContext)
+        .addHostToolDependencies("tools")
+        .addToolDependencies("exec_tools")
+        .addHostToolDependencies("toolchains");
+  }
+
   /**
    * Returns the executable artifact, if the rule is marked as executable and there is only one
    * artifact.
@@ -265,19 +236,6 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
   }
 
   /**
-   * Resolves any variables, including make and genrule-specific variables, in the command and
-   * returns the expanded command.
-   *
-   * <p>GenRule implementations may override this method to perform additional expansions.
-   */
-  protected String resolveCommand(String command, final RuleContext ruleContext,
-      final NestedSet<Artifact> resolvedSrcs, final NestedSet<Artifact> filesToBuild) {
-    return ruleContext
-        .getExpander(new CommandResolverContext(ruleContext, resolvedSrcs, filesToBuild))
-        .expand("cmd", command);
-  }
-
-  /**
    * Implementation of {@link ConfigurationMakeVariableContext} used to expand variables in a
    * genrule command string.
    */
@@ -286,37 +244,24 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
     private final RuleContext ruleContext;
     private final NestedSet<Artifact> resolvedSrcs;
     private final NestedSet<Artifact> filesToBuild;
-    private final Iterable<MakeVariableInfo> toolchains;
 
     public CommandResolverContext(
         RuleContext ruleContext,
         NestedSet<Artifact> resolvedSrcs,
-        NestedSet<Artifact> filesToBuild) {
+        NestedSet<Artifact> filesToBuild,
+        Iterable<? extends MakeVariableSupplier> makeVariableSuppliers) {
       super(
-          ruleContext.getMakeVariables(ImmutableList.of(":cc_toolchain")),
+          ruleContext,
           ruleContext.getRule().getPackage(),
           ruleContext.getConfiguration(),
-          ImmutableList.of(new CcFlagsSupplier(ruleContext)));
+          makeVariableSuppliers);
       this.ruleContext = ruleContext;
       this.resolvedSrcs = resolvedSrcs;
       this.filesToBuild = filesToBuild;
-      this.toolchains = ruleContext.getPrerequisites(
-          "toolchains", Mode.TARGET, MakeVariableInfo.PROVIDER);
     }
 
     public RuleContext getRuleContext() {
       return ruleContext;
-    }
-
-    private String resolveVariableFromToolchains(String variableName) {
-      for (MakeVariableInfo info : toolchains) {
-        String result = info.getMakeVariables().get(variableName);
-        if (result != null) {
-          return result;
-        }
-      }
-
-      return null;
     }
 
     @Override
@@ -337,6 +282,20 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
         return expandSingletonArtifact(filesToBuild, "$@", "output file");
       }
 
+      PathFragment ruleDirRootRelativePath =
+          ruleContext.getRule().getLabel().getPackageIdentifier().getSourceRoot();
+      PathFragment ruleDirExecPath =
+          ruleContext
+              .getBinOrGenfilesDirectory()
+              .getExecPath()
+              .getRelative(ruleDirRootRelativePath);
+
+      if (variableName.equals("RULEDIR")) {
+        // The output root directory. This variable expands to the package's root directory
+        // in the genfiles tree.
+        return ruleDirExecPath.getPathString();
+      }
+
       if (variableName.equals("@D")) {
         // The output directory. If there is only one filename in outs,
         // this expands to the directory containing that file. If there are
@@ -354,32 +313,8 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
           }
           return relativeOutputFile.getParentDirectory().getPathString();
         } else {
-          PathFragment dir;
-          if (ruleContext.getRule().hasBinaryOutput()) {
-            dir = ruleContext.getConfiguration().getBinFragment();
-          } else {
-            dir = ruleContext.getConfiguration().getGenfilesFragment();
-          }
-          PathFragment relPath =
-              ruleContext.getRule().getLabel().getPackageIdentifier().getSourceRoot();
-          return dir.getRelative(relPath).getPathString();
+          return ruleDirExecPath.getPathString();
         }
-      }
-
-      String valueFromToolchains = resolveVariableFromToolchains(variableName);
-      if (valueFromToolchains != null) {
-        return valueFromToolchains;
-      }
-
-      if (JDK_MAKE_VARIABLE.matcher("$(" + variableName + ")").find()) {
-        List<String> attributes = new ArrayList<>();
-        attributes.addAll(ConfigurationMakeVariableContext.DEFAULT_MAKE_VARIABLE_ATTRIBUTES);
-        attributes.add(":host_jdk");
-        return new ConfigurationMakeVariableContext(
-                ruleContext.getMakeVariables(attributes),
-                ruleContext.getTarget().getPackage(),
-                ruleContext.getHostConfiguration())
-            .lookupVariable(variableName);
       }
 
       return super.lookupVariable(variableName);

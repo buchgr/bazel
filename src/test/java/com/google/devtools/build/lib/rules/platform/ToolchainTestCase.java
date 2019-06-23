@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.rules.platform;
 
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.stream.Collectors.joining;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.truth.IterableSubject;
@@ -22,14 +23,18 @@ import com.google.devtools.build.lib.analysis.platform.ConstraintSettingInfo;
 import com.google.devtools.build.lib.analysis.platform.ConstraintValueInfo;
 import com.google.devtools.build.lib.analysis.platform.DeclaredToolchainInfo;
 import com.google.devtools.build.lib.analysis.platform.PlatformInfo;
+import com.google.devtools.build.lib.analysis.platform.ToolchainTypeInfo;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.skyframe.RegisteredToolchainsValue;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
 import com.google.devtools.build.lib.skylark.util.SkylarkTestCase;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
+import java.util.Collection;
 import java.util.List;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 import org.junit.Before;
 
 /** Utility methods for setting up platform and toolchain related tests. */
@@ -42,80 +47,110 @@ public abstract class ToolchainTestCase extends SkylarkTestCase {
   public ConstraintValueInfo linuxConstraint;
   public ConstraintValueInfo macConstraint;
 
-  public Label testToolchainType;
+  public Label testToolchainTypeLabel;
+  public ToolchainTypeInfo testToolchainType;
 
   protected static IterableSubject assertToolchainLabels(
       RegisteredToolchainsValue registeredToolchainsValue) {
+    return assertToolchainLabels(registeredToolchainsValue, null);
+  }
+
+  protected static IterableSubject assertToolchainLabels(
+      RegisteredToolchainsValue registeredToolchainsValue,
+      @Nullable PackageIdentifier packageRoot) {
     assertThat(registeredToolchainsValue).isNotNull();
     ImmutableList<DeclaredToolchainInfo> declaredToolchains =
         registeredToolchainsValue.registeredToolchains();
-    List<Label> labels = collectToolchainLabels(declaredToolchains);
+    List<Label> labels = collectToolchainLabels(declaredToolchains, packageRoot);
     return assertThat(labels);
   }
 
-  protected static List<Label> collectToolchainLabels(List<DeclaredToolchainInfo> toolchains) {
-    return toolchains
-        .stream()
-        .map((toolchain -> toolchain.toolchainLabel()))
+  protected static List<Label> collectToolchainLabels(
+      List<DeclaredToolchainInfo> toolchains, @Nullable PackageIdentifier packageRoot) {
+    return toolchains.stream()
+        .map(toolchain -> toolchain.toolchainLabel())
+        .filter(label -> filterLabel(packageRoot, label))
         .collect(Collectors.toList());
+  }
+
+  protected static boolean filterLabel(@Nullable PackageIdentifier packageRoot, Label label) {
+    if (packageRoot == null) {
+      return true;
+    }
+
+    // Make sure the label is under the packageRoot.
+    if (!label.getPackageIdentifier().getRepository().equals(packageRoot.getRepository())) {
+      return false;
+    }
+
+    return label
+        .getPackageIdentifier()
+        .getPackageFragment()
+        .startsWith(packageRoot.getPackageFragment());
+  }
+
+  private static String formatConstraints(Collection<String> constraints) {
+    return constraints.stream().map(c -> String.format("'%s'", c)).collect(joining(", "));
   }
 
   @Before
   public void createConstraints() throws Exception {
     scratch.file(
-        "constraint/BUILD",
+        "constraints/BUILD",
         "constraint_setting(name = 'os')",
         "constraint_value(name = 'linux',",
         "    constraint_setting = ':os')",
         "constraint_value(name = 'mac',",
-        "    constraint_setting = ':os')",
-        "platform(name = 'linux_plat',",
-        "    constraint_values = [':linux'])",
-        "platform(name = 'mac_plat',",
-        "    constraint_values = [':mac'])");
+        "    constraint_setting = ':os')");
 
-    setting = ConstraintSettingInfo.create(makeLabel("//constraint:os"));
-    linuxConstraint = ConstraintValueInfo.create(setting, makeLabel("//constraint:linux"));
-    macConstraint = ConstraintValueInfo.create(setting, makeLabel("//constraint:mac"));
+    scratch.file(
+        "platforms/BUILD",
+        "platform(name = 'linux',",
+        "    constraint_values = ['//constraints:linux'])",
+        "platform(name = 'mac',",
+        "    constraint_values = ['//constraints:mac'])");
+
+    setting = ConstraintSettingInfo.create(makeLabel("//constraints:os"));
+    linuxConstraint = ConstraintValueInfo.create(setting, makeLabel("//constraints:linux"));
+    macConstraint = ConstraintValueInfo.create(setting, makeLabel("//constraints:mac"));
 
     linuxPlatform =
         PlatformInfo.builder()
-            .setLabel(makeLabel("//platforms:target_platform"))
+            .setLabel(makeLabel("//platforms:linux"))
             .addConstraint(linuxConstraint)
             .build();
     macPlatform =
         PlatformInfo.builder()
-            .setLabel(makeLabel("//platforms:host_platform"))
+            .setLabel(makeLabel("//platforms:mac"))
             .addConstraint(macConstraint)
             .build();
+  }
+
+  public void addToolchain(
+      String packageName,
+      String toolchainName,
+      Collection<String> execConstraints,
+      Collection<String> targetConstraints,
+      String data)
+      throws Exception {
+    scratch.appendFile(
+        packageName + "/BUILD",
+        "load('//toolchain:toolchain_def.bzl', 'test_toolchain')",
+        "toolchain(",
+        "    name = '" + toolchainName + "',",
+        "    toolchain_type = '//toolchain:test_toolchain',",
+        "    exec_compatible_with = [" + formatConstraints(execConstraints) + "],",
+        "    target_compatible_with = [" + formatConstraints(targetConstraints) + "],",
+        "    toolchain = ':" + toolchainName + "_impl')",
+        "test_toolchain(",
+        "  name='" + toolchainName + "_impl',",
+        "  data = '" + data + "')");
   }
 
   @Before
   public void createToolchains() throws Exception {
     rewriteWorkspace("register_toolchains('//toolchain:toolchain_1', '//toolchain:toolchain_2')");
 
-    scratch.file(
-        "toolchain/BUILD",
-        "load(':toolchain_def.bzl', 'test_toolchain')",
-        "toolchain_type(name = 'test_toolchain')",
-        "toolchain(",
-        "    name = 'toolchain_1',",
-        "    toolchain_type = ':test_toolchain',",
-        "    exec_compatible_with = ['//constraint:linux'],",
-        "    target_compatible_with = ['//constraint:mac'],",
-        "    toolchain = ':test_toolchain_1')",
-        "toolchain(",
-        "    name = 'toolchain_2',",
-        "    toolchain_type = ':test_toolchain',",
-        "    exec_compatible_with = ['//constraint:mac'],",
-        "    target_compatible_with = ['//constraint:linux'],",
-        "    toolchain = ':test_toolchain_2')",
-        "test_toolchain(",
-        "  name='test_toolchain_1',",
-        "  data = 'foo')",
-        "test_toolchain(",
-        "  name='test_toolchain_2',",
-        "  data = 'bar')");
     scratch.file(
         "toolchain/toolchain_def.bzl",
         "def _impl(ctx):",
@@ -127,7 +162,22 @@ public abstract class ToolchainTestCase extends SkylarkTestCase {
         "    attrs = {",
         "       'data': attr.string()})");
 
-    testToolchainType = makeLabel("//toolchain:test_toolchain");
+    scratch.file("toolchain/BUILD", "toolchain_type(name = 'test_toolchain')");
+    addToolchain(
+        "toolchain",
+        "toolchain_1",
+        ImmutableList.of("//constraints:linux"),
+        ImmutableList.of("//constraints:mac"),
+        "foo");
+    addToolchain(
+        "toolchain",
+        "toolchain_2",
+        ImmutableList.of("//constraints:mac"),
+        ImmutableList.of("//constraints:linux"),
+        "bar");
+
+    testToolchainTypeLabel = makeLabel("//toolchain:test_toolchain");
+    testToolchainType = ToolchainTypeInfo.create(testToolchainTypeLabel);
   }
 
   protected EvaluationResult<RegisteredToolchainsValue> requestToolchainsFromSkyframe(

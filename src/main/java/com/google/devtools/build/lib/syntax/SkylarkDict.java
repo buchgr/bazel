@@ -15,13 +15,22 @@
 package com.google.devtools.build.lib.syntax;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.skylarkinterface.Param;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
-import com.google.devtools.build.lib.syntax.SkylarkMutable.MutableMap;
+import com.google.devtools.build.lib.skylarkinterface.StarlarkContext;
+import com.google.devtools.build.lib.syntax.SkylarkList.MutableList;
+import com.google.devtools.build.lib.syntax.SkylarkList.Tuple;
+import com.google.devtools.build.lib.syntax.StarlarkMutable.MutableMap;
+import com.google.devtools.build.lib.syntax.Type.ConversionException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
 
@@ -51,14 +60,17 @@ import javax.annotation.Nullable;
           + "<code>in</code> operator tests for membership in the keyset of the dict.<br>"
           + "<pre class=\"language-python\">\"a\" in {\"a\" : 2, \"b\" : 5} "
           + "# evaluates as True</pre>"
-          + "The iteration order for a dict is deterministic but not specified."
+          + "The iteration order for a dict is deterministic and specified as the order in which "
+          + "the keys have been added to the dict. The iteration order is not affected if a value "
+          + "associated with an existing key is updated."
 )
 public final class SkylarkDict<K, V> extends MutableMap<K, V>
     implements Map<K, V>, SkylarkIndexable {
 
   private final LinkedHashMap<K, V> contents = new LinkedHashMap<>();
 
-  private final Mutability mutability;
+  /** Final except for {@link #unsafeShallowFreeze}; must not be modified any other way. */
+  private Mutability mutability;
 
   private SkylarkDict(@Nullable Mutability mutability) {
     this.mutability = mutability == null ? Mutability.IMMUTABLE : mutability;
@@ -66,6 +78,188 @@ public final class SkylarkDict<K, V> extends MutableMap<K, V>
 
   private SkylarkDict(@Nullable Environment env) {
     this.mutability = env == null ? Mutability.IMMUTABLE : env.mutability();
+  }
+
+  @SkylarkCallable(name = "get",
+    doc = "Returns the value for <code>key</code> if <code>key</code> is in the dictionary, "
+        + "else <code>default</code>. If <code>default</code> is not given, it defaults to "
+        + "<code>None</code>, so that this method never throws an error.",
+    parameters = {
+      @Param(name = "key", noneable = true, doc = "The key to look for."),
+      @Param(name = "default", defaultValue = "None", noneable = true, named = true,
+          doc = "The default value to use (instead of None) if the key is not found.")},
+    allowReturnNones = true
+  )
+  public Object get(Object key, Object defaultValue) {
+    if (this.containsKey(key)) {
+      return this.get(key);
+    }
+    return defaultValue;
+  }
+
+  @SkylarkCallable(
+      name = "pop",
+      doc =
+          "Removes a <code>key</code> from the dict, and returns the associated value. "
+              + "If no entry with that key was found, remove nothing and return the specified "
+              + "<code>default</code> value; if no default value was specified, fail instead.",
+      parameters = {
+        @Param(name = "key", type = Object.class, doc = "The key.", noneable = true),
+        @Param(
+            name = "default",
+            type = Object.class,
+            defaultValue = "unbound",
+            named = true,
+            noneable = true,
+            doc = "a default value if the key is absent."),
+      },
+      useLocation = true,
+      useEnvironment = true)
+  public Object pop(Object key, Object defaultValue, Location loc, Environment env)
+      throws EvalException {
+    Object value = get(key);
+    if (value != null) {
+      remove(key, loc, env.mutability());
+      return value;
+    }
+    if (defaultValue != Runtime.UNBOUND) {
+      return defaultValue;
+    }
+    throw new EvalException(loc, Printer.format("KeyError: %r", key));
+  }
+
+  @SkylarkCallable(
+      name = "popitem",
+      doc =
+          "Remove and return an arbitrary <code>(key, value)</code> pair from the dictionary. "
+              + "<code>popitem()</code> is useful to destructively iterate over a dictionary, "
+              + "as often used in set algorithms. "
+              + "If the dictionary is empty, calling <code>popitem()</code> fails. "
+              + "It is deterministic which pair is returned.",
+      useLocation = true,
+      useEnvironment = true
+  )
+  public Tuple<Object> popitem(Location loc, Environment env)
+      throws EvalException {
+    if (isEmpty()) {
+      throw new EvalException(loc, "popitem(): dictionary is empty");
+    }
+    Object key = keySet().iterator().next();
+    Object value = get(key);
+    remove(key, loc, env.mutability());
+    return Tuple.of(key, value);
+  }
+
+  @SkylarkCallable(
+    name = "setdefault",
+    doc =
+        "If <code>key</code> is in the dictionary, return its value. "
+            + "If not, insert key with a value of <code>default</code> "
+            + "and return <code>default</code>. "
+            + "<code>default</code> defaults to <code>None</code>.",
+    parameters = {
+        @Param(name = "key", type = Object.class, doc = "The key."),
+        @Param(
+            name = "default",
+            type = Object.class,
+            defaultValue = "None",
+            named = true,
+            noneable = true,
+            doc = "a default value if the key is absent."
+        ),
+    },
+    useLocation = true,
+    useEnvironment = true
+  )
+  public Object setdefault(
+      K key,
+      V defaultValue,
+      Location loc,
+      Environment env)
+      throws EvalException {
+    Object value = get(key);
+    if (value != null) {
+      return value;
+    }
+    put(key, defaultValue, loc, env);
+    return defaultValue;
+  }
+
+  @SkylarkCallable(
+      name = "update",
+      doc =
+          "Update the dictionary with an optional positional argument <code>[pairs]</code> "
+              + " and an optional set of keyword arguments <code>[, name=value[, ...]</code>\n"
+              + "If the positional argument <code>pairs</code> is present, it must be "
+              + "<code>None</code>, another <code>dict</code>, or some other iterable. "
+              + "If it is another <code>dict</code>, then its key/value pairs are inserted. "
+              + "If it is an iterable, it must provide a sequence of pairs (or other iterables "
+              + "of length 2), each of which is treated as a key/value pair to be inserted.\n"
+              + "For each <code>name=value</code> argument present, the name is converted to a "
+              + "string and used as the key for an insertion into D, with its corresponding "
+              + "value being <code>value</code>.",
+      parameters = {
+        @Param(
+            name = "args",
+            type = Object.class,
+            defaultValue = "[]",
+            doc =
+                "Either a dictionary or a list of entries. Entries must be tuples or lists with "
+                    + "exactly two elements: key, value."),
+      },
+      extraKeywords = @Param(name = "kwargs", doc = "Dictionary of additional entries."),
+      useLocation = true,
+      useEnvironment = true)
+  public Runtime.NoneType update(
+      Object args, SkylarkDict<?, ?> kwargs, Location loc, Environment env) throws EvalException {
+    SkylarkDict<K, V> dict =
+        (args instanceof SkylarkDict) ? (SkylarkDict<K, V>) args : getDictFromArgs(args, loc, env);
+    dict = SkylarkDict.plus(dict, (SkylarkDict<K, V>) kwargs, env);
+    putAll(dict, loc, env.mutability());
+    return Runtime.NONE;
+  }
+
+  @SkylarkCallable(
+    name = "values",
+    doc =
+        "Returns the list of values:"
+            + "<pre class=\"language-python\">"
+            + "{2: \"a\", 4: \"b\", 1: \"c\"}.values() == [\"a\", \"b\", \"c\"]</pre>\n",
+    useEnvironment = true
+  )
+  public MutableList<?> invoke(Environment env) throws EvalException {
+    return MutableList.copyOf(env, values());
+  }
+
+  @SkylarkCallable(
+    name = "items",
+    doc =
+        "Returns the list of key-value tuples:"
+            + "<pre class=\"language-python\">"
+            + "{2: \"a\", 4: \"b\", 1: \"c\"}.items() == [(2, \"a\"), (4, \"b\"), (1, \"c\")]"
+            + "</pre>\n",
+    useEnvironment = true
+  )
+  public MutableList<?> items(Environment env) throws EvalException {
+    ArrayList<Object> list = Lists.newArrayListWithCapacity(size());
+    for (Map.Entry<?, ?> entries : entrySet()) {
+      list.add(Tuple.of(entries.getKey(), entries.getValue()));
+    }
+    return MutableList.wrapUnsafe(env, list);
+  }
+
+  @SkylarkCallable(name = "keys",
+    doc = "Returns the list of keys:"
+        + "<pre class=\"language-python\">{2: \"a\", 4: \"b\", 1: \"c\"}.keys() == [2, 4, 1]"
+        + "</pre>\n",
+    useEnvironment = true
+  )
+  public MutableList<?> keys(Environment env) throws EvalException {
+    ArrayList<Object> list = Lists.newArrayListWithCapacity(size());
+    for (Map.Entry<?, ?> entries : entrySet()) {
+      list.add(entries.getKey());
+    }
+    return MutableList.wrapUnsafe(env, list);
   }
 
   private static final SkylarkDict<?, ?> EMPTY = withMutability(Mutability.IMMUTABLE);
@@ -119,9 +313,10 @@ public final class SkylarkDict<K, V> extends MutableMap<K, V>
   }
 
   /** Puts all entries of the given map into the dict, without calling {@link #checkMutable}. */
+  @SuppressWarnings("unchecked")
   private <KK extends K, VV extends V> SkylarkDict<K, V> putAllUnsafe(Map<KK, VV> m) {
     for (Map.Entry<KK, VV> e : m.entrySet()) {
-      contents.put(e.getKey(), e.getValue());
+      contents.put(e.getKey(), (VV) SkylarkType.convertToSkylark(e.getValue(), mutability));
     }
     return this;
   }
@@ -129,6 +324,12 @@ public final class SkylarkDict<K, V> extends MutableMap<K, V>
   @Override
   public Mutability mutability() {
     return mutability;
+  }
+
+  @Override
+  public void unsafeShallowFreeze() {
+    Mutability.Freezable.checkUnsafeShallowFreezePrecondition(this);
+    this.mutability = Mutability.IMMUTABLE;
   }
 
   @Override
@@ -190,6 +391,19 @@ public final class SkylarkDict<K, V> extends MutableMap<K, V>
   V remove(Object key, Location loc, Mutability mutability) throws EvalException {
     checkMutable(loc, mutability);
     return contents.remove(key);
+  }
+
+  @SkylarkCallable(
+      name = "clear",
+      doc = "Remove all items from the dictionary.",
+      useLocation = true,
+      useEnvironment = true
+  )
+  public Runtime.NoneType clearDict(
+      Location loc, Environment env)
+      throws EvalException {
+    clear(loc, env.mutability());
+    return Runtime.NONE;
   }
 
   /**
@@ -262,13 +476,16 @@ public final class SkylarkDict<K, V> extends MutableMap<K, V>
         ? null : Printer.formattable("'%s' value", description);
     for (Map.Entry<?, ?> e : this.entrySet()) {
       SkylarkType.checkType(e.getKey(), keyType, keyDescription);
-      SkylarkType.checkType(e.getValue(), valueType, valueDescription);
+      if (e.getValue() != null) {
+        SkylarkType.checkType(e.getValue(), valueType, valueDescription);
+      }
     }
     return Collections.unmodifiableMap((SkylarkDict<X, Y>) this);
   }
 
   @Override
-  public final Object getIndex(Object key, Location loc) throws EvalException {
+  public final Object getIndex(Object key, Location loc, StarlarkContext context)
+      throws EvalException {
     if (!this.containsKey(key)) {
       throw new EvalException(loc, Printer.format("key %r not found in dictionary", key));
     }
@@ -276,7 +493,8 @@ public final class SkylarkDict<K, V> extends MutableMap<K, V>
   }
 
   @Override
-  public final boolean containsKey(Object key, Location loc) throws EvalException {
+  public final boolean containsKey(Object key, Location loc, StarlarkContext context)
+      throws EvalException {
     return this.containsKey(key);
   }
 
@@ -288,5 +506,34 @@ public final class SkylarkDict<K, V> extends MutableMap<K, V>
     result.putAllUnsafe(left);
     result.putAllUnsafe(right);
     return result;
+  }
+
+  public static <K, V> SkylarkDict<K, V> getDictFromArgs(
+      Object args, Location loc, @Nullable Environment env) throws EvalException {
+    SkylarkDict<K, V> result = SkylarkDict.of(env);
+    int pos = 0;
+    for (Object element : Type.OBJECT_LIST.convert(args, "parameter args in dict()")) {
+      List<Object> pair = convertToPair(element, pos, loc);
+      result.put((K) pair.get(0), (V) pair.get(1), loc, env);
+      ++pos;
+    }
+    return result;
+  }
+
+  private static List<Object> convertToPair(Object element, int pos, Location loc)
+      throws EvalException {
+    try {
+      List<Object> tuple = Type.OBJECT_LIST.convert(element, "");
+      int numElements = tuple.size();
+      if (numElements != 2) {
+        throw new EvalException(
+            loc,
+            String.format(
+                "item #%d has length %d, but exactly two elements are required", pos, numElements));
+      }
+      return tuple;
+    } catch (ConversionException e) {
+      throw new EvalException(loc, String.format("cannot convert item #%d to a sequence", pos), e);
+    }
   }
 }

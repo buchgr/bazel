@@ -14,18 +14,19 @@
 package com.google.devtools.build.lib.analysis;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.testing.EqualsTester;
 import com.google.common.testing.NullPointerTester;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.HostTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.NoTransition;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestCase;
 import com.google.devtools.build.lib.analysis.util.TestAspects;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.AspectDescriptor;
-import com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -39,38 +40,30 @@ import org.junit.runners.JUnit4;
 public class DependencyTest extends AnalysisTestCase {
   @Test
   public void withNullConfiguration_BasicAccessors() throws Exception {
-    Dependency nullDep = Dependency.withNullConfiguration(Label.parseAbsolute("//a"));
+    Dependency nullDep =
+        Dependency.withNullConfiguration(Label.parseAbsolute("//a", ImmutableMap.of()));
 
-    assertThat(nullDep.getLabel()).isEqualTo(Label.parseAbsolute("//a"));
+    assertThat(nullDep.getLabel()).isEqualTo(Label.parseAbsolute("//a", ImmutableMap.of()));
     assertThat(nullDep.hasExplicitConfiguration()).isTrue();
     assertThat(nullDep.getConfiguration()).isNull();
     assertThat(nullDep.getAspects().getAllAspects()).isEmpty();
 
-    try {
-      nullDep.getTransition();
-      fail("withNullConfiguration-created Dependencies should throw ISE on getTransition()");
-    } catch (IllegalStateException ex) {
-      // good. expected.
-    }
+    assertThrows(IllegalStateException.class, () -> nullDep.getTransition());
   }
 
   @Test
   public void withConfiguration_BasicAccessors() throws Exception {
     update();
     Dependency targetDep =
-        Dependency.withConfiguration(Label.parseAbsolute("//a"), getTargetConfiguration());
+        Dependency.withConfiguration(
+            Label.parseAbsolute("//a", ImmutableMap.of()), getTargetConfiguration());
 
-    assertThat(targetDep.getLabel()).isEqualTo(Label.parseAbsolute("//a"));
+    assertThat(targetDep.getLabel()).isEqualTo(Label.parseAbsolute("//a", ImmutableMap.of()));
     assertThat(targetDep.hasExplicitConfiguration()).isTrue();
     assertThat(targetDep.getConfiguration()).isEqualTo(getTargetConfiguration());
     assertThat(targetDep.getAspects().getAllAspects()).isEmpty();
 
-    try {
-      targetDep.getTransition();
-      fail("withConfiguration-created Dependencies should throw ISE on getTransition()");
-    } catch (IllegalStateException ex) {
-      // good. expected.
-    }
+    assertThrows(IllegalStateException.class, () -> targetDep.getTransition());
   }
 
   @Test
@@ -82,9 +75,9 @@ public class DependencyTest extends AnalysisTestCase {
         ImmutableSet.of(simpleAspect, attributeAspect));
     Dependency targetDep =
         Dependency.withConfigurationAndAspects(
-            Label.parseAbsolute("//a"), getTargetConfiguration(), twoAspects);
+            Label.parseAbsolute("//a", ImmutableMap.of()), getTargetConfiguration(), twoAspects);
 
-    assertThat(targetDep.getLabel()).isEqualTo(Label.parseAbsolute("//a"));
+    assertThat(targetDep.getLabel()).isEqualTo(Label.parseAbsolute("//a", ImmutableMap.of()));
     assertThat(targetDep.hasExplicitConfiguration()).isTrue();
     assertThat(targetDep.getConfiguration()).isEqualTo(getTargetConfiguration());
     assertThat(targetDep.getAspects()).isEqualTo(twoAspects);
@@ -92,12 +85,7 @@ public class DependencyTest extends AnalysisTestCase {
     assertThat(targetDep.getAspectConfiguration(attributeAspect))
         .isEqualTo(getTargetConfiguration());
 
-    try {
-      targetDep.getTransition();
-      fail("withConfigurationAndAspects-created Dependencies should throw ISE on getTransition()");
-    } catch (IllegalStateException ex) {
-      // good. that's what I WANTED to happen.
-    }
+    assertThrows(IllegalStateException.class, () -> targetDep.getTransition());
   }
 
   @Test
@@ -108,12 +96,11 @@ public class DependencyTest extends AnalysisTestCase {
     AspectDescriptor attributeAspect = new AspectDescriptor(TestAspects.ATTRIBUTE_ASPECT);
     AspectCollection twoAspects = AspectCollection.createForTests(simpleAspect, attributeAspect);
 
-    try {
-      Dependency.withConfigurationAndAspects(Label.parseAbsolute("//a"), null, twoAspects);
-      fail("should not be allowed to create a dependency with a null configuration");
-    } catch (NullPointerException expected) {
-      // good. you fell rrrrright into my trap.
-    }
+    assertThrows(
+        NullPointerException.class,
+        () ->
+            Dependency.withConfigurationAndAspects(
+                Label.parseAbsolute("//a", ImmutableMap.of()), null, twoAspects));
   }
 
   @Test
@@ -121,7 +108,7 @@ public class DependencyTest extends AnalysisTestCase {
     update();
     Dependency dep =
         Dependency.withConfigurationAndAspects(
-            Label.parseAbsolute("//a"),
+            Label.parseAbsolute("//a", ImmutableMap.of()),
             getTargetConfiguration(),
             AspectCollection.EMPTY);
     // Here we're also checking that this doesn't throw an exception. No boom? OK. Good.
@@ -139,9 +126,12 @@ public class DependencyTest extends AnalysisTestCase {
         simpleAspect, getTargetConfiguration(), attributeAspect, getHostConfiguration());
     Dependency targetDep =
         Dependency.withConfiguredAspects(
-            Label.parseAbsolute("//a"), getTargetConfiguration(), aspects, twoAspectMap);
+            Label.parseAbsolute("//a", ImmutableMap.of()),
+            getTargetConfiguration(),
+            aspects,
+            twoAspectMap);
 
-    assertThat(targetDep.getLabel()).isEqualTo(Label.parseAbsolute("//a"));
+    assertThat(targetDep.getLabel()).isEqualTo(Label.parseAbsolute("//a", ImmutableMap.of()));
     assertThat(targetDep.hasExplicitConfiguration()).isTrue();
     assertThat(targetDep.getConfiguration()).isEqualTo(getTargetConfiguration());
     assertThat(targetDep.getAspects().getAllAspects())
@@ -150,12 +140,7 @@ public class DependencyTest extends AnalysisTestCase {
     assertThat(targetDep.getAspectConfiguration(attributeAspect))
         .isEqualTo(getHostConfiguration());
 
-    try {
-      targetDep.getTransition();
-      fail("withConfiguredAspects-created Dependencies should throw ISE on getTransition()");
-    } catch (IllegalStateException ex) {
-      // good. all according to keikaku. (TL note: keikaku means plan)
-    }
+    assertThrows(IllegalStateException.class, () -> targetDep.getTransition());
   }
 
 
@@ -164,7 +149,8 @@ public class DependencyTest extends AnalysisTestCase {
     update();
     Dependency dep =
         Dependency.withConfiguredAspects(
-            Label.parseAbsolute("//a"), getTargetConfiguration(),
+            Label.parseAbsolute("//a", ImmutableMap.of()),
+            getTargetConfiguration(),
             AspectCollection.EMPTY,
             ImmutableMap.<AspectDescriptor, BuildConfiguration>of());
     // Here we're also checking that this doesn't throw an exception. No boom? OK. Good.
@@ -179,36 +165,20 @@ public class DependencyTest extends AnalysisTestCase {
         ImmutableSet.of(simpleAspect, attributeAspect));
     Dependency hostDep =
         Dependency.withTransitionAndAspects(
-            Label.parseAbsolute("//a"), ConfigurationTransition.HOST, twoAspects);
+            Label.parseAbsolute("//a", ImmutableMap.of()), HostTransition.INSTANCE, twoAspects);
 
-    assertThat(hostDep.getLabel()).isEqualTo(Label.parseAbsolute("//a"));
+    assertThat(hostDep.getLabel()).isEqualTo(Label.parseAbsolute("//a", ImmutableMap.of()));
     assertThat(hostDep.hasExplicitConfiguration()).isFalse();
     assertThat(hostDep.getAspects().getAllAspects())
         .containsExactlyElementsIn(twoAspects.getAllAspects());
-    assertThat(hostDep.getTransition()).isEqualTo(ConfigurationTransition.HOST);
+    assertThat(hostDep.getTransition().isHostTransition()).isTrue();
 
-    try {
-      hostDep.getConfiguration();
-      fail("withTransitionAndAspects-created Dependencies should throw ISE on getConfiguration()");
-    } catch (IllegalStateException ex) {
-      // good. I knew you would do that.
-    }
+    assertThrows(IllegalStateException.class, () -> hostDep.getConfiguration());
 
-    try {
-      hostDep.getAspectConfiguration(simpleAspect);
-      fail("withTransitionAndAspects-created Dependencies should throw ISE on "
-          + "getAspectConfiguration()");
-    } catch (IllegalStateException ex) {
-      // good. you're so predictable.
-    }
+    assertThrows(IllegalStateException.class, () -> hostDep.getAspectConfiguration(simpleAspect));
 
-    try {
-      hostDep.getAspectConfiguration(attributeAspect);
-      fail("withTransitionAndAspects-created Dependencies should throw ISE on "
-          + "getAspectConfiguration()");
-    } catch (IllegalStateException ex) {
-      // good. you're so predictable.
-    }
+    assertThrows(
+        IllegalStateException.class, () -> hostDep.getAspectConfiguration(attributeAspect));
   }
 
   @Test
@@ -216,7 +186,8 @@ public class DependencyTest extends AnalysisTestCase {
     update();
     Dependency dep =
         Dependency.withTransitionAndAspects(
-            Label.parseAbsolute("//a"), ConfigurationTransition.HOST,
+            Label.parseAbsolute("//a", ImmutableMap.of()),
+            HostTransition.INSTANCE,
             AspectCollection.EMPTY);
     // Here we're also checking that this doesn't throw an exception. No boom? OK. Good.
     assertThat(dep.getAspects().getAllAspects()).isEmpty();
@@ -227,7 +198,7 @@ public class DependencyTest extends AnalysisTestCase {
     update();
 
     new NullPointerTester()
-        .setDefault(Label.class, Label.parseAbsolute("//a"))
+        .setDefault(Label.class, Label.parseAbsolute("//a", ImmutableMap.of()))
         .setDefault(BuildConfiguration.class, getTargetConfiguration())
         .testAllPublicStaticMethods(Dependency.class);
   }
@@ -236,9 +207,9 @@ public class DependencyTest extends AnalysisTestCase {
   public void equalsPassesEqualsTester() throws Exception {
     update();
 
-    Label a = Label.parseAbsolute("//a");
-    Label aExplicit = Label.parseAbsolute("//a:a");
-    Label b = Label.parseAbsolute("//b");
+    Label a = Label.parseAbsolute("//a", ImmutableMap.of());
+    Label aExplicit = Label.parseAbsolute("//a:a", ImmutableMap.of());
+    Label b = Label.parseAbsolute("//b", ImmutableMap.of());
 
     BuildConfiguration host = getHostConfiguration();
     BuildConfiguration target = getTargetConfiguration();
@@ -355,46 +326,43 @@ public class DependencyTest extends AnalysisTestCase {
             Dependency.withConfiguredAspects(b, target, noAspects, noAspectsMap))
         .addEqualityGroup(
             // base set but with transition HOST
-            Dependency.withTransitionAndAspects(a, ConfigurationTransition.HOST, twoAspects),
+            Dependency.withTransitionAndAspects(a, HostTransition.INSTANCE, twoAspects),
             Dependency.withTransitionAndAspects(
-                aExplicit, ConfigurationTransition.HOST, twoAspects),
-            Dependency.withTransitionAndAspects(a, ConfigurationTransition.HOST, inverseAspects),
+                aExplicit, HostTransition.INSTANCE, twoAspects),
+            Dependency.withTransitionAndAspects(a, HostTransition.INSTANCE, inverseAspects),
             Dependency.withTransitionAndAspects(
-                aExplicit, ConfigurationTransition.HOST, inverseAspects))
+                aExplicit, HostTransition.INSTANCE, inverseAspects))
         .addEqualityGroup(
             // base set but with transition HOST and different aspects
-            Dependency.withTransitionAndAspects(a, ConfigurationTransition.HOST, differentAspects),
+            Dependency.withTransitionAndAspects(a, HostTransition.INSTANCE, differentAspects),
             Dependency.withTransitionAndAspects(
-                aExplicit, ConfigurationTransition.HOST, differentAspects))
+                aExplicit, HostTransition.INSTANCE, differentAspects))
         .addEqualityGroup(
             // base set but with transition HOST and label //b
-            Dependency.withTransitionAndAspects(b, ConfigurationTransition.HOST, twoAspects),
-            Dependency.withTransitionAndAspects(b, ConfigurationTransition.HOST, inverseAspects))
+            Dependency.withTransitionAndAspects(b, HostTransition.INSTANCE, twoAspects),
+            Dependency.withTransitionAndAspects(b, HostTransition.INSTANCE, inverseAspects))
         .addEqualityGroup(
             // inverse of base set: transition HOST, label //b, different aspects
-            Dependency.withTransitionAndAspects(b, ConfigurationTransition.HOST, differentAspects),
-            Dependency.withTransitionAndAspects(b, ConfigurationTransition.HOST, differentAspects))
+            Dependency.withTransitionAndAspects(b, HostTransition.INSTANCE, differentAspects),
+            Dependency.withTransitionAndAspects(b, HostTransition.INSTANCE, differentAspects))
         .addEqualityGroup(
             // base set but with transition NONE
-            Dependency.withTransitionAndAspects(a, ConfigurationTransition.NONE, twoAspects),
-            Dependency.withTransitionAndAspects(
-                aExplicit, ConfigurationTransition.NONE, twoAspects),
-            Dependency.withTransitionAndAspects(a, ConfigurationTransition.NONE, inverseAspects),
-            Dependency.withTransitionAndAspects(
-                aExplicit, ConfigurationTransition.NONE, inverseAspects))
+            Dependency.withTransitionAndAspects(a, NoTransition.INSTANCE, twoAspects),
+            Dependency.withTransitionAndAspects(aExplicit, NoTransition.INSTANCE, twoAspects),
+            Dependency.withTransitionAndAspects(a, NoTransition.INSTANCE, inverseAspects),
+            Dependency.withTransitionAndAspects(aExplicit, NoTransition.INSTANCE, inverseAspects))
         .addEqualityGroup(
             // base set but with transition NONE and different aspects
-            Dependency.withTransitionAndAspects(a, ConfigurationTransition.NONE, differentAspects),
-            Dependency.withTransitionAndAspects(
-                aExplicit, ConfigurationTransition.NONE, differentAspects))
+            Dependency.withTransitionAndAspects(a, NoTransition.INSTANCE, differentAspects),
+            Dependency.withTransitionAndAspects(aExplicit, NoTransition.INSTANCE, differentAspects))
         .addEqualityGroup(
             // base set but with transition NONE and label //b
-            Dependency.withTransitionAndAspects(b, ConfigurationTransition.NONE, twoAspects),
-            Dependency.withTransitionAndAspects(b, ConfigurationTransition.NONE, inverseAspects))
+            Dependency.withTransitionAndAspects(b, NoTransition.INSTANCE, twoAspects),
+            Dependency.withTransitionAndAspects(b, NoTransition.INSTANCE, inverseAspects))
         .addEqualityGroup(
             // inverse of base set: transition NONE, label //b, different aspects
-            Dependency.withTransitionAndAspects(b, ConfigurationTransition.NONE, differentAspects),
-            Dependency.withTransitionAndAspects(b, ConfigurationTransition.NONE, differentAspects))
+            Dependency.withTransitionAndAspects(b, NoTransition.INSTANCE, differentAspects),
+            Dependency.withTransitionAndAspects(b, NoTransition.INSTANCE, differentAspects))
         .testEquals();
   }
 }

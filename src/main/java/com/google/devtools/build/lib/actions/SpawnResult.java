@@ -14,10 +14,15 @@
 package com.google.devtools.build.lib.actions;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.shell.TerminationStatus;
+import com.google.protobuf.ByteString;
+import java.io.InputStream;
+import java.time.Duration;
 import java.util.Locale;
+import java.util.Optional;
 import javax.annotation.Nullable;
 
 /**
@@ -31,11 +36,11 @@ import javax.annotation.Nullable;
 public interface SpawnResult {
   /** The status of the attempted Spawn execution. */
   public enum Status {
-    /**
-     * Subprocess executed successfully, but may have returned a non-zero exit code. See
-     * {@link #exitCode} for the actual exit code.
-     */
-    SUCCESS(true),
+    /** Subprocess executed successfully, and returned a zero exit code. */
+    SUCCESS,
+
+    /** Subprocess executed successfully, but returned a non-zero exit code. */
+    NON_ZERO_EXIT(true),
 
     /** Subprocess execution timed out. */
     TIMEOUT(true),
@@ -47,46 +52,22 @@ public interface SpawnResult {
     OUT_OF_MEMORY(true),
 
     /**
-     * Subprocess did not execute for an unknown reason - only use this if none of the more specific
-     * status codes apply.
+     * Subprocess did not execute. This error is not catastrophic - Bazel will try to continue the
+     * build if keep_going is enabled, possibly attempt to rerun the same spawn, and attempt to run
+     * other actions.
      */
     EXECUTION_FAILED,
 
-    /** The attempted subprocess was disallowed by a user setting. */
-    LOCAL_ACTION_NOT_ALLOWED(true),
-
-    /** The Spawn referred to an non-existent absolute or relative path. */
-    COMMAND_NOT_FOUND,
+    /**
+     * Subprocess did not execute. Do not retry, and exit immediately even if keep_going is enabled.
+     */
+    EXECUTION_FAILED_CATASTROPHICALLY,
 
     /**
-     * One of the Spawn inputs was a directory. For backwards compatibility, some
-     * {@link SpawnRunner} implementations may attempt to run the subprocess anyway. Note that this
-     * leads to incremental correctness issues, as Bazel does not track dependencies on directories.
+     * Subprocess did not execute in a way that indicates that the user can fix it. For example, a
+     * remote system may have denied the execution due to too many inputs or too large inputs.
      */
-    DIRECTORY_AS_INPUT_DISALLOWED(true),
-
-    /**
-     * Too many input files - remote execution systems may refuse to execute subprocesses with an
-     * excessive number of input files.
-     */
-    TOO_MANY_INPUT_FILES(true),
-
-    /**
-     * Total size of inputs is too large - remote execution systems may refuse to execute
-     * subprocesses if the total size of all inputs exceeds a limit.
-     */
-    INPUTS_TOO_LARGE(true),
-
-    /**
-     * One of the input files to the Spawn was modified during the build - some {@link SpawnRunner}
-     * implementations cache checksums and may detect such modifications on a best effort basis.
-     */
-    FILE_MODIFIED_DURING_BUILD(true),
-
-    /**
-     * The {@link SpawnRunner} was unable to establish a required network connection.
-     */
-    CONNECTION_FAILED,
+    EXECUTION_DENIED(true),
 
     /**
      * The remote execution system is overloaded and had to refuse execution for this Spawn.
@@ -97,18 +78,7 @@ public interface SpawnResult {
      * The result of the remotely executed Spawn could not be retrieved due to errors in the remote
      * caching layer.
      */
-    REMOTE_CACHE_FAILED,
-
-    /**
-     * The remote execution system did not allow the request due to missing authorization or
-     * authentication.
-     */
-    NOT_AUTHORIZED,
-
-    /**
-     * The Spawn was malformed.
-     */
-    INVALID_ARGUMENT;
+    REMOTE_CACHE_FAILED;
 
     private final boolean isUserError;
 
@@ -126,21 +96,30 @@ public interface SpawnResult {
   }
 
   /**
-   * Returns whether the spawn was actually run, regardless of the exit code. I.e., returns if
-   * status == SUCCESS || status == TIMEOUT || status == OUT_OF_MEMORY. Returns false if there were
-   * errors that prevented the spawn from being run, such as network errors, missing local files,
-   * errors setting up sandboxing, etc.
+   * Returns whether the spawn was actually run, regardless of the exit code. I.e., returns
+   * {@code true} if {@link #status} is any of {@link Status#SUCCESS}, {@link Status#NON_ZERO_EXIT},
+   * {@link Status#TIMEOUT} or {@link Status#OUT_OF_MEMORY}.
+   *
+   * <p>Returns false if there were errors that prevented the spawn from being run, such as network
+   * errors, missing local files, errors setting up sandboxing, etc.
    */
   boolean setupSuccess();
 
+  /** Returns true if the status was {@link Status#EXECUTION_FAILED_CATASTROPHICALLY}. */
   boolean isCatastrophe();
 
   /** The status of the attempted Spawn execution. */
   Status status();
 
   /**
-   * The exit code of the subprocess if the subprocess was executed. Check {@link #status} for
-   * {@link Status#SUCCESS} before calling this method.
+   * The exit code of the subprocess if the subprocess was executed. Should only be called if
+   * {@link #status} returns {@link Status#SUCCESS} or {@link Status#NON_ZERO_EXIT}.
+   *
+   * <p>This method must return a non-zero exit code if the status is {@link Status#TIMEOUT} or
+   * {@link Status#OUT_OF_MEMORY}. It is recommended to return 128 + 14 when the status is
+   * {@link Status#TIMEOUT}, which corresponds to the Unix signal SIGALRM.
+   *
+   * <p>This method may throw {@link IllegalStateException} if called for any other status.
    */
   int exitCode();
 
@@ -151,10 +130,81 @@ public interface SpawnResult {
    */
   @Nullable String getExecutorHostName();
 
-  long getWallTimeMillis();
+  /**
+   * The name of the SpawnRunner that executed the spawn. It should always be defined, unless
+   * isCacheHit is true, in which case the spawn was not actually run.
+   */
+  String getRunnerName();
+
+  /**
+   * Returns the wall time taken by the {@link Spawn}'s execution.
+   *
+   * @return the measurement, or empty in case of execution errors or when the measurement is not
+   *     implemented for the current platform
+   */
+  Optional<Duration> getWallTime();
+
+  /**
+   * Returns the user time taken by the {@link Spawn}'s execution.
+   *
+   * @return the measurement, or empty in case of execution errors or when the measurement is not
+   *     implemented for the current platform
+   */
+  Optional<Duration> getUserTime();
+
+  /**
+   * Returns the system time taken by the {@link Spawn}'s execution.
+   *
+   * @return the measurement, or empty in case of execution errors or when the measurement is not
+   *     implemented for the current platform
+   */
+  Optional<Duration> getSystemTime();
+
+  /**
+   * Returns the number of block output operations during the {@link Spawn}'s execution.
+   *
+   * @return the measurement, or empty in case of execution errors or when the measurement is not
+   *     implemented for the current platform
+   */
+  Optional<Long> getNumBlockOutputOperations();
+
+  /**
+   * Returns the number of block input operations during the {@link Spawn}'s execution.
+   *
+   * @return the measurement, or empty in case of execution errors or when the measurement is not
+   *     implemented for the current platform
+   */
+  Optional<Long> getNumBlockInputOperations();
+
+  /**
+   * Returns the number of involuntary context switches during the {@link Spawn}'s execution.
+   *
+   * @return the measurement, or empty in case of execution errors or when the measurement is not
+   *     implemented for the current platform
+   */
+  Optional<Long> getNumInvoluntaryContextSwitches();
+
+  SpawnMetrics getMetrics();
 
   /** Whether the spawn result was a cache hit. */
   boolean isCacheHit();
+
+  /** Returns an optional custom failure message for the result. */
+  default String getFailureMessage() {
+    return "";
+  }
+
+  /**
+   * SpawnResults can optionally support returning outputs in-memory. Such outputs can be obtained
+   * from this method if so. This behavior is optional, and can be triggered with
+   * {@link ExecutionRequirements#REMOTE_EXECUTION_INLINE_OUTPUTS}.
+   *
+   * @param output
+   */
+  @Nullable
+  default InputStream getInMemoryOutput(ActionInput output) {
+    return null;
+  }
 
   String getDetailMessage(
       String messagePrefix, String message, boolean catastrophe, boolean forciblyRunRemotely);
@@ -167,25 +217,50 @@ public interface SpawnResult {
     private final int exitCode;
     private final Status status;
     private final String executorHostName;
-    private final long wallTimeMillis;
+    private final String runnerName;
+    private final SpawnMetrics spawnMetrics;
+    private final Optional<Duration> wallTime;
+    private final Optional<Duration> userTime;
+    private final Optional<Duration> systemTime;
+    private final Optional<Long> numBlockOutputOperations;
+    private final Optional<Long> numBlockInputOperations;
+    private final Optional<Long> numInvoluntaryContextSwitches;
     private final boolean cacheHit;
+    private final String failureMessage;
+    private final ActionInput inMemoryOutputFile;
+    private final ByteString inMemoryContents;
 
     SimpleSpawnResult(Builder builder) {
       this.exitCode = builder.exitCode;
       this.status = Preconditions.checkNotNull(builder.status);
       this.executorHostName = builder.executorHostName;
-      this.wallTimeMillis = builder.wallTimeMillis;
+      this.runnerName = builder.runnerName;
+      this.spawnMetrics = builder.spawnMetrics != null
+          ? builder.spawnMetrics
+          : SpawnMetrics.forLocalExecution(builder.wallTime.orElse(Duration.ZERO));
+      this.wallTime = builder.wallTime;
+      this.userTime = builder.userTime;
+      this.systemTime = builder.systemTime;
+      this.numBlockOutputOperations = builder.numBlockOutputOperations;
+      this.numBlockInputOperations = builder.numBlockInputOperations;
+      this.numInvoluntaryContextSwitches = builder.numInvoluntaryContextSwitches;
       this.cacheHit = builder.cacheHit;
+      this.failureMessage = builder.failureMessage;
+      this.inMemoryOutputFile = builder.inMemoryOutputFile;
+      this.inMemoryContents = builder.inMemoryContents;
     }
 
     @Override
     public boolean setupSuccess() {
-      return status == Status.SUCCESS || status == Status.TIMEOUT || status == Status.OUT_OF_MEMORY;
+      return status == Status.SUCCESS
+          || status == Status.NON_ZERO_EXIT
+          || status == Status.TIMEOUT
+          || status == Status.OUT_OF_MEMORY;
     }
 
     @Override
     public boolean isCatastrophe() {
-      return false;
+      return status == Status.EXECUTION_FAILED_CATASTROPHICALLY;
     }
 
     @Override
@@ -204,13 +279,53 @@ public interface SpawnResult {
     }
 
     @Override
-    public long getWallTimeMillis() {
-      return wallTimeMillis;
+    public String getRunnerName() {
+      return runnerName;
+    }
+
+    @Override
+    public SpawnMetrics getMetrics() {
+      return spawnMetrics;
+    }
+
+    @Override
+    public Optional<Duration> getWallTime() {
+      return wallTime;
+    }
+
+    @Override
+    public Optional<Duration> getUserTime() {
+      return userTime;
+    }
+
+    @Override
+    public Optional<Duration> getSystemTime() {
+      return systemTime;
+    }
+
+    @Override
+    public Optional<Long> getNumBlockOutputOperations() {
+      return numBlockOutputOperations;
+    }
+
+    @Override
+    public Optional<Long> getNumBlockInputOperations() {
+      return numBlockInputOperations;
+    }
+
+    @Override
+    public Optional<Long> getNumInvoluntaryContextSwitches() {
+      return numInvoluntaryContextSwitches;
     }
 
     @Override
     public boolean isCacheHit() {
       return cacheHit;
+    }
+
+    @Override
+    public String getFailureMessage() {
+      return failureMessage;
     }
 
     @Override
@@ -227,10 +342,15 @@ public interface SpawnResult {
         explanation += ". Note: Remote connection/protocol failed with: " + errorDetail;
       }
       if (status() == Status.TIMEOUT) {
-        explanation +=
-            String.format(
-                " (failed due to timeout after %.2f seconds.)",
-                getWallTimeMillis() / 1000.0f);
+        if (getWallTime().isPresent()) {
+          explanation +=
+              String.format(
+                  Locale.US,
+                  " (failed due to timeout after %.2f seconds.)",
+                  getWallTime().get().toMillis() / 1000.0);
+        } else {
+          explanation += " (failed due to timeout.)";
+        }
       } else if (status() == Status.OUT_OF_MEMORY) {
         explanation += " (Remote action was terminated due to Out of Memory.)";
       }
@@ -238,7 +358,19 @@ public interface SpawnResult {
         explanation += " Action tagged as local was forcibly run remotely and failed - it's "
             + "possible that the action simply doesn't work remotely";
       }
+      if (!Strings.isNullOrEmpty(failureMessage)) {
+        explanation += " " + failureMessage;
+      }
       return messagePrefix + " failed" + reason + explanation;
+    }
+
+    @Nullable
+    @Override
+    public InputStream getInMemoryOutput(ActionInput output) {
+      if (inMemoryOutputFile != null && inMemoryOutputFile.equals(output)) {
+        return inMemoryContents.newInput();
+      }
+      return null;
     }
   }
 
@@ -249,10 +381,30 @@ public interface SpawnResult {
     private int exitCode;
     private Status status;
     private String executorHostName;
-    private long wallTimeMillis;
+    private String runnerName = "";
+    private SpawnMetrics spawnMetrics;
+    private Optional<Duration> wallTime = Optional.empty();
+    private Optional<Duration> userTime = Optional.empty();
+    private Optional<Duration> systemTime = Optional.empty();
+    private Optional<Long> numBlockOutputOperations = Optional.empty();
+    private Optional<Long> numBlockInputOperations = Optional.empty();
+    private Optional<Long> numInvoluntaryContextSwitches = Optional.empty();
     private boolean cacheHit;
+    private String failureMessage = "";
+    /* Invariant: Either both have a value or both are null. */
+    private ActionInput inMemoryOutputFile;
+    private ByteString inMemoryContents;
 
     public SpawnResult build() {
+      Preconditions.checkArgument(!runnerName.isEmpty());
+      if (status == Status.SUCCESS) {
+        Preconditions.checkArgument(exitCode == 0);
+      }
+      if (status == Status.NON_ZERO_EXIT
+          || status == Status.TIMEOUT
+          || status == Status.OUT_OF_MEMORY) {
+        Preconditions.checkArgument(exitCode != 0);
+      }
       return new SimpleSpawnResult(this);
     }
 
@@ -271,13 +423,74 @@ public interface SpawnResult {
       return this;
     }
 
-    public Builder setWallTimeMillis(long wallTimeMillis) {
-      this.wallTimeMillis = wallTimeMillis;
+    public Builder setRunnerName(String runnerName) {
+      this.runnerName = runnerName;
+      return this;
+    }
+
+    public Builder setSpawnMetrics(SpawnMetrics spawnMetrics) {
+      this.spawnMetrics = spawnMetrics;
+      return this;
+    }
+
+    public Builder setWallTime(Duration wallTime) {
+      this.wallTime = Optional.of(wallTime);
+      return this;
+    }
+
+    public Builder setUserTime(Duration userTime) {
+      this.userTime = Optional.of(userTime);
+      return this;
+    }
+
+    public Builder setSystemTime(Duration systemTime) {
+      this.systemTime = Optional.of(systemTime);
+      return this;
+    }
+
+    public Builder setNumBlockOutputOperations(long numBlockOutputOperations) {
+      this.numBlockOutputOperations = Optional.of(numBlockOutputOperations);
+      return this;
+    }
+
+    public Builder setNumBlockInputOperations(long numBlockInputOperations) {
+      this.numBlockInputOperations = Optional.of(numBlockInputOperations);
+      return this;
+    }
+
+    public Builder setNumInvoluntaryContextSwitches(long numInvoluntaryContextSwitches) {
+      this.numInvoluntaryContextSwitches = Optional.of(numInvoluntaryContextSwitches);
+      return this;
+    }
+
+    public Builder setWallTime(Optional<Duration> wallTime) {
+      this.wallTime = wallTime;
+      return this;
+    }
+
+    public Builder setUserTime(Optional<Duration> userTime) {
+      this.userTime = userTime;
+      return this;
+    }
+
+    public Builder setSystemTime(Optional<Duration> systemTime) {
+      this.systemTime = systemTime;
       return this;
     }
 
     public Builder setCacheHit(boolean cacheHit) {
       this.cacheHit = cacheHit;
+      return this;
+    }
+
+    public Builder setFailureMessage(String failureMessage) {
+      this.failureMessage = failureMessage;
+      return this;
+    }
+
+    public Builder setInMemoryOutput(ActionInput outputFile, ByteString contents) {
+      this.inMemoryOutputFile = Preconditions.checkNotNull(outputFile);
+      this.inMemoryContents = Preconditions.checkNotNull(contents);
       return this;
     }
   }

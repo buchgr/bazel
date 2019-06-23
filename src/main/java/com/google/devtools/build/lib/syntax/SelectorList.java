@@ -13,16 +13,16 @@
 // limitations under the License.
 package com.google.devtools.build.lib.syntax;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
-import com.google.devtools.build.lib.util.Preconditions;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * An attribute value consisting of a concatenation of native types and selects, e.g:
@@ -41,9 +41,12 @@ import java.util.List;
  *   )
  * </pre>
  */
-@SkylarkModule(name = "select",
-    doc = "A selector between configuration-dependent entities.",
-    documented = false)
+@SkylarkModule(
+  name = "select",
+  doc = "A selector between configuration-dependent entities.",
+  documented = false
+)
+@AutoCodec
 public final class SelectorList implements SkylarkValue {
   // TODO(build-team): Selectors are currently split between .packages and .syntax . They should
   // really all be in .packages, but then we'd need to figure out a way how to extend binary
@@ -51,7 +54,8 @@ public final class SelectorList implements SkylarkValue {
   private final Class<?> type;
   private final List<Object> elements;
 
-  private SelectorList(Class<?> type, List<Object> elements) {
+  @AutoCodec.VisibleForSerialization
+  SelectorList(Class<?> type, List<Object> elements) {
     this.type = type;
     this.elements = elements;
   }
@@ -86,12 +90,22 @@ public final class SelectorList implements SkylarkValue {
    */
   public static SelectorList concat(Location location, Object value1, Object value2)
       throws EvalException {
-    return of(location, Arrays.asList(value1, value2));
+    return of(location, value1, value2);
   }
 
   /**
-   * Creates a list from the given sequence of values, which must be non-empty. Each value may be
-   * a native type, a select over that type, or a selector list over that type.
+   * Creates a list from the given sequence of values, which must be non-empty. Each value may be a
+   * native type, a select over that type, or a selector list over that type.
+   *
+   * @throws EvalException if all values don't have the same underlying type
+   */
+  public static SelectorList of(Location location, Object... values) throws EvalException {
+    return SelectorList.of(location, ImmutableList.copyOf(values));
+  }
+
+  /**
+   * Creates a list from the given sequence of values, which must be non-empty. Each value may be a
+   * native type, a select over that type, or a selector list over that type.
    *
    * @throws EvalException if all values don't have the same underlying type
    */
@@ -122,9 +136,7 @@ public final class SelectorList implements SkylarkValue {
     return new SelectorList(getNativeType(firstValue), elements.build());
   }
 
-  // TODO(bazel-team): match on the List interface, not the actual implementation. For now,
-  // we verify this is the right class through test coverage.
-  private static final Class<?> NATIVE_LIST_TYPE = ArrayList.class;
+  private static final Class<?> NATIVE_LIST_TYPE = List.class;
 
   private static Class<?> getNativeType(Object value) {
     if (value instanceof SelectorList) {
@@ -137,9 +149,7 @@ public final class SelectorList implements SkylarkValue {
   }
 
   private static boolean isListType(Class<?> type) {
-    return type == NATIVE_LIST_TYPE
-        || type.getSuperclass() == SkylarkList.class
-        || type == GlobList.class;
+    return NATIVE_LIST_TYPE.isAssignableFrom(type);
   }
 
   private static boolean canConcatenate(Class<?> type1, Class<?> type2) {
@@ -160,5 +170,22 @@ public final class SelectorList implements SkylarkValue {
   @Override
   public void repr(SkylarkPrinter printer) {
     printer.printList(elements, "", " + ", "", null);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(type, elements);
+  }
+
+  @Override
+  public boolean equals(Object other) {
+    if (this == other) {
+      return true;
+    }
+    if (!(other instanceof SelectorList)) {
+      return false;
+    }
+    SelectorList that = (SelectorList) other;
+    return Objects.equals(this.type, that.type) && Objects.equals(this.elements, that.elements);
   }
 }

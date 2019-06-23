@@ -14,18 +14,18 @@
 
 package com.google.devtools.build.lib.rules.proto;
 
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
+import static com.google.devtools.build.lib.syntax.Type.STRING;
 
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
+import com.google.devtools.build.lib.analysis.config.HostTransition;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.util.FileType;
 
 /**
@@ -35,8 +35,8 @@ public final class BazelProtoLibraryRule implements RuleDefinition {
 
   private static final Label DEFAULT_PROTO_COMPILER =
       Label.parseAbsoluteUnchecked("@com_google_protobuf//:protoc");
-  private static final Attribute.LateBoundDefault<?, Label> PROTO_COMPILER =
-      Attribute.LateBoundDefault.fromTargetConfiguration(
+  private static final Attribute.LabelLateBoundDefault<?> PROTO_COMPILER =
+      Attribute.LabelLateBoundDefault.fromTargetConfiguration(
           ProtoConfiguration.class,
           DEFAULT_PROTO_COMPILER,
           (rule, attributes, protoConfig) ->
@@ -45,12 +45,16 @@ public final class BazelProtoLibraryRule implements RuleDefinition {
                   : DEFAULT_PROTO_COMPILER);
 
   @Override
-  public RuleClass build(Builder builder, final RuleDefinitionEnvironment env) {
+  public RuleClass build(RuleClass.Builder builder, final RuleDefinitionEnvironment env) {
 
     return builder
         .requiresConfigurationFragments(ProtoConfiguration.class)
         .setOutputToGenfiles()
-        .add(attr(":proto_compiler", LABEL).cfg(HOST).exec().value(PROTO_COMPILER))
+        .add(
+            attr(":proto_compiler", LABEL)
+                .cfg(HostTransition.createFactory())
+                .exec()
+                .value(PROTO_COMPILER))
         /* <!-- #BLAZE_RULE(proto_library).ATTRIBUTE(deps) -->
         The list of other <code>proto_library</code> rules that the target depends upon.
         A <code>proto_library</code> may only depend on other
@@ -69,7 +73,40 @@ public final class BazelProtoLibraryRule implements RuleDefinition {
             attr("srcs", LABEL_LIST)
                 .direct_compile_time_input()
                 .allowedFileTypes(FileType.of(".proto"), FileType.of(".protodevel")))
-        .advertiseProvider(ProtoSourcesProvider.class, ProtoSupportDataProvider.class)
+        /* <!-- #BLAZE_RULE(proto_library).ATTRIBUTE(proto_source_root) -->
+        Directory containing .proto files. If set, it must be equal to the package name. If not set,
+        the source root will be the workspace directory (default).
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(attr("proto_source_root", STRING))
+        /* <!-- #BLAZE_RULE(proto_library).ATTRIBUTE(exports) -->
+        List of proto_library targets that can be referenced via "import public" in the proto
+        source.
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(attr("exports", LABEL_LIST).allowedRuleClasses("proto_library").allowedFileTypes())
+        /* <!-- #BLAZE_RULE(proto_library).ATTRIBUTE(strip_import_prefix) -->
+        The prefix to strip from the paths of the .proto files in this rule.
+
+        <p>When set, .proto source files in the <code>srcs</code> attribute of this rule are
+        accessible at their path with this prefix cut off.
+
+        <p>If it's a relative path (not starting with a slash), it's taken as a package-relative
+        one. If it's an absolute one, it's understood as a repository-relative path.
+
+        <p>The prefix in the <code>import_prefix</code> attribute is added after this prefix is
+        stripped.
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(attr("strip_import_prefix", STRING))
+        /* <!-- #BLAZE_RULE(proto_library).ATTRIBUTE(import_prefix) -->
+        The prefix to add to the paths of the .proto files in this rule.
+
+        <p>When set, the .proto source files in the <code>srcs</code> attribute of this rule are
+        accessible at is the value of this attribute prepended to their repository-relative path.
+
+        <p>The prefix in the <code>strip_import_prefix</code> attribute is removed before this
+        prefix is added.
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(attr("import_prefix", STRING))
+        .advertiseSkylarkProvider(ProtoInfo.PROVIDER.id())
         .build();
   }
 
@@ -100,7 +137,18 @@ public final class BazelProtoLibraryRule implements RuleDefinition {
 
 <p>It only contains information about the <code>.proto</code> files directly mentioned by a
 <code>proto_library</code> rule; the collection of transitive descriptor sets is available through
-the <code>proto.transitive_descriptor_sets</code> Skylark provider.
-See documentation in <code>ProtoSourcesProvider.java</code>.</p>
+the <code>[ProtoInfo].transitive_descriptor_sets</code> Skylark provider.
+See documentation in <code>ProtoInfo.java</code>.</p>
+
+<p>Recommended code organization:</p>
+
+<ul>
+<li> One <code>proto_library</code> rule per <code>.proto</code> file.
+<li> A file named <code>foo.proto</code> will be in a rule named <code>foo_proto</code>, which
+   is located in the same package.
+<li> A <code>[language]_proto_library</code> that wraps a <code>proto_library</code> named
+  <code>foo_proto</code> should be called
+   <code>foo_[language]_proto</code>, and be located in the same package.
+</ul>
 
 <!-- #END_BLAZE_RULE -->*/

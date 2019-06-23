@@ -19,28 +19,22 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skylarkbuildapi.java.JavaCompilationInfoProviderApi;
 
 /**
  * A class that provides compilation information in Java rules, for perusal of aspects and tools.
  */
-@SkylarkModule(
-  name = "java_compilation_info",
-  category = SkylarkModuleCategory.NONE,
-  doc = "Provides access to compilation information for Java rules."
-)
 @Immutable
-public class JavaCompilationInfoProvider implements TransitiveInfoProvider {
+@AutoCodec
+public class JavaCompilationInfoProvider
+    implements TransitiveInfoProvider, JavaCompilationInfoProviderApi<Artifact> {
   private final ImmutableList<String> javacOpts;
   private final NestedSet<Artifact> runtimeClasspath;
   private final NestedSet<Artifact> compilationClasspath;
   private final ImmutableList<Artifact> bootClasspath;
 
-  /**
-   * Builder for {@link JavaCompilationInfoProvider}.
-   */
+  /** Builder for {@link JavaCompilationInfoProvider}. */
   public static class Builder {
     private ImmutableList<String> javacOpts;
     private NestedSet<Artifact> runtimeClasspath;
@@ -73,46 +67,35 @@ public class JavaCompilationInfoProvider implements TransitiveInfoProvider {
     }
   }
 
-  @SkylarkCallable(name = "javac_options", structField = true, doc = "Options to java compiler.")
+  @Override
   public ImmutableList<String> getJavacOpts() {
     return javacOpts;
   }
 
-  @SkylarkCallable(
-    name = "runtime_classpath",
-    structField = true,
-    doc = "Run-time classpath for this Java target."
-  )
+  @Override
   public NestedSet<Artifact> getRuntimeClasspath() {
     return runtimeClasspath;
   }
 
-  @SkylarkCallable(
-    name = "compilation_classpath",
-    structField = true,
-    doc = "Compilation classpath for this Java target."
-  )
+  @Override
   public NestedSet<Artifact> getCompilationClasspath() {
     return compilationClasspath;
   }
 
-  @SkylarkCallable(
-    name = "boot_classpath",
-    structField = true,
-    doc = "Boot classpath for this Java target."
-  )
+  @Override
   public ImmutableList<Artifact> getBootClasspath() {
     return bootClasspath;
   }
 
-  private JavaCompilationInfoProvider(
+  @AutoCodec.VisibleForSerialization
+  JavaCompilationInfoProvider(
       ImmutableList<String> javacOpts,
       NestedSet<Artifact> runtimeClasspath,
-      NestedSet<Artifact> compileTimeClasspath,
+      NestedSet<Artifact> compilationClasspath,
       ImmutableList<Artifact> bootClasspath) {
     this.javacOpts = javacOpts;
     this.runtimeClasspath = runtimeClasspath;
-    this.compilationClasspath = compileTimeClasspath;
+    this.compilationClasspath = compilationClasspath;
     this.bootClasspath = bootClasspath;
   }
 }

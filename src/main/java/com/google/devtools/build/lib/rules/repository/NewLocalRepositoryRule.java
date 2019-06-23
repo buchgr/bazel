@@ -20,7 +20,6 @@ import static com.google.devtools.build.lib.syntax.Type.STRING;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
 
 /**
@@ -30,7 +29,7 @@ public class NewLocalRepositoryRule implements RuleDefinition {
   public static final String NAME = "new_local_repository";
 
   @Override
-  public RuleClass build(Builder builder, RuleDefinitionEnvironment environment) {
+  public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment environment) {
     return builder
         /* <!-- #BLAZE_RULE(new_local_repository).ATTRIBUTE(path) -->
         A path on the local filesystem.
@@ -54,7 +53,7 @@ public class NewLocalRepositoryRule implements RuleDefinition {
         <p>Either build_file or build_file_content must be specified.</p>
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(attr("build_file_content", STRING))
-        /* <!-- #BLAZE_RULE(new_http_archive).ATTRIBUTE(workspace_file) -->
+        /* <!-- #BLAZE_RULE(new_local_repository).ATTRIBUTE(workspace_file) -->
         The file to use as the WORKSPACE file for this repository.
 
          <p>Either workspace_file or workspace_file_content can be specified, but not both.</p>
@@ -64,7 +63,7 @@ public class NewLocalRepositoryRule implements RuleDefinition {
         distinguishing it from the repository's actual WORKSPACE files.)</p>
          <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(attr("workspace_file", STRING))
-        /* <!-- #BLAZE_RULE(new_http_archive).ATTRIBUTE(workspace_file_content) -->
+        /* <!-- #BLAZE_RULE(new_local_repository).ATTRIBUTE(workspace_file_content) -->
         The content for the WORKSPACE file for this repository.
 
          <p>Either workspace_file or workspace_file_content can be specified, but not both.</p>

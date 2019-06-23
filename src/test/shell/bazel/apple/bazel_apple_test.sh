@@ -31,16 +31,10 @@ function set_up() {
   copy_examples
   setup_objc_test_support
 
-  # Find the version number for an installed 7-series or 8-series Xcode
-  # (any sub-version will do)
-  bazel query "labels('versions', '@local_config_xcode//:host_xcodes')" \
-      --output xml  | grep 'name="version"' \
-      | sed -E 's/.*(value=\"(([0-9]|.)+))\".*/\2/' > xcode_versions
+  # Find the version number for an installed Xcode.
+  XCODE_VERSION=$(xcodebuild -version | grep ^Xcode | cut -d' ' -f2)
 
-  XCODE_VERSION=$(cat xcode_versions | grep -m1 '7\|8\|9')
-
-  # Allow access to //external:xcrunwrapper.
-  use_bazel_workspace_file
+  create_new_workspace
 }
 
 function test_fat_binary_no_srcs() {
@@ -79,6 +73,49 @@ EOF
 
   bazel build --verbose_failures --xcode_version=$XCODE_VERSION \
       //package:lipo_out --ios_multi_cpus=i386,x86_64 \
+      || fail "should build apple_binary and obtain info via lipo"
+
+  cat bazel-genfiles/package/lipo_out | grep "i386 x86_64" \
+    || fail "expected output binary to contain 2 architectures"
+}
+
+function test_additive_cpus_flag() {
+  mkdir -p package
+  cat > package/BUILD <<EOF
+objc_library(
+    name = "lib_a",
+    srcs = ["a.m"],
+)
+objc_library(
+    name = "lib_b",
+    srcs = ["b.m"],
+)
+apple_binary(
+    name = "main_binary",
+    deps = [":lib_a", ":lib_b"],
+    platform_type = "ios",
+    minimum_os_version = "10.0",
+)
+genrule(
+  name = "lipo_run",
+  srcs = [":main_binary_lipobin"],
+  outs = ["lipo_out"],
+  cmd =
+      "set -e && " +
+      "lipo -info \$(location :main_binary_lipobin) > \$(@)",
+  tags = ["requires-darwin"],
+)
+EOF
+  touch package/a.m
+  cat > package/b.m <<EOF
+int main() {
+  return 0;
+}
+EOF
+
+  bazel build --verbose_failures --xcode_version=$XCODE_VERSION \
+      //package:lipo_out \
+      --ios_multi_cpus=i386 --ios_multi_cpus=x86_64 \
       || fail "should build apple_binary and obtain info via lipo"
 
   cat bazel-genfiles/package/lipo_out | grep "i386 x86_64" \
@@ -169,8 +206,6 @@ std::string GetString() { return "h3ll0"; }
 EOF
 
   bazel build --verbose_failures //package:lipo_out \
-    --experimental_objc_crosstool=all \
-    --apple_crosstool_transition \
     --ios_multi_cpus=i386,x86_64 \
     --xcode_version=$XCODE_VERSION \
     || fail "should build apple_binary and obtain info via lipo"
@@ -245,14 +280,20 @@ std::string GetString() { return "h3ll0"; }
 EOF
 
   bazel build --verbose_failures //package:lipo_out \
-      --experimental_objc_crosstool=library \
-      --apple_crosstool_transition \
       --watchos_cpus=armv7k \
       --xcode_version=$XCODE_VERSION \
       || fail "should build watch binary"
 
   cat bazel-genfiles/package/lipo_out | grep "armv7k" \
-    || fail "expected output binary to be for armv7k architecture"
+      || fail "expected output binary to be for armv7k architecture"
+
+  bazel build --verbose_failures //package:lipo_out \
+      --watchos_cpus=i386 \
+      --xcode_version=$XCODE_VERSION \
+      || fail "should build watch binary"
+
+  cat bazel-genfiles/package/lipo_out | grep "i386" \
+      || fail "expected output binary to be for i386 architecture"
 }
 
 function test_xcode_config_select() {
@@ -347,6 +388,87 @@ EOF
       --xcode_version=3.0 || fail "build failed"
   assert_contains "XCODE UNKNOWN" bazel-genfiles/a/xcodeo
   assert_contains "IOS UNKNOWN" bazel-genfiles/a/ioso
+}
+
+function test_apple_binary_dsym_builds() {
+  rm -rf package
+  mkdir -p package
+  cat > package/BUILD <<EOF
+apple_binary(
+    name = "main_binary",
+    deps = [":main_lib"],
+    platform_type = "ios",
+    minimum_os_version = "10.0",
+)
+objc_library(
+    name = "main_lib",
+    srcs = ["main.m"],
+)
+EOF
+  cat > package/main.m <<EOF
+int main() {
+  return 0;
+}
+EOF
+
+  bazel build --verbose_failures //package:main_binary \
+      --ios_multi_cpus=i386,x86_64 \
+      --xcode_version=$XCODE_VERSION \
+      --apple_generate_dsym=true \
+      || fail "should build apple_binary with dSYMs"
+}
+
+function test_apple_binary_spaces() {
+  rm -rf package
+  mkdir -p package
+  cat > package/BUILD <<EOF
+apple_binary(
+    name = "main_binary",
+    deps = [":main_lib"],
+    platform_type = "ios",
+    minimum_os_version = "10.0",
+)
+objc_library(
+    name = "main_lib",
+    srcs = ["the main.m"],
+)
+EOF
+  cat > "package/the main.m" <<EOF
+int main() {
+  return 0;
+}
+EOF
+
+  bazel build --verbose_failures //package:main_binary \
+      --ios_multi_cpus=i386,x86_64 \
+      --xcode_version=$XCODE_VERSION \
+      --apple_generate_dsym=true \
+      || fail "should build apple_binary with dSYMs"
+}
+
+function test_apple_static_library() {
+  rm -rf package
+  mkdir -p package
+  cat > package/BUILD <<EOF
+apple_static_library(
+    name = "static_lib",
+    deps = [":dummy_lib"],
+    platform_type = "ios",
+)
+objc_library(
+    name = "dummy_lib",
+    srcs = ["dummy.m"],
+)
+EOF
+  cat > "package/dummy.m" <<EOF
+static int dummy __attribute__((unused,used)) = 0;
+EOF
+
+  bazel build --verbose_failures //package:static_lib \
+      --ios_multi_cpus=i386,x86_64 \
+      --ios_minimum_os=8.0 \
+      --xcode_version=$XCODE_VERSION \
+      || fail "should build apple_static_library"
 }
 
 run_suite "apple_tests"

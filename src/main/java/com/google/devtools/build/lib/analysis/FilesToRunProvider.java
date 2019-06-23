@@ -21,15 +21,15 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skylarkbuildapi.FilesToRunProviderApi;
 import javax.annotation.Nullable;
 
 /** Returns information about executables produced by a target and the files needed to run it. */
 @Immutable
-@SkylarkModule(name = "FilesToRunProvider", doc = "", category = SkylarkModuleCategory.PROVIDER)
-public final class FilesToRunProvider implements TransitiveInfoProvider {
+@AutoCodec
+public final class FilesToRunProvider
+    implements TransitiveInfoProvider, FilesToRunProviderApi<Artifact> {
   /** The name of the field in Skylark used to access this class. */
   public static final String SKYLARK_NAME = "files_to_run";
 
@@ -70,12 +70,7 @@ public final class FilesToRunProvider implements TransitiveInfoProvider {
   }
 
   /** Returns the Executable or null if it does not exist. */
-  @SkylarkCallable(
-    name = "executable",
-    doc = "The main executable or None if it does not exist.",
-    structField = true,
-    allowReturnNones = true
-  )
+  @Override
   @Nullable
   public Artifact getExecutable() {
     return executable;
@@ -85,12 +80,7 @@ public final class FilesToRunProvider implements TransitiveInfoProvider {
    * Returns the RunfilesManifest or null if it does not exist. It is a shortcut to
    * getRunfilesSupport().getRunfilesManifest().
    */
-  @SkylarkCallable(
-    name = "runfiles_manifest",
-    doc = "The runfiles manifest or None if it does not exist.",
-    structField = true,
-    allowReturnNones = true
-  )
+  @Override
   @Nullable
   public Artifact getRunfilesManifest() {
     return runfilesSupport != null ? runfilesSupport.getRunfilesManifest() : null;

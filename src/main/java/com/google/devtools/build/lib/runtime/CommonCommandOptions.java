@@ -13,11 +13,16 @@
 // limitations under the License.
 package com.google.devtools.build.lib.runtime;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
+
+import com.google.devtools.build.lib.profiler.MemoryProfiler.MemoryProfileStableHeapParameters;
+import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.runtime.CommandLineEvent.ToolCommandLineEvent;
 import com.google.devtools.build.lib.util.OptionsUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Converters;
+import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
@@ -25,132 +30,54 @@ import com.google.devtools.common.options.OptionMetadataTag;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.util.List;
-import java.util.Map;
+import java.util.UUID;
 import java.util.logging.Level;
 
 /**
  * Options common to all commands.
  */
 public class CommonCommandOptions extends OptionsBase {
+
   /**
-   * A class representing a blazerc option. blazeRc is serial number of the rc
-   * file this option came from, option is the name of the option and value is
-   * its value (or null if not specified).
+   * To create a new incompatible change, see the javadoc for {@link
+   * AllIncompatibleChangesExpansion}.
    */
-  public static class OptionOverride {
-    final int blazeRc;
-    final String command;
-    final String option;
-
-    public OptionOverride(int blazeRc, String command, String option) {
-      this.blazeRc = blazeRc;
-      this.command = command;
-      this.option = option;
-    }
-
-    @Override
-    public String toString() {
-      return String.format("%d:%s=%s", blazeRc, command, option);
-    }
-  }
-
-  /** Converter for --default_override. The format is: --default_override=blazerc:command=option. */
-  public static class OptionOverrideConverter implements Converter<OptionOverride> {
-    static final String ERROR_MESSAGE = "option overrides must be in form "
-      + " rcfile:command=option, where rcfile is a nonzero integer";
-
-    public OptionOverrideConverter() {}
-
-    @Override
-    public OptionOverride convert(String input) throws OptionsParsingException {
-      int colonPos = input.indexOf(':');
-      int assignmentPos = input.indexOf('=');
-
-      if (colonPos < 0) {
-        throw new OptionsParsingException(ERROR_MESSAGE);
-      }
-
-      if (assignmentPos <= colonPos + 1) {
-        throw new OptionsParsingException(ERROR_MESSAGE);
-      }
-
-      int blazeRc;
-      try {
-        blazeRc = Integer.valueOf(input.substring(0, colonPos));
-      } catch (NumberFormatException e) {
-        throw new OptionsParsingException(ERROR_MESSAGE);
-      }
-
-      if (blazeRc < 0) {
-        throw new OptionsParsingException(ERROR_MESSAGE);
-      }
-
-      String command = input.substring(colonPos + 1, assignmentPos);
-      String option = input.substring(assignmentPos + 1);
-
-      return new OptionOverride(blazeRc, command, option);
-    }
-
-    @Override
-    public String getTypeDescription() {
-      return "blazerc option override";
-    }
-  }
-
-  // To create a new incompatible change, see the javadoc for AllIncompatibleChangesExpansion.
   @Option(
-    name = "all_incompatible_changes",
-    defaultValue = "null",
-    category = "misc",
-    documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-    effectTags = {OptionEffectTag.UNKNOWN},
-    metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
-    expansionFunction = AllIncompatibleChangesExpansion.class,
-    help =
-        "Enables all options of the form --incompatible_*. Use this option to find places where "
-            + "your build may break in the future due to deprecations or other changes."
-  )
+      name = "all_incompatible_changes",
+      defaultValue = "null",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      expansionFunction = AllIncompatibleChangesExpansion.class,
+      help =
+          "Enables all options of the form --incompatible_*. Use this option to find places where "
+              + "your build may break in the future due to deprecations or other changes.")
   public Void allIncompatibleChanges;
 
   @Option(
     name = "config",
     defaultValue = "",
-    category = "misc",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     allowMultiple = true,
     help =
         "Selects additional config sections from the rc files; for every <command>, it "
             + "also pulls in the options from <command>:<config> if such a section exists; "
-            + "if the section does not exist, this flag is ignored. "
-            + "Note that it is currently only possible to provide these options on the "
-            + "command line, not in the rc files. The config sections and flag combinations "
-            + "they are equivalent to are located in the tools/*.blazerc config files."
+            + "if this section doesn't exist in any .rc file, Blaze fails with an error. "
+            + "The config sections and flag combinations they are equivalent to are "
+            + "located in the tools/*.blazerc config files."
   )
   public List<String> configs;
 
   @Option(
     name = "logging",
     defaultValue = "3", // Level.INFO
-    category = "verbosity",
     documentationCategory = OptionDocumentationCategory.LOGGING,
     effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
     converter = Converters.LogLevelConverter.class,
     help = "The logging level."
   )
   public Level verbosity;
-
-  @Option(
-    name = "client_env",
-    defaultValue = "",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    effectTags = {OptionEffectTag.CHANGES_INPUTS},
-    converter = Converters.AssignmentConverter.class,
-    allowMultiple = true,
-    help = "A system-generated parameter which specifies the client's environment"
-  )
-  public List<Map.Entry<String, String>> clientEnv;
 
   @Option(
     name = "client_cwd",
@@ -166,42 +93,11 @@ public class CommonCommandOptions extends OptionsBase {
   @Option(
     name = "announce_rc",
     defaultValue = "false",
-    category = "verbosity",
     documentationCategory = OptionDocumentationCategory.LOGGING,
     effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
     help = "Whether to announce rc options."
   )
   public boolean announceRcOptions;
-
-  /**
-   * These are the actual default overrides. Each value is a tuple of (bazelrc index, command name,
-   * value). The blazerc index is a number used to find the blazerc in --rc_source's values.
-   *
-   * <p>For example: "--default_override=rc:build=--cpu=piii"
-   */
-  @Option(
-    name = "default_override",
-    defaultValue = "",
-    allowMultiple = true,
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.CHANGES_INPUTS},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    converter = OptionOverrideConverter.class,
-    help = ""
-  )
-  public List<OptionOverride> optionsOverrides;
-
-  /** This is the filename that the Blaze client parsed. */
-  @Option(
-    name = "rc_source",
-    defaultValue = "",
-    allowMultiple = true,
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.CHANGES_INPUTS},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    help = ""
-  )
-  public List<String> rcSource;
 
   @Option(
     name = "always_profile_slow_operations",
@@ -212,40 +108,203 @@ public class CommonCommandOptions extends OptionsBase {
   )
   public boolean alwaysProfileSlowOperations;
 
+  /** Converter for UUID. Accepts values as specified by {@link UUID#fromString(String)}. */
+  public static class UUIDConverter implements Converter<UUID> {
+
+    @Override
+    public UUID convert(String input) throws OptionsParsingException {
+      if (isNullOrEmpty(input)) {
+        return null;
+      }
+      try {
+        return UUID.fromString(input);
+      } catch (IllegalArgumentException e) {
+        throw new OptionsParsingException(
+            String.format("Value '%s' is not a value UUID.", input), e);
+      }
+    }
+
+    @Override
+    public String getTypeDescription() {
+      return "a UUID";
+    }
+  }
+
+  /**
+   * Converter for options (--build_request_id) that accept prefixed UUIDs. Since we do not care
+   * about the structure of this value after validation, we store it as a string.
+   */
+  public static class PrefixedUUIDConverter implements Converter<String> {
+
+    @Override
+    public String convert(String input) throws OptionsParsingException {
+      if (isNullOrEmpty(input)) {
+        return null;
+      }
+      // UUIDs that are accepted by UUID#fromString have 36 characters. Interpret the last 36
+      // characters as an UUID and the rest as a prefix. We do not check anything about the contents
+      // of the prefix.
+      try {
+        int uuidStartIndex = input.length() - 36;
+        UUID.fromString(input.substring(uuidStartIndex));
+      } catch (IllegalArgumentException | IndexOutOfBoundsException e) {
+        throw new OptionsParsingException(
+            String.format("Value '%s' does not end in a valid UUID.", input), e);
+      }
+      return input;
+    }
+
+    @Override
+    public String getTypeDescription() {
+      return "An optionally prefixed UUID. The last 36 characters will be verified as a UUID.";
+    }
+  }
+
+  // Command ID and build request ID can be set either by flag or environment variable. In most
+  // cases, the internally generated ids should be sufficient, but we allow these to be set
+  // externally if required. Option wins over environment variable, if both are set.
+  // TODO(b/67895628) Stop reading ids from the environment after the compatibility window has
+  // passed.
   @Option(
-    name = "allow_undefined_configs",
-    defaultValue = "true",
-    category = "flags",
-    documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-    effectTags = {OptionEffectTag.EAGERNESS_TO_EXIT},
-    help = "Do not throw an error when the config is not defined."
+    name = "invocation_id",
+    defaultValue = "",
+    converter = UUIDConverter.class,
+    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+    effectTags = {OptionEffectTag.BAZEL_MONITORING, OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+    metadataTags = {OptionMetadataTag.HIDDEN},
+    help = "Unique identifier for the command being run."
   )
-  public boolean allowUndefinedConfigs;
+  public UUID invocationId;
 
   @Option(
-    name = "profile",
-    defaultValue = "null",
-    category = "misc",
-    documentationCategory = OptionDocumentationCategory.LOGGING,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
-    converter = OptionsUtils.PathFragmentConverter.class,
-    help =
-        "If set, profile Blaze and write data to the specified "
-            + "file. Use blaze analyze-profile to analyze the profile."
+    name = "build_request_id",
+    defaultValue = "",
+    converter = PrefixedUUIDConverter.class,
+    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+    effectTags = {OptionEffectTag.BAZEL_MONITORING, OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+    metadataTags = {OptionMetadataTag.HIDDEN},
+    help = "Unique identifier for the build being run."
   )
+  public String buildRequestId;
+
+  @Option(
+      name = "oom_message",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.BAZEL_MONITORING, OptionEffectTag.TERMINAL_OUTPUT},
+      metadataTags = {OptionMetadataTag.HIDDEN},
+      help = "Custom message to be emitted on an out of memory failure.")
+  public String oomMessage;
+
+  @Option(
+      name = "incompatible_remove_binary_profile",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
+      help = "If enabled, Bazel will write JSON-format profiles instead of binary profiles.")
+  public boolean removeBinaryProfile;
+
+  @Option(
+      name = "incompatible_enable_profile_by_default",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
+      help = "If enabled, Bazel will generate a JSON profile by default.")
+  public boolean enableProfileByDefault;
+
+  @Option(
+      name = "experimental_generate_json_trace_profile",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      help =
+          "If enabled, Bazel profiles the build and writes a JSON-format profile into a file in"
+              + " the output base. View profile by loading into chrome://tracing.")
+  public boolean enableTracer;
+
+  @Option(
+      name = "experimental_json_trace_compression",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      help = "If enabled, Bazel compresses the JSON-format profile with gzip.")
+  public boolean enableTracerCompression;
+
+  @Option(
+      name = "experimental_post_profile_started_event",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      help = "If set, Bazel will post the ProfilerStartedEvent including the path to the profile.")
+  public boolean postProfileStartedEvent;
+
+  @Option(
+      name = "experimental_profile_cpu_usage",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      help = "If set, Bazel will measure cpu usage and add it to the JSON profile.")
+  public boolean enableCpuUsageProfiling;
+
+  @Option(
+      name = "experimental_profile_additional_tasks",
+      converter = ProfilerTaskConverter.class,
+      defaultValue = "none",
+      allowMultiple = true,
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      help = "Specifies additional profile tasks to be included in the profile.")
+  public List<ProfilerTask> additionalProfileTasks;
+
+  @Option(
+      name = "experimental_slim_json_profile",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      help =
+          "Slims down the size of the JSON profile by merging events if the profile gets "
+              + " too large.")
+  public boolean enableJsonProfileDiet;
+
+  // TODO(twerth): Remove after Blaze is released with cl/248143034.
+  @Option(
+      name = "experimental_json_profile_metadata",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      metadataTags = {OptionMetadataTag.DEPRECATED},
+      help = "Deprecated no-op.")
+  public boolean enableJsonMetadata;
+
+  @Option(
+      name = "profile",
+      defaultValue = "null",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      converter = OptionsUtils.PathFragmentConverter.class,
+      help =
+          "If set, profile Bazel and write data to the specified "
+              + "file. Use bazel analyze-profile to analyze the profile.")
   public PathFragment profilePath;
 
   @Option(
-    name = "record_full_profiler_data",
-    defaultValue = "false",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
-    help =
-        "By default, Blaze profiler will record only aggregated data for fast but numerous "
-            + "events (such as statting the file). If this option is enabled, profiler will record "
-            + "each event - resulting in more precise profiling data but LARGE performance "
-            + "hit. Option only has effect if --profile used as well."
-  )
+      name = "record_full_profiler_data",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      help =
+          "By default, Bazel profiler will record only aggregated data for fast but numerous "
+              + "events (such as statting the file). If this option is enabled, profiler will "
+              + "record each event - resulting in more precise profiling data but LARGE "
+              + "performance hit. Option only has effect if --profile used as well.")
   public boolean recordFullProfilerData;
 
   @Option(
@@ -254,71 +313,68 @@ public class CommonCommandOptions extends OptionsBase {
     documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
     effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
     converter = OptionsUtils.PathFragmentConverter.class,
-    help = "If set, write memory usage data to the specified file at phase ends."
+    help =
+        "If set, write memory usage data to the specified file at phase ends and stable heap to"
+            + " master log at end of build."
   )
   public PathFragment memoryProfilePath;
 
-  @Deprecated
   @Option(
-    name = "gc_watchdog",
-    defaultValue = "false",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.NO_OP},
-    metadataTags = {OptionMetadataTag.DEPRECATED},
-    deprecationWarning = "Ignoring: this option is no longer supported",
-    help = "Deprecated."
+    name = "memory_profile_stable_heap_parameters",
+    defaultValue = "1,0",
+    documentationCategory = OptionDocumentationCategory.LOGGING,
+    effectTags = {OptionEffectTag.BAZEL_MONITORING},
+    converter = MemoryProfileStableHeapParameters.Converter.class,
+    help =
+        "Tune memory profile's computation of stable heap at end of build. Should be two integers "
+            + "separated by a comma. First parameter is the number of GCs to perform. Second "
+            + "parameter is the number of seconds to wait between GCs."
   )
-  public boolean gcWatchdog;
+  public MemoryProfileStableHeapParameters memoryProfileStableHeapParameters;
 
   @Option(
-    name = "experimental_oom_more_eagerly_threshold",
-    defaultValue = "100",
-    documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
-    effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
-    help =
-        "If this flag is set to a value less than 100, Blaze will OOM if, after two full GC's, more"
-            + "than this percentage of the (old gen) heap is still occupied."
-  )
+      name = "experimental_oom_more_eagerly_threshold",
+      defaultValue = "100",
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      help =
+          "If this flag is set to a value less than 100, Bazel will OOM if, after two full GC's, "
+              + "more than this percentage of the (old gen) heap is still occupied.")
   public int oomMoreEagerlyThreshold;
 
   @Option(
-    name = "startup_time",
-    defaultValue = "0",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    help = "The time in ms the launcher spends before sending the request to the blaze server."
-  )
+      name = "startup_time",
+      defaultValue = "0",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      metadataTags = {OptionMetadataTag.HIDDEN},
+      help = "The time in ms the launcher spends before sending the request to the bazel server.")
   public long startupTime;
 
   @Option(
-    name = "extract_data_time",
-    defaultValue = "0",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    help = "The time in ms spent on extracting the new blaze version."
-  )
+      name = "extract_data_time",
+      defaultValue = "0",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      metadataTags = {OptionMetadataTag.HIDDEN},
+      help = "The time in ms spent on extracting the new bazel version.")
   public long extractDataTime;
 
   @Option(
-    name = "command_wait_time",
-    defaultValue = "0",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    help = "The time in ms a command had to wait on a busy Blaze server process."
-  )
+      name = "command_wait_time",
+      defaultValue = "0",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      metadataTags = {OptionMetadataTag.HIDDEN},
+      help = "The time in ms a command had to wait on a busy Bazel server process.")
   public long waitTime;
 
   @Option(
-    name = "tool_tag",
-    defaultValue = "",
-    category = "misc",
-    documentationCategory = OptionDocumentationCategory.LOGGING,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
-    help = "A tool name to attribute this Blaze invocation to."
-  )
+      name = "tool_tag",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      help = "A tool name to attribute this Bazel invocation to.")
   public String toolTag;
 
   @Option(
@@ -332,13 +388,12 @@ public class CommonCommandOptions extends OptionsBase {
   public String restartReason;
 
   @Option(
-    name = "binary_path",
-    defaultValue = "",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    help = "The absolute path of the blaze binary."
-  )
+      name = "binary_path",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
+      metadataTags = {OptionMetadataTag.HIDDEN},
+      help = "The absolute path of the bazel binary.")
   public String binaryPath;
 
   @Option(
@@ -384,4 +439,52 @@ public class CommonCommandOptions extends OptionsBase {
             + "logged with the rest of the Bazel invocation."
   )
   public ToolCommandLineEvent toolCommandLine;
+
+  @Option(
+    name = "unconditional_warning",
+    defaultValue = "",
+    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+    effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+    allowMultiple = true,
+    help =
+        "A warning that will unconditionally get printed with build warnings and errors. This is "
+            + "useful to deprecate bazelrc files or --config definitions. If the intent is to "
+            + "effectively deprecate some flag or combination of flags, this is NOT sufficient. "
+            + "The flag or flags should use the deprecationWarning field in the option definition, "
+            + "or the bad combination should be checked for programmatically."
+  )
+  public List<String> deprecationWarnings;
+
+  @Option(
+      name = "track_incremental_state",
+      oldName = "keep_incrementality_data",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.BUILD_TIME_OPTIMIZATION,
+      effectTags = {OptionEffectTag.LOSES_INCREMENTAL_STATE},
+      help =
+          "If false, Blaze will not persist data that allows for invalidation and re-evaluation "
+              + "on incremental builds in order to save memory on this build. Subsequent builds "
+              + "will not have any incrementality with respect to this one. Usually you will want "
+              + "to specify --batch when setting this to false."
+  )
+  public boolean trackIncrementalState;
+
+  @Option(
+      name = "keep_state_after_build",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.BUILD_TIME_OPTIMIZATION,
+      effectTags = {OptionEffectTag.LOSES_INCREMENTAL_STATE},
+      help =
+          "If false, Blaze will discard the inmemory state from this build when the build "
+              + "finishes. Subsequent builds will not have any incrementality with respect to this "
+              + "one."
+  )
+  public boolean keepStateAfterBuild;
+
+  /** The option converter to check that the user can only specify legal profiler tasks. */
+  public static class ProfilerTaskConverter extends EnumConverter<ProfilerTask> {
+    public ProfilerTaskConverter() {
+      super(ProfilerTask.class, "profiler task");
+    }
+  }
 }

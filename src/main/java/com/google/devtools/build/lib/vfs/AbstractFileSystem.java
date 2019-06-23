@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.vfs;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
+import com.google.devtools.build.lib.vfs.DigestHashFunction.DefaultHashFunctionNotSetException;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -25,10 +26,16 @@ import java.io.OutputStream;
 
 /** This class implements the FileSystem interface using direct calls to the UNIX filesystem. */
 @ThreadSafe
-abstract class AbstractFileSystem extends FileSystem {
+public abstract class AbstractFileSystem extends FileSystem {
 
   protected static final String ERR_PERMISSION_DENIED = " (Permission denied)";
   protected static final Profiler profiler = Profiler.instance();
+
+  public AbstractFileSystem() throws DefaultHashFunctionNotSetException {}
+
+  public AbstractFileSystem(DigestHashFunction digestFunction) {
+    super(digestFunction);
+  }
 
   @Override
   protected InputStream getInputStream(Path path) throws IOException {
@@ -115,7 +122,7 @@ abstract class AbstractFileSystem extends FileSystem {
     public int read() throws IOException {
       long startTime = Profiler.nanoTimeMaybe();
       try {
-        // Note that FileInputStream#read() does *not* call any of our overriden methods,
+        // Note that FileInputStream#read() does *not* call any of our overridden methods,
         // so there's no concern with double counting here.
         return super.read();
       } finally {

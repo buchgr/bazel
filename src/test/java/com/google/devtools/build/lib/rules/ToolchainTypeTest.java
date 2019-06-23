@@ -16,8 +16,11 @@ package com.google.devtools.build.lib.rules;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.MakeVariableInfo;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.analysis.util.ScratchAttributeWriter;
+import com.google.devtools.build.lib.packages.util.MockCcSupport;
+import com.google.devtools.build.lib.rules.cpp.CppCompileAction;
+import com.google.devtools.build.lib.testutil.TestConstants;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -25,11 +28,73 @@ import org.junit.runners.JUnit4;
 /** Unit tests for the {@code toolchain_type} rule. */
 @RunWith(JUnit4.class)
 public class ToolchainTypeTest extends BuildViewTestCase {
+
   @Test
-  public void testSmoke() throws Exception {
-    ConfiguredTarget cc = getConfiguredTarget(getRuleClassProvider().getToolsRepository()
-        + "//tools/cpp:toolchain_type");
-    assertThat(cc.get(MakeVariableInfo.PROVIDER).getMakeVariables())
-        .containsKey("TARGET_CPU");
+  public void testCcTargetsDependOnCcToolchainAutomatically() throws Exception {
+    scratch.file(
+        "a/BUILD",
+        "load(':cc_toolchain_config.bzl', 'cc_toolchain_config')",
+        "filegroup(",
+        "   name='empty')",
+        "package(default_visibility=['//visibility:public'])",
+        "constraint_setting(name = 'mock_setting')",
+        "constraint_value(name = 'mock_value', constraint_setting = ':mock_setting')",
+        "platform(",
+        "   name = 'mock-platform',",
+        "   constraint_values = [':mock_value'],",
+        ")",
+        "cc_toolchain(",
+        "    name = 'b',",
+        "    all_files = ':empty',",
+        "    ar_files = ':empty',",
+        "    as_files = ':empty',",
+        "    compiler_files = ':empty',",
+        "    dwp_files = ':empty',",
+        "    linker_files = ':empty',",
+        "    strip_files = ':empty',",
+        "    objcopy_files = ':empty',",
+        "    toolchain_config = ':toolchain_config',",
+        ")",
+        "cc_toolchain_config(name = 'toolchain_config')",
+        "toolchain(",
+        "   name = 'toolchain_b',",
+        "   toolchain_type = '" + TestConstants.TOOLS_REPOSITORY + "//tools/cpp:toolchain_type',",
+        "   toolchain = ':b',",
+        "   target_compatible_with = [':mock_value'],",
+        ")");
+
+    scratch.file("a/cc_toolchain_config.bzl", MockCcSupport.EMPTY_CC_TOOLCHAIN);
+    useConfiguration(
+        "--incompatible_enable_cc_toolchain_resolution",
+        "--experimental_platforms=//a:mock-platform",
+        "--extra_toolchains=//a:toolchain_b");
+
+    // for cc_library, cc_binary, and cc_test, we check that $(TARGET_CPU) is a valid Make variable
+    ConfiguredTarget cclibrary =
+        ScratchAttributeWriter.fromLabelString(this, "cc_library", "//cclib")
+            .setList("srcs", "a.cc")
+            .setList("copts", "foobar-$(ABI)")
+            .write();
+    CppCompileAction compileAction =
+        (CppCompileAction) getGeneratingAction(getBinArtifact("_objs/cclib/a.o", cclibrary));
+    assertThat(compileAction.getArguments()).contains("foobar-mock-abi-version-for-k8");
+
+    ConfiguredTarget ccbinary =
+        ScratchAttributeWriter.fromLabelString(this, "cc_binary", "//ccbin")
+            .setList("srcs", "a.cc")
+            .setList("copts", "foobar-$(ABI)")
+            .write();
+    compileAction =
+        (CppCompileAction) getGeneratingAction(getBinArtifact("_objs/ccbin/a.o", ccbinary));
+    assertThat(compileAction.getArguments()).contains("foobar-mock-abi-version-for-k8");
+
+    ConfiguredTarget cctest =
+        ScratchAttributeWriter.fromLabelString(this, "cc_test", "//cctest")
+            .setList("srcs", "a.cc")
+            .setList("copts", "foobar-$(ABI)")
+            .write();
+    compileAction =
+        (CppCompileAction) getGeneratingAction(getBinArtifact("_objs/cctest/a.o", cctest));
+    assertThat(compileAction.getArguments()).contains("foobar-mock-abi-version-for-k8");
   }
 }

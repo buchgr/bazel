@@ -13,6 +13,10 @@
 // limitations under the License.
 package com.google.devtools.build.android.xml;
 
+import com.android.aapt.Resources.Array;
+import com.android.aapt.Resources.Array.Element;
+import com.android.aapt.Resources.Item;
+import com.android.aapt.Resources.Value;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableList;
@@ -117,6 +121,29 @@ public class ArrayXmlResourceValue implements XmlResourceValue {
         ImmutableMap.copyOf(proto.getAttribute()));
   }
 
+  public static XmlResourceValue from(Value proto) {
+    Array array = proto.getCompoundValue().getArray();
+    List<String> items = new ArrayList<>();
+
+    for (Element entry : array.getElementList()) {
+      Item item = entry.getItem();
+
+      if (item.hasPrim()) {
+        String stringValue = "#" + Integer.toHexString(item.getPrim().getData());
+        items.add(stringValue);
+      } else if (item.hasRef()) {
+        items.add("@" + item.getRef().getName());
+      } else if (item.hasStr()) {
+        items.add(item.getStr().getValue());
+      }
+    }
+
+    return of(
+        ArrayType.ARRAY,
+        items,
+        ImmutableMap.of());
+  }
+
   @Override
   public void write(
       FullyQualifiedName key, DataSource source, AndroidDataWritingVisitor mergedDataWriter) {
@@ -180,6 +207,11 @@ public class ArrayXmlResourceValue implements XmlResourceValue {
   @Override
   public XmlResourceValue combineWith(XmlResourceValue value) {
     throw new IllegalArgumentException(this + " is not a combinable resource.");
+  }
+
+  @Override
+  public int compareMergePriorityTo(XmlResourceValue value) {
+    return 0;
   }
 
   @Override

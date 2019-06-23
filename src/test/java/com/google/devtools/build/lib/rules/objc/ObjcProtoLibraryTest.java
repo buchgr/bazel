@@ -18,7 +18,6 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Ordering;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -32,9 +31,9 @@ import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.packages.util.MockObjcSupport;
 import com.google.devtools.build.lib.packages.util.MockProtoSupport;
-import com.google.devtools.build.lib.rules.apple.ApplePlatform;
 import com.google.devtools.build.lib.rules.apple.AppleToolchain;
 import com.google.devtools.build.lib.rules.cpp.CppModuleMapAction;
+import com.google.devtools.build.lib.testutil.TestConstants;
 import java.util.List;
 import org.junit.Before;
 import org.junit.Test;
@@ -137,7 +136,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
         "proto_library(",
         "  name = 'protolib_well_known_types',",
         "  srcs = ['file_a.proto'],",
-        "  deps = ['//objcproto:well_known_type_proto'],",
+        "  deps = ['" + TestConstants.TOOLS_REPOSITORY + "//objcproto:well_known_type_proto'],",
         ")",
         "",
         "genrule(",
@@ -173,7 +172,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
     NestedSet<Artifact> filesToBuild =
         getFilesToBuild(getConfiguredTarget("//package:opl_protobuf"));
     assertThat(Artifact.toRootRelativePaths(filesToBuild))
-        .containsAllOf(
+        .containsAtLeast(
             "package/_generated_protos/opl_protobuf/package/FileA.pbobjc.h",
             "package/_generated_protos/opl_protobuf/package/FileA.pbobjc.m",
             "package/_generated_protos/opl_protobuf/package/dir/FileB.pbobjc.h",
@@ -185,7 +184,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
   public void testDependingObjcProtoLibrary() throws Exception {
     NestedSet<Artifact> filesToBuild = getFilesToBuild(getConfiguredTarget("//package:nested_opl"));
     assertThat(Artifact.toRootRelativePaths(filesToBuild))
-        .containsAllOf(
+        .containsAtLeast(
             "package/_generated_protos/nested_opl/package/FileA.pbobjc.h",
             "package/_generated_protos/nested_opl/package/FileA.pbobjc.m",
             "package/_generated_protos/nested_opl/package/dir/FileB.pbobjc.h",
@@ -199,7 +198,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
     assertThat(Artifact.toRootRelativePaths(filesToBuild))
         .doesNotContain("package/libopl_protobuf.a");
     assertThat(Artifact.toRootRelativePaths(filesToBuild))
-        .containsAllOf(
+        .containsAtLeast(
             "package/_generated_protos/opl_protobuf/package/FileA.pbobjc.h",
             "package/_generated_protos/opl_protobuf/package/FileA.pbobjc.m",
             "package/_generated_protos/opl_protobuf/package/dir/FileB.pbobjc.h",
@@ -213,7 +212,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
         getFilesToBuild(getConfiguredTarget("//package:opl_protobuf_special_names"));
     String outputPath = "package/_generated_protos/opl_protobuf_special_names/package/";
     assertThat(Artifact.toRootRelativePaths(filesToBuild))
-        .containsAllOf(
+        .containsAtLeast(
             outputPath + "J2ObjcDescriptor.pbobjc.h",
             outputPath + "J2ObjcDescriptor.pbobjc.m",
             outputPath + "HTTP.pbobjc.h",
@@ -237,7 +236,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
     NestedSet<Artifact> filesToBuild =
         getFilesToBuild(getConfiguredTarget("//package:opl_protobuf_well_known_types"));
     assertThat(Artifact.toRootRelativePaths(filesToBuild))
-        .containsAllOf(
+        .containsAtLeast(
             "package/_generated_protos/opl_protobuf_well_known_types/package/FileA.pbobjc.h",
             "package/_generated_protos/opl_protobuf_well_known_types/package/FileA.pbobjc.m");
     assertThat(Artifact.toRootRelativePaths(filesToBuild))
@@ -252,7 +251,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
   public void testOutputsGenfile() throws Exception {
     NestedSet<Artifact> filesToBuild = getFilesToBuild(getConfiguredTarget("//package:gen_opl"));
     assertThat(Artifact.toRootRelativePaths(filesToBuild))
-        .containsAllOf(
+        .containsAtLeast(
             "package/_generated_protos/gen_opl/package/FileAGenfile.pbobjc.h",
             "package/_generated_protos/gen_opl/package/FileAGenfile.pbobjc.m");
   }
@@ -274,7 +273,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
     BuildConfiguration topLevelConfig = getAppleCrosstoolConfiguration();
     assertThat(action.getArguments())
         .containsExactly(
-            "tools/objc/protobuf_compiler_wrapper.sh",
+            TestConstants.TOOLS_REPOSITORY_PATH_PREFIX + "tools/objc/protobuf_compiler_wrapper.sh",
             "--input-file-list",
             inputFileList.getExecPathString(),
             "--output-dir",
@@ -293,11 +292,12 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
             "package/proto_filter3.txt")
         .inOrder();
     assertThat(Artifact.toRootRelativePaths(action.getInputs()))
-        .containsAllOf(
-            "tools/objc/protobuf_compiler_wrapper.sh",
-            "tools/objc/protobuf_compiler_helper.py",
-            "tools/objc/proto_support");
-    assertThat(Artifact.toRootRelativePaths(action.getInputs())).containsAllIn(protoInputs);
+        .containsAtLeast(
+            TestConstants.TOOLS_REPOSITORY_PATH_PREFIX + "tools/objc/protobuf_compiler_wrapper.sh",
+            TestConstants.TOOLS_REPOSITORY_PATH_PREFIX + "tools/objc/protobuf_compiler_helper.py",
+            TestConstants.TOOLS_REPOSITORY_PATH_PREFIX + "tools/objc/proto_support");
+    assertThat(Artifact.toRootRelativePaths(action.getInputs()))
+        .containsAtLeastElementsIn(protoInputs);
     assertThat(action.getInputs()).contains(inputFileList);
 
     FileWriteAction inputListAction = (FileWriteAction) getGeneratingAction(inputFileList);
@@ -316,16 +316,16 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
         ActionsTestUtil.getFirstArtifactEndingWith(
             action.getInputs(), "/_proto_input_files_BundledProtos_0");
 
-    ImmutableList<String> protoInputs = ImmutableList.of("package/file_a.proto");
-
-    assertThat(Artifact.toRootRelativePaths(action.getInputs())).containsAllIn(protoInputs);
-    assertThat(action.getInputs()).contains(inputFileList);
+    ImmutableList<String> protoInputs = ImmutableList.of(
+        "package/file_a.proto",
+        TestConstants.TOOLS_REPOSITORY_PATH_PREFIX + "objcproto/well_known_type.proto");
 
     assertThat(Artifact.toRootRelativePaths(action.getInputs()))
-        .contains("objcproto/well_known_type.proto");
+        .containsAtLeastElementsIn(protoInputs);
+    assertThat(action.getInputs()).contains(inputFileList);
 
     FileWriteAction inputListAction = (FileWriteAction) getGeneratingAction(inputFileList);
-    assertThat(inputListAction.getFileContents()).isEqualTo(sortedJoin(protoInputs));
+    assertThat(inputListAction.getFileContents()).contains("package/file_a.proto");
   }
 
   @Test
@@ -400,32 +400,30 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
 
   @Test
   public void testModulemapCreatedForNonLinkingTargets() throws Exception {
-    checkOnlyLibModuleMapsArePresentForTarget("//package:opl_protobuf");
+    // TODO(b/73943026): Remove this flag once everyone has migrated to the new strict behavior and
+    // it is made the default.
+    useConfiguration("--incompatible_strict_objc_module_maps");
+
+    // The library target should propagate its module map.
+    ObjcProvider provider = providerForTarget("//package:opl_protobuf");
+    assertThat(Artifact.toRootRelativePaths(provider.get(ObjcProvider.MODULE_MAP).toSet()))
+        .containsExactly("package/opl_protobuf.modulemaps/module.modulemap");
   }
 
   @Test
   public void testModulemapNotCreatedForLinkingTargets() throws Exception {
-    checkOnlyLibModuleMapsArePresentForTarget("//package:opl_binary");
+    // TODO(b/73943026): Remove this flag once everyone has migrated to the new strict behavior and
+    // it is made the default.
+    useConfiguration("--incompatible_strict_objc_module_maps");
+
+    // The binary target should not propagate the module map from the library it depends on.
+    ObjcProvider provider = providerForTarget("//package:opl_binary");
+    assertThat(Artifact.toRootRelativePaths(provider.get(ObjcProvider.MODULE_MAP).toSet()))
+        .isEmpty();
   }
 
   private static String sortedJoin(Iterable<String> elements) {
     return Joiner.on('\n').join(Ordering.natural().immutableSortedCopy(elements));
-  }
-
-  private void checkOnlyLibModuleMapsArePresentForTarget(String target) throws Exception {
-    Artifact libModuleMap =
-        getGenfilesArtifact(
-            "opl_protobuf.modulemaps/module.modulemap",
-            getConfiguredTarget("//package:opl_protobuf"));
-    Artifact protolibModuleMap =
-        getGenfilesArtifact(
-            "protobuf_lib.modulemaps/module.modulemap",
-            getConfiguredTarget("//objcproto:protobuf_lib"));
-
-    ObjcProvider provider = providerForTarget(target);
-    assertThat(Artifact.toRootRelativePaths(provider.get(ObjcProvider.MODULE_MAP).toSet()))
-        .containsExactlyElementsIn(
-            Artifact.toRootRelativePaths(ImmutableSet.of(libModuleMap, protolibModuleMap)));
   }
 
   @Test
@@ -437,9 +435,9 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
     assertThat(provider.get(ObjcProvider.INCLUDE).toSet())
         .contains(headerFile.getExecPath().getParentDirectory().getParentDirectory());
 
-    ConfiguredTarget libProtoBufTarget = getConfiguredTarget("//objcproto:protobuf_lib");
-    assertThat(provider.get(ObjcProvider.LIBRARY).toSet())
-        .containsExactly(getBinArtifact("libprotobuf_lib.a", libProtoBufTarget));
+    assertThat(Artifact.toRootRelativePaths(provider.get(ObjcProvider.LIBRARY).toSet()))
+        .containsExactly(TestConstants.TOOLS_REPOSITORY_PATH_PREFIX
+            + "objcproto/libprotobuf_lib.a");
 
     assertThat(provider.get(ObjcProvider.HEADER).toSet()).contains(headerFile);
 
@@ -464,8 +462,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
 
   @Test
   public void testCompilationAction() throws Exception {
-    useConfiguration("--cpu=ios_i386");
-    ApplePlatform platform = ApplePlatform.IOS_SIMULATOR;
+    useConfiguration("--apple_platform_type=ios", "--cpu=ios_i386");
 
     // Because protos are linked/compiled within the apple_binary context, we need to traverse the
     // action graph to find the linked protos (.a) and compiled protos (.o).
@@ -479,7 +476,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
 
     Artifact linkedProtos =
         ActionsTestUtil.getFirstArtifactEndingWith(
-            linkAction.getInputs(), "libopl_binary_BundledProtos_0.a");
+            linkAction.getInputs(), "libopl_binary_BundledProtos.a");
     CommandAction linkedProtosAction = (CommandAction) getGeneratingAction(linkedProtos);
 
     Artifact objectFile =
@@ -507,12 +504,11 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
             .add("-mios-simulator-version-min=" + DEFAULT_IOS_SDK_VERSION)
             .add("-arch", "i386")
             .add("-isysroot", AppleToolchain.sdkDir())
-            .add("-F", AppleToolchain.sdkDir() + AppleToolchain.DEVELOPER_FRAMEWORK_PATH)
-            .add("-F", frameworkDir(platform))
             .addAll(FASTBUILD_COPTS)
             .addAll(
                 ObjcLibraryTest.iquoteArgs(
-                    binaryTarget.get(ObjcProvider.SKYLARK_CONSTRUCTOR), getTargetConfiguration()))
+                    providerForTarget("//package:opl_binary"),
+                    getAppleCrosstoolConfiguration()))
             .add("-I")
             .add(sourceFile.getExecPath().getParentDirectory().getParentDirectory().toString())
             .add("-fno-objc-arc")
@@ -530,7 +526,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
 
     assertRequiresDarwin(compiledProtoAction);
     assertThat(Artifact.toRootRelativePaths(compiledProtoAction.getInputs()))
-        .containsAllOf(
+        .containsAtLeast(
             "package/_generated_protos/opl_binary/package/FileA.pbobjc.m",
             "package/_generated_protos/opl_binary/package/FileA.pbobjc.h",
             "package/_generated_protos/opl_binary/package/dir/FileB.pbobjc.h",
@@ -539,7 +535,7 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
 
   @Test
   public void testLibraryLinkAction() throws Exception {
-    useConfiguration("--cpu=ios_armv7");
+    useConfiguration("--apple_platform_type=ios", "--cpu=ios_armv7");
 
     // Because protos are linked within the apple_binary context, we need to traverse the action
     // graph to find the linked protos (.a).
@@ -553,12 +549,12 @@ public class ObjcProtoLibraryTest extends ObjcRuleTestCase {
 
     Artifact linkedProtos =
         ActionsTestUtil.getFirstArtifactEndingWith(
-            linkAction.getInputs(), "libopl_binary_BundledProtos_0.a");
+            linkAction.getInputs(), "libopl_binary_BundledProtos.a");
     CommandAction linkedProtosAction = (CommandAction) getGeneratingAction(linkedProtos);
     Artifact objListFile =
         ActionsTestUtil.getFirstArtifactEndingWith(linkedProtosAction.getInputs(), ".objlist");
     assertThat(linkedProtosAction.getArguments())
-        .containsAllIn(
+        .containsAtLeastElementsIn(
             ImmutableList.of(
                 "-static",
                 "-filelist",

@@ -13,23 +13,41 @@
 // limitations under the License.
 package com.google.devtools.build.skyframe;
 
-import com.google.common.base.Supplier;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Sets;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import javax.annotation.Nullable;
 
 /**
  * A testing utility to keep track of evaluation.
  */
 public class TrackingProgressReceiver
     extends EvaluationProgressReceiver.NullEvaluationProgressReceiver {
+  private final boolean checkEvaluationResults;
+  /**
+   * Callback to be executed on a next {@link #invalidated} call. It will be run once and is
+   * expected to be run if set.
+   */
+  private final AtomicReference<Runnable> nextInvalidationCallback = new AtomicReference<>();
+
   public final Set<SkyKey> dirty = Sets.newConcurrentHashSet();
   public final Set<SkyKey> deleted = Sets.newConcurrentHashSet();
   public final Set<SkyKey> enqueued = Sets.newConcurrentHashSet();
   public final Set<SkyKey> evaluated = Sets.newConcurrentHashSet();
 
+  public TrackingProgressReceiver(boolean checkEvaluationResults) {
+    this.checkEvaluationResults = checkEvaluationResults;
+  }
+
   @Override
   public void invalidated(SkyKey skyKey, InvalidationState state) {
+    final Runnable invalidateCallback = nextInvalidationCallback.getAndSet(null);
+    if (invalidateCallback != null) {
+      invalidateCallback.run();
+    }
+
     switch (state) {
       case DELETED:
         dirty.remove(skyKey);
@@ -50,9 +68,13 @@ public class TrackingProgressReceiver
   }
 
   @Override
-  public void evaluated(SkyKey skyKey, Supplier<SkyValue> skyValueSupplier, EvaluationState state) {
+  public void evaluated(
+      SkyKey skyKey,
+      @Nullable SkyValue value,
+      Supplier<EvaluationSuccessState> evaluationSuccessState,
+      EvaluationState state) {
     evaluated.add(skyKey);
-    if (skyValueSupplier.get() != null) {
+    if (checkEvaluationResults && evaluationSuccessState.get().succeeded()) {
       deleted.remove(skyKey);
       if (state.equals(EvaluationState.CLEAN)) {
         dirty.remove(skyKey);
@@ -65,5 +87,11 @@ public class TrackingProgressReceiver
     deleted.clear();
     enqueued.clear();
     evaluated.clear();
+  }
+
+  void setNextInvalidationCallback(Runnable runnable) {
+    final Runnable oldCallback = nextInvalidationCallback.getAndSet(runnable);
+    Preconditions.checkState(
+        oldCallback == null, "Overwriting a left-over callback: %s", oldCallback);
   }
 }

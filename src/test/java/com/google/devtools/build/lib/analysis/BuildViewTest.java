@@ -18,10 +18,12 @@ import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.testutil.MoreAsserts.assertEventCountAtLeast;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 import static org.junit.Assert.fail;
 
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
@@ -30,28 +32,30 @@ import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.Actions;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.FailAction;
-import com.google.devtools.build.lib.analysis.BuildView.AnalysisResult;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
-import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
+import com.google.devtools.build.lib.analysis.config.CoreOptions;
+import com.google.devtools.build.lib.analysis.config.transitions.NoTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.NullTransition;
 import com.google.devtools.build.lib.analysis.configuredtargets.InputFileConfiguredTarget;
 import com.google.devtools.build.lib.analysis.configuredtargets.OutputFileConfiguredTarget;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestBase;
 import com.google.devtools.build.lib.analysis.util.ExpectedTrimmedConfigurationErrors;
 import com.google.devtools.build.lib.analysis.util.MockRule;
+import com.google.devtools.build.lib.buildeventstream.NullConfiguration;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.packages.Attribute;
+import com.google.devtools.build.lib.events.OutputFilter.RegexOutputFilter;
 import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.Rule;
+import com.google.devtools.build.lib.pkgcache.LoadingFailureEvent;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
+import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.testutil.Suite;
 import com.google.devtools.build.lib.testutil.TestConstants;
+import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.testutil.TestSpec;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.skyframe.NotifyingHelper.EventType;
 import com.google.devtools.build.skyframe.NotifyingHelper.Listener;
-import com.google.devtools.build.skyframe.NotifyingHelper.Order;
-import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.common.options.Options;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.util.ArrayList;
@@ -70,11 +74,12 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class BuildViewTest extends BuildViewTestBase {
   private static final Function<AnalysisFailureEvent, Pair<String, String>>
-      ANALYSIS_EVENT_TO_STRING_PAIR = new Function<AnalysisFailureEvent, Pair<String, String>>() {
+      ANALYSIS_EVENT_TO_STRING_PAIR =
+          new Function<AnalysisFailureEvent, Pair<String, String>>() {
     @Override
     public Pair<String, String> apply(AnalysisFailureEvent event) {
       return Pair.of(
-          event.getFailedTarget().getLabel().toString(), event.getFailureReason().toString());
+          event.getFailedTarget().getLabel().toString(), event.getLegacyFailureReason().toString());
     }
   };
 
@@ -89,9 +94,9 @@ public class BuildViewTest extends BuildViewTestBase {
     Rule ruleTarget = (Rule) getTarget("//pkg:foo");
     assertThat(ruleTarget.getRuleClass()).isEqualTo("genrule");
 
-    ConfiguredTarget ruleCT = getConfiguredTarget("//pkg:foo");
+    ConfiguredTargetAndData ruleCTAT = getConfiguredTargetAndTarget("//pkg:foo");
 
-    assertThat(ruleCT.getTarget()).isSameAs(ruleTarget);
+    assertThat(ruleCTAT.getTarget()).isSameInstanceAs(ruleTarget);
   }
 
   @Test
@@ -113,19 +118,23 @@ public class BuildViewTest extends BuildViewTestBase {
     //scratch.file("tests/small_test_1.py");
 
     update("//tests:smallTests");
+    ConfiguredTargetAndData test1 = getConfiguredTargetAndTarget("//tests:small_test_1");
+    ConfiguredTargetAndData test2 = getConfiguredTargetAndTarget("//tests:small_test_2");
+    ConfiguredTargetAndData suite = getConfiguredTargetAndTarget("//tests:smallTests");
 
-    ConfiguredTarget test1 = getConfiguredTarget("//tests:small_test_1");
-    ConfiguredTarget test2 = getConfiguredTarget("//tests:small_test_2");
-    ConfiguredTarget suite = getConfiguredTarget("//tests:smallTests");
+    ConfiguredTarget test1CT = test1.getConfiguredTarget();
+    ConfiguredTarget test2CT = test2.getConfiguredTarget();
+    ConfiguredTarget suiteCT = suite.getConfiguredTarget();
     assertNoEvents(); // start from a clean slate
 
-
     Collection<ConfiguredTarget> targets =
-        new LinkedHashSet<>(ImmutableList.of(test1, test2, suite));
-    targets = Lists.<ConfiguredTarget>newArrayList(
-        BuildView.filterTestsByTargets(targets,
-            Sets.newHashSet(test1.getTarget(), suite.getTarget())));
-    assertThat(targets).containsExactlyElementsIn(Sets.newHashSet(test1, suite));
+        new LinkedHashSet<>(ImmutableList.of(test1CT, test2CT, suiteCT));
+    targets =
+        Lists.<ConfiguredTarget>newArrayList(
+            BuildView.filterTestsByTargets(
+                targets,
+                Sets.newHashSet(test1.getTarget().getLabel(), suite.getTarget().getLabel())));
+    assertThat(targets).containsExactlyElementsIn(Sets.newHashSet(test1CT, suiteCT));
   }
 
   @Test
@@ -142,21 +151,37 @@ public class BuildViewTest extends BuildViewTestBase {
   public void testGeneratedArtifact() throws Exception {
     setupDummyRule();
     update("//pkg:a.out");
-    OutputFileConfiguredTarget outputCT = (OutputFileConfiguredTarget)
-        getConfiguredTarget("//pkg:a.out");
-    Artifact outputArtifact = outputCT.getArtifact();
+    ConfiguredTargetAndData ctad = getConfiguredTargetAndData("//pkg:a.out");
+    OutputFileConfiguredTarget output = (OutputFileConfiguredTarget) ctad.getConfiguredTarget();
+    Artifact outputArtifact = output.getArtifact();
     assertThat(outputArtifact.getRoot())
         .isEqualTo(
-            outputCT
-                .getConfiguration()
-                .getBinDirectory(
-                    outputCT.getTarget().getLabel().getPackageIdentifier().getRepository()));
+            ctad.getConfiguration()
+                .getBinDirectory(output.getLabel().getPackageIdentifier().getRepository()));
     assertThat(outputArtifact.getExecPath())
-        .isEqualTo(outputCT.getConfiguration().getBinFragment().getRelative("pkg/a.out"));
+        .isEqualTo(ctad.getConfiguration().getBinFragment().getRelative("pkg/a.out"));
     assertThat(outputArtifact.getRootRelativePath()).isEqualTo(PathFragment.create("pkg/a.out"));
 
     Action action = getGeneratingAction(outputArtifact);
-    assertThat(action.getClass()).isSameAs(FailAction.class);
+    assertThat(action.getClass()).isSameInstanceAs(FailAction.class);
+  }
+
+  @Test
+  public void testGetArtifactOwnerInStarlark() throws Exception {
+    scratch.file(
+        "foo/rule.bzl",
+        "def _impl(ctx):",
+        "  f = ctx.actions.declare_file('rule_output')",
+        "  print('f owner is ' + str(f.owner))",
+        "  ctx.actions.write(",
+        "    output = f,",
+        "    content = 'foo',",
+        "  )",
+        "gen = rule(implementation = _impl)");
+    scratch.file("foo/BUILD", "load(':rule.bzl', 'gen')", "gen(name = 'a')");
+
+    update("//foo:a");
+    assertContainsEvent("DEBUG /workspace/foo/rule.bzl:3:3: f owner is //foo:a");
   }
 
   @Test
@@ -211,8 +236,24 @@ public class BuildViewTest extends BuildViewTestBase {
     assertThat(result.hasError()).isTrue();
     assertThat(recorder.events).hasSize(1);
     AnalysisFailureEvent event = recorder.events.get(0);
-    assertThat(event.getFailureReason().toString()).isEqualTo("//foo:bar");
+    assertThat(event.getLegacyFailureReason().toString()).isEqualTo("//foo:bar");
     assertThat(event.getFailedTarget().getLabel().toString()).isEqualTo("//foo:foo");
+  }
+
+  @Test
+  public void testAnalysisReportsDependencyCycle() throws Exception {
+    scratch.file("foo/BUILD", "sh_library(name='foo',deps=['//bar'])");
+    scratch.file("bar/BUILD", "sh_library(name='bar',deps=[':bar'])");
+
+    reporter.removeHandler(failFastHandler);
+    EventBus eventBus = new EventBus();
+    AnalysisFailureRecorder recorder = new AnalysisFailureRecorder();
+    eventBus.register(recorder);
+    AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//foo");
+    assertThat(result.hasError()).isTrue();
+    assertThat(recorder.events).hasSize(1);
+    AnalysisFailureEvent event = recorder.events.get(0);
+    assertThat(event.getConfigurationId()).isNotEqualTo(NullConfiguration.INSTANCE.getEventId());
   }
 
   @Test
@@ -234,50 +275,19 @@ public class BuildViewTest extends BuildViewTestBase {
     assertThat(result.hasError()).isTrue();
     assertThat(recorder.events)
         .contains(
-            Pair.of(Label.parseAbsolute("//pkg:foo"), Label.parseAbsolute("//nopackage:missing")));
+            new LoadingFailureEvent(
+                Label.parseAbsolute("//pkg:foo", ImmutableMap.of()),
+                Label.parseAbsolute("//nopackage:missing", ImmutableMap.of())));
     assertContainsEvent("missing value for mandatory attribute 'outs'");
     assertContainsEvent("no such package 'nopackage'");
     // Skyframe correctly reports the other root cause as the genrule itself (since it is
     // missing attributes).
     assertThat(recorder.events).hasSize(2);
     assertThat(recorder.events)
-        .contains(Pair.of(Label.parseAbsolute("//pkg:foo"), Label.parseAbsolute("//pkg:foo")));
-  }
-
-  @Test
-  public void testConvolutedLoadRootCauseAnalysis() throws Exception {
-    // You need license declarations in third_party. We use this constraint to
-    // create targets that are loadable, but are in error.
-    scratch.file("third_party/first/BUILD",
-        "sh_library(name='first', deps=['//third_party/second'], licenses=['notice'])");
-    scratch.file("third_party/second/BUILD",
-        "sh_library(name='second', deps=['//third_party/third'], licenses=['notice'])");
-    scratch.file("third_party/third/BUILD",
-        "sh_library(name='third', deps=['//third_party/fourth'], licenses=['notice'])");
-    scratch.file("third_party/fourth/BUILD",
-        "sh_library(name='fourth', deps=['//third_party/fifth'])");
-    scratch.file("third_party/fifth/BUILD",
-        "sh_library(name='fifth', licenses=['notice'])");
-    reporter.removeHandler(failFastHandler);
-    EventBus eventBus = new EventBus();
-    LoadingFailureRecorder recorder = new LoadingFailureRecorder();
-    eventBus.register(recorder);
-    // Note: no need to run analysis for a loading failure.
-    AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING),
-        "//third_party/first", "//third_party/third");
-    assertThat(result.hasError()).isTrue();
-    assertThat(recorder.events).hasSize(2);
-    assertWithMessage(recorder.events.toString())
-        .that(
-            recorder.events.contains(
-                Pair.of(
-                    Label.parseAbsolute("//third_party/first"),
-                    Label.parseAbsolute("//third_party/fourth"))))
-        .isTrue();
-    assertThat(recorder.events)
-        .contains(Pair.of(
-            Label.parseAbsolute("//third_party/third"),
-            Label.parseAbsolute("//third_party/fourth")));
+        .contains(
+            new LoadingFailureEvent(
+                Label.parseAbsolute("//pkg:foo", ImmutableMap.of()),
+                Label.parseAbsolute("//pkg:foo", ImmutableMap.of())));
   }
 
   @Test
@@ -295,13 +305,16 @@ public class BuildViewTest extends BuildViewTestBase {
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//gp");
     assertThat(result.hasError()).isTrue();
     assertThat(recorder.events).hasSize(2);
-    assertWithMessage(recorder.events.toString())
-        .that(
-            recorder.events.contains(
-                Pair.of(Label.parseAbsolute("//gp"), Label.parseAbsolute("//c1:not"))))
-        .isTrue();
     assertThat(recorder.events)
-        .contains(Pair.of(Label.parseAbsolute("//gp"), Label.parseAbsolute("//c2:not")));
+        .contains(
+            new LoadingFailureEvent(
+                Label.parseAbsolute("//gp", ImmutableMap.of()),
+                Label.parseAbsolute("//c1:not", ImmutableMap.of())));
+    assertThat(recorder.events)
+        .contains(
+            new LoadingFailureEvent(
+                Label.parseAbsolute("//gp", ImmutableMap.of()),
+                Label.parseAbsolute("//c2:not", ImmutableMap.of())));
   }
 
   /**
@@ -329,32 +342,6 @@ public class BuildViewTest extends BuildViewTestBase {
   }
 
   @Test
-  public void topLevelConfigurationHook() throws Exception {
-    setConfigFragmentsAvailableInTests(TestConfigFragments.FragmentWithTopLevelConfigHook1Factory);
-    scratch.file(
-        "package/BUILD",
-        "sh_binary(name = 'binary', srcs = ['binary.sh'])");
-    ConfiguredTarget ct = Iterables.getOnlyElement(update("//package:binary").getTargetsToBuild());
-    BuildConfiguration.Options options =
-        ct.getConfiguration().getOptions().get(BuildConfiguration.Options.class);
-    assertThat(options.hostCpu).isEqualTo("$CONFIG HOOK 1");
-  }
-
-  @Test
-  public void topLevelComposedConfigurationHooks() throws Exception {
-    setConfigFragmentsAvailableInTests(
-        TestConfigFragments.FragmentWithTopLevelConfigHook1Factory,
-        TestConfigFragments.FragmentWithTopLevelConfigHook2Factory);
-    scratch.file(
-        "package/BUILD",
-        "sh_binary(name = 'binary', srcs = ['binary.sh'])");
-    ConfiguredTarget ct = Iterables.getOnlyElement(update("//package:binary").getTargetsToBuild());
-    BuildConfiguration.Options options =
-        ct.getConfiguration().getOptions().get(BuildConfiguration.Options.class);
-    assertThat(options.hostCpu).isEqualTo("$CONFIG HOOK 1$CONFIG HOOK 2");
-  }
-
-  @Test
   public void testGetDirectPrerequisites() throws Exception {
     scratch.file(
         "package/BUILD",
@@ -364,39 +351,45 @@ public class BuildViewTest extends BuildViewTestBase {
     ConfiguredTarget top = getConfiguredTarget("//package:top", getTargetConfiguration());
     Iterable<ConfiguredTarget> targets = getView().getDirectPrerequisitesForTesting(
         reporter, top, getBuildConfigurationCollection());
-    Iterable<Label> labels =
-        Iterables.transform(
-            targets,
-            new Function<ConfiguredTarget, Label>() {
-              @Override
-              public Label apply(ConfiguredTarget target) {
-                return target.getLabel();
-              }
-            });
+    Iterable<Label> labels = Iterables.transform(targets, target -> target.getLabel());
     assertThat(labels)
         .containsExactly(
-            Label.parseAbsolute("//package:inner"), Label.parseAbsolute("//package:file"));
+            Label.parseAbsolute("//package:inner", ImmutableMap.of()),
+            Label.parseAbsolute("//package:file", ImmutableMap.of()));
   }
 
   @Test
   public void testGetDirectPrerequisiteDependencies() throws Exception {
+    // Override the trimming transition to not distort the results.
+    ConfiguredRuleClassProvider.Builder builder =
+        new ConfiguredRuleClassProvider.Builder();
+    TestRuleClassProvider.addStandardRules(builder);
+    builder.overrideTrimmingTransitionFactoryForTesting((rule) -> NoTransition.INSTANCE);
+    useRuleClassProvider(builder.build());
+
+    update();
+
     scratch.file(
         "package/BUILD",
         "filegroup(name='top', srcs=[':inner', 'file'])",
         "sh_binary(name='inner', srcs=['script.sh'])");
-    update("//package:top");
-    ConfiguredTarget top = getConfiguredTarget("//package:top", getTargetConfiguration());
-    Iterable<Dependency> targets = getView().getDirectPrerequisiteDependenciesForTesting(
-        reporter, top, getBuildConfigurationCollection(), /*toolchainContext=*/ null).values();
+    ConfiguredTarget top = Iterables.getOnlyElement(update("//package:top").getTargetsToBuild());
+    Iterable<Dependency> targets =
+        getView()
+            .getDirectPrerequisiteDependenciesForTesting(
+                reporter, top, getBuildConfigurationCollection(), /*toolchainContext=*/ null)
+            .values();
 
     Dependency innerDependency =
         Dependency.withTransitionAndAspects(
-            Label.parseAbsolute("//package:inner"),
-            Attribute.ConfigurationTransition.NONE,
+            Label.parseAbsolute("//package:inner", ImmutableMap.of()),
+            NoTransition.INSTANCE,
             AspectCollection.EMPTY);
     Dependency fileDependency =
-        Dependency.withNullConfiguration(
-            Label.parseAbsolute("//package:file"));
+        Dependency.withTransitionAndAspects(
+            Label.parseAbsolute("//package:file", ImmutableMap.of()),
+            NullTransition.INSTANCE,
+            AspectCollection.EMPTY);
 
     assertThat(targets).containsExactly(innerDependency, fileDependency);
   }
@@ -409,18 +402,16 @@ public class BuildViewTest extends BuildViewTestBase {
   public void testConfigurationShortName() throws Exception {
     // Check that output directory name is still the name, otherwise this test is not testing what
     // we expect.
-    BuildConfiguration.Options options = Options.getDefaults(BuildConfiguration.Options.class);
+    CoreOptions options = Options.getDefaults(CoreOptions.class);
     options.outputDirectoryName = "/home/wonkaw/wonka_chocolate/factory/out";
     assertWithMessage("The flag's name may have been changed; this test may need to be updated.")
         .that(options.asMap().get("output directory name"))
         .isEqualTo("/home/wonkaw/wonka_chocolate/factory/out");
 
-    try {
-      useConfiguration("--output directory name=foo");
-      fail();
-    } catch (OptionsParsingException e) {
-      assertThat(e).hasMessage("Unrecognized option: --output directory name=foo");
-    }
+    OptionsParsingException e =
+        assertThrows(
+            OptionsParsingException.class, () -> useConfiguration("--output directory name=foo"));
+    assertThat(e).hasMessageThat().isEqualTo("Unrecognized option: --output directory name=foo");
   }
 
   @Test
@@ -437,6 +428,10 @@ public class BuildViewTest extends BuildViewTestBase {
   // Regression test: "output_filter broken (but in a different way)"
   @Test
   public void testOutputFilterSeeWarning() throws Exception {
+    if (defaultFlags().contains(Flag.TRIMMED_CONFIGURATIONS)) {
+      // TODO(b/129599328): fix or justify disabling
+      return;
+    }
     runAnalysisWithOutputFilter(Pattern.compile(".*"));
     assertContainsEvent("please do not import '//java/a:A.java'");
   }
@@ -448,8 +443,43 @@ public class BuildViewTest extends BuildViewTestBase {
       // TODO(b/67651960): fix or justify disabling.
       return;
     }
+    if (defaultFlags().contains(Flag.TRIMMED_CONFIGURATIONS)) {
+      // TODO(b/129599328): fix or justify disabling
+      return;
+    }
     runAnalysisWithOutputFilter(Pattern.compile("^//java/c"));
     assertNoEvents();
+  }
+
+  @Test
+  public void testOutputFilterWithDebug() throws Exception {
+    if (defaultFlags().contains(Flag.TRIMMED_CONFIGURATIONS)) {
+      // TODO(b/129599328): fix or justify disabling
+      return;
+    }
+    scratch.file(
+        "java/a/BUILD",
+        "java_library(name = 'a',",
+        "  srcs = ['A.java'],",
+        "  deps = ['//java/b'])");
+    scratch.file(
+        "java/b/rules.bzl",
+        "def _impl(ctx):",
+        "  print('debug in b')",
+        "  ctx.actions.write(",
+        "    output = ctx.outputs.my_output,",
+        "    content = 'foo',",
+        "  )",
+        "gen = rule(implementation = _impl, outputs = {'my_output': 'B.java'})");
+    scratch.file(
+        "java/b/BUILD",
+        "load(':rules.bzl', 'gen')",
+        "gen(name='src')",
+        "java_library(name = 'b', srcs = [':src'])");
+    reporter.setOutputFilter(RegexOutputFilter.forPattern(Pattern.compile("^//java/a")));
+
+    update("//java/a:a");
+    assertContainsEvent("DEBUG /workspace/java/b/rules.bzl:2:3: debug in b");
   }
 
   @Test
@@ -500,18 +530,8 @@ public class BuildViewTest extends BuildViewTestBase {
         "sh_library(name = 'cycle2', deps = ['cycle1'])");
     scratch.file("badbuild/BUILD", "");
     reporter.removeHandler(failFastHandler);
-    injectGraphListenerForTesting(
-        new Listener() {
-          @Override
-          public void accept(SkyKey key, EventType type, Order order, Object context) {}
-        },
-        /*deterministic=*/ true);
-    try {
-      update("//foo:top");
-      fail();
-    } catch (ViewCreationFailedException e) {
-      // Expected.
-    }
+    injectGraphListenerForTesting(Listener.NULL_LISTENER, /*deterministic=*/ true);
+    assertThrows(ViewCreationFailedException.class, () -> update("//foo:top"));
     assertContainsEvent("no such target '//badbuild:isweird': target 'isweird' not declared in "
         + "package 'badbuild'");
     assertContainsEvent("and referenced by '//foo:bad'");
@@ -553,12 +573,7 @@ public class BuildViewTest extends BuildViewTestBase {
     scratch.file("foo/BUILD",
         "cc_binary(name = 'foo', linkshared = 1, srcs = ['foo.cc'])");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//foo:foo");
-      fail(); // Expected ViewCreationFailedException.
-    } catch (ViewCreationFailedException e) {
-      // ok.
-    }
+    assertThrows(ViewCreationFailedException.class, () -> update("//foo:foo"));
   }
 
   @Test
@@ -583,9 +598,8 @@ public class BuildViewTest extends BuildViewTestBase {
         "genrule(name='a', ",
         "        cmd='',",
         "        outs=['a.out'])");
-    update("//pkg:a.out");
     OutputFileConfiguredTarget outputCT = (OutputFileConfiguredTarget)
-        getConfiguredTarget("//pkg:a.out");
+        Iterables.getOnlyElement(update("//pkg:a.out").getTargetsToBuild());
     Artifact outputArtifact = outputCT.getArtifact();
     Action action = getGeneratingAction(outputArtifact);
     assertThat(action).isNotNull();
@@ -595,7 +609,7 @@ public class BuildViewTest extends BuildViewTestBase {
         "        outs=['a.out'])");
     update("//pkg:a.out");
     assertWithMessage("Actions should not be compatible")
-        .that(Actions.canBeShared(action, getGeneratingAction(outputArtifact)))
+        .that(Actions.canBeShared(actionKeyContext, action, getGeneratingAction(outputArtifact)))
         .isFalse();
   }
 
@@ -615,6 +629,10 @@ public class BuildViewTest extends BuildViewTestBase {
    */
   @Test
   public void testMultiBuildInvalidationRevalidation() throws Exception {
+    if (defaultFlags().contains(Flag.TRIMMED_CONFIGURATIONS)) {
+      // TODO(b/129599328): fix or justify disabling
+      return;
+    }
     scratch.file("java/a/A.java", "bla1");
     scratch.file("java/a/C.java", "bla2");
     scratch.file("java/a/BUILD",
@@ -622,8 +640,7 @@ public class BuildViewTest extends BuildViewTestBase {
         "          srcs = glob(['A*.java']))",
         "java_test(name = 'B',",
         "          srcs = ['B.java'])");
-    update("//java/a:A");
-    ConfiguredTarget ct = getConfiguredTarget("//java/a:A");
+    ConfiguredTarget ct = Iterables.getOnlyElement(update("//java/a:A").getTargetsToBuild());
     scratch.deleteFile("java/a/C.java");
     update("//java/a:B");
     update("//java/a:A");
@@ -639,15 +656,13 @@ public class BuildViewTest extends BuildViewTestBase {
     scratch.file("parent/BUILD",
         "sh_library(name = 'foo',",
         "           srcs = ['//badpkg1:okay-target', '//okaypkg:transitively-bad-target'])");
-    Path badpkg1BuildFile = scratch.file("badpkg1/BUILD",
-        "exports_files(['okay-target'])",
-        "invalidbuildsyntax");
+    Path badpkg1BuildFile =
+        scratch.file("badpkg1/BUILD", "exports_files(['okay-target'])", "fail()");
     scratch.file("okaypkg/BUILD",
         "sh_library(name = 'transitively-bad-target',",
         "           srcs = ['//badpkg2:bad-target'])");
-    Path badpkg2BuildFile = scratch.file("badpkg2/BUILD",
-        "sh_library(name = 'bad-target')",
-        "invalidbuildsyntax");
+    Path badpkg2BuildFile =
+        scratch.file("badpkg2/BUILD", "sh_library(name = 'bad-target')", "fail()");
     update(defaultFlags().with(Flag.KEEP_GOING), "//parent:foo");
     assertThat(getFrequencyOfErrorsWithLocation(badpkg1BuildFile.asFragment(), eventCollector))
         .isEqualTo(1);
@@ -696,12 +711,9 @@ public class BuildViewTest extends BuildViewTestBase {
       return;
     }
     reporter.removeHandler(failFastHandler);
-    scratch.file("parent/BUILD",
-        "sh_library(name = 'a', deps = ['//child:b'])",
-        "parentisbad");
-    scratch.file("child/BUILD",
-        "sh_library(name = 'b')",
-        "childisbad");
+    scratch.file(
+        "parent/BUILD", "sh_library(name = 'a', deps = ['//child:b'])", "fail('parentisbad')");
+    scratch.file("child/BUILD", "sh_library(name = 'b')", "fail('childisbad')");
     update(defaultFlags().with(Flag.KEEP_GOING), "//parent:a");
     assertContainsEventWithFrequency("parentisbad", 1);
     assertContainsEventWithFrequency("childisbad", 1);
@@ -725,7 +737,7 @@ public class BuildViewTest extends BuildViewTestBase {
     Artifact aout = Iterables.getOnlyElement(
         target.getProvider(FileProvider.class).getFilesToBuild());
     Action action = getGeneratingAction(aout);
-    assertThat(action.getClass()).isSameAs(FailAction.class);
+    assertThat(action.getClass()).isSameInstanceAs(FailAction.class);
   }
 
   /**
@@ -738,10 +750,10 @@ public class BuildViewTest extends BuildViewTestBase {
     // Then update the BUILD file and re-analyze.
     scratch.file("actions_not_registered/BUILD",
         "cc_binary(name = 'foo', srcs = ['foo.cc'])");
-    update("//actions_not_registered:foo");
-    Artifact fooOut = Iterables.getOnlyElement(
-        getConfiguredTarget("//actions_not_registered:foo")
-            .getProvider(FileProvider.class).getFilesToBuild());
+    ConfiguredTarget foo =
+        Iterables.getOnlyElement(update("//actions_not_registered:foo").getTargetsToBuild());
+    Artifact fooOut =
+        Iterables.getOnlyElement(foo.getProvider(FileProvider.class).getFilesToBuild());
     assertThat(getActionGraph().getGeneratingAction(fooOut)).isNotNull();
     clearAnalysisResult();
 
@@ -750,12 +762,8 @@ public class BuildViewTest extends BuildViewTestBase {
 
     reporter.removeHandler(failFastHandler);
 
-    try {
-      update("//actions_not_registered:foo");
-      fail("This build should fail because: 'linkshared' used in non-shared library");
-    } catch (ViewCreationFailedException e) {
-      assertThat(getActionGraph().getGeneratingAction(fooOut)).isNull();
-    }
+    assertThrows(ViewCreationFailedException.class, () -> update("//actions_not_registered:foo"));
+    assertThat(getActionGraph().getGeneratingAction(fooOut)).isNull();
   }
 
   /**
@@ -792,7 +800,7 @@ public class BuildViewTest extends BuildViewTestBase {
     Artifact aout = Iterables.getOnlyElement(
         target.getProvider(FileProvider.class).getFilesToBuild());
     Action action = getGeneratingAction(aout);
-    assertThat(action.getClass()).isSameAs(FailAction.class);
+    assertThat(action.getClass()).isSameInstanceAs(FailAction.class);
   }
 
   /**
@@ -823,17 +831,14 @@ public class BuildViewTest extends BuildViewTestBase {
     eventBus.register(recorder);
     AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//gp");
     assertThat(result.hasError()).isTrue();
-    assertThat(recorder.events).hasSize(2);
-    assertWithMessage(recorder.events.toString())
-        .that(
-            recorder.events.contains(
-                Pair.of(Label.parseAbsolute("//gp"), Label.parseAbsolute("//cycles1"))))
-        .isTrue();
-    assertWithMessage(recorder.events.toString())
-        .that(
-            recorder.events.contains(
-                Pair.of(Label.parseAbsolute("//gp"), Label.parseAbsolute("//cycles2"))))
-        .isTrue();
+    assertThat(recorder.events)
+        .containsExactly(
+            new LoadingFailureEvent(
+                Label.parseAbsolute("//gp", ImmutableMap.of()),
+                Label.parseAbsolute("//cycles1", ImmutableMap.of())),
+            new LoadingFailureEvent(
+                Label.parseAbsolute("//gp", ImmutableMap.of()),
+                Label.parseAbsolute("//cycles2", ImmutableMap.of())));
   }
 
   /**
@@ -863,22 +868,15 @@ public class BuildViewTest extends BuildViewTestBase {
         "sh_library(name = 'b')",
         "sh_library(name = 'z')");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//foo:zquery");
-      fail();
-    } catch (ViewCreationFailedException e) {
-      assertThat(e)
-          .hasMessageThat()
-          .contains("Analysis of target '//foo:zquery' failed; build aborted");
-    }
-    try {
-      update("//foo:query");
-      fail();
-    } catch (ViewCreationFailedException e) {
-      assertThat(e)
-          .hasMessageThat()
-          .contains("Analysis of target '//foo:query' failed; build aborted");
-    }
+    ViewCreationFailedException e =
+        assertThrows(ViewCreationFailedException.class, () -> update("//foo:zquery"));
+    assertThat(e)
+        .hasMessageThat()
+        .contains("Analysis of target '//foo:zquery' failed; build aborted");
+    e = assertThrows(ViewCreationFailedException.class, () -> update("//foo:query"));
+    assertThat(e)
+        .hasMessageThat()
+        .contains("Analysis of target '//foo:query' failed; build aborted");
   }
 
   /**
@@ -894,18 +892,16 @@ public class BuildViewTest extends BuildViewTestBase {
     }
     useConfiguration("--cpu=k8");
     reporter.removeHandler(failFastHandler); // Expect errors from action conflicts.
-    scratch.file("conflict/BUILD",
+    scratch.file(
+        "conflict/BUILD",
         "config_setting(name = 'a', values = {'test_arg': 'a'})",
         "cc_library(name='x', srcs=select({':a': ['a.cc'], '//conditions:default': ['foo.cc']}))",
-        "cc_binary(name='_objs/x/conflict/foo.pic.o', srcs=['bar.cc'])");
-    AnalysisResult result = update(
-        defaultFlags().with(Flag.KEEP_GOING),
-        "//conflict:_objs/x/conflict/foo.pic.o",
-        "//conflict:x");
+        "cc_binary(name='_objs/x/foo.o', srcs=['bar.cc'])");
+    AnalysisResult result =
+        update(defaultFlags().with(Flag.KEEP_GOING), "//conflict:_objs/x/foo.o", "//conflict:x");
     assertThat(result.hasError()).isTrue();
     // Expect to reach this line without a Precondition-triggered NullPointerException.
-    assertContainsEvent(
-        "file 'conflict/_objs/x/conflict/foo.pic.o' is generated by these conflicting actions");
+    assertContainsEvent("file 'conflict/_objs/x/foo.o' is generated by these conflicting actions");
   }
 
   @Test
@@ -931,14 +927,11 @@ public class BuildViewTest extends BuildViewTestBase {
     // the cc_binary launcher.
     useConfiguration("--java_launcher=//foo:cpp");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//foo:java", "//foo:cpp");
-      fail();
-    } catch (ViewCreationFailedException expected) {
-      assertThat(expected)
-          .hasMessageThat()
-          .matches("Analysis of target '//foo:(java|cpp)' failed; build aborted.*");
-    }
+    ViewCreationFailedException expected =
+        assertThrows(ViewCreationFailedException.class, () -> update("//foo:java", "//foo:cpp"));
+    assertThat(expected)
+        .hasMessageThat()
+        .matches("Analysis of target '//foo:(java|cpp)' failed; build aborted.*");
     assertContainsEvent("cycle in dependency graph");
   }
 
@@ -949,14 +942,11 @@ public class BuildViewTest extends BuildViewTestBase {
     scratch.file("bar/BUILD",
         "BROKEN BROKEN BROKEN!!!");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//foo:test");
-      fail();
-    } catch (ViewCreationFailedException expected) {
-      assertThat(expected)
-          .hasMessageThat()
-          .matches("Analysis of target '//foo:test' failed; build aborted.*");
-    }
+    ViewCreationFailedException expected =
+        assertThrows(ViewCreationFailedException.class, () -> update("//foo:test"));
+    assertThat(expected)
+        .hasMessageThat()
+        .matches("Analysis of target '//foo:test' failed; build aborted.*");
   }
 
   /**
@@ -973,15 +963,12 @@ public class BuildViewTest extends BuildViewTestBase {
         "cc_library(name = 'foo', srcs = ['foo.cc'], deps = [':bar'])",
         "cc_library(name = 'bar', srcs = ['bar.cc'], deps = [':foo'])");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//cycle:foo");
-      fail();
-    } catch (ViewCreationFailedException expected) {
-      assertContainsEvent("in cc_library rule //cycle:foo: cycle in dependency graph:");
-      assertThat(expected)
-          .hasMessageThat()
-          .contains("Analysis of target '//cycle:foo' failed; build aborted");
-    }
+    ViewCreationFailedException expected =
+        assertThrows(ViewCreationFailedException.class, () -> update("//cycle:foo"));
+    assertContainsEvent("in cc_library rule //cycle:foo: cycle in dependency graph:");
+    assertThat(expected)
+        .hasMessageThat()
+        .contains("Analysis of target '//cycle:foo' failed; build aborted");
   }
 
   /**
@@ -1025,33 +1012,6 @@ public class BuildViewTest extends BuildViewTestBase {
   }
 
   @Test
-  public void testCircularDependencyWithLateBoundLabel() throws Exception {
-    if (getInternalTestExecutionMode() != TestConstants.InternalTestExecutionMode.NORMAL) {
-      // TODO(b/67412276): handle cycles properly.
-      return;
-    }
-    scratch.file("cycle/BUILD",
-        "cc_library(name = 'foo', deps = [':bar'])",
-        "cc_library(name = 'bar')");
-    useConfiguration("--experimental_stl=//cycle:foo");
-    reporter.removeHandler(failFastHandler);
-    EventBus eventBus = new EventBus();
-    LoadingFailureRecorder loadingFailureRecorder = new LoadingFailureRecorder();
-    AnalysisFailureRecorder analysisFailureRecorder = new AnalysisFailureRecorder();
-    eventBus.register(loadingFailureRecorder);
-    eventBus.register(analysisFailureRecorder);
-    AnalysisResult result = update(eventBus, defaultFlags().with(Flag.KEEP_GOING), "//cycle:foo");
-    assertThat(result.hasError()).isTrue();
-    assertContainsEvent("in cc_library rule //cycle:foo: cycle in dependency graph:");
-    // This needs to be reported as an anlysis-phase cycle; the cycle only occurs due to the stl
-    // command-line option, which is part of the configuration, and which is used due to the
-    // late-bound label.
-    assertThat(Iterables.transform(analysisFailureRecorder.events, ANALYSIS_EVENT_TO_STRING_PAIR))
-        .containsExactly(Pair.of("//cycle:foo", "//cycle:foo"));
-    assertThat(loadingFailureRecorder.events).isEmpty();
-  }
-
-  @Test
   public void testLoadingErrorReportedCorrectly() throws Exception {
     scratch.file("a/BUILD", "cc_library(name='a')");
     scratch.file("b/BUILD", "cc_library(name='b', deps = ['//missing:lib'])");
@@ -1064,79 +1024,14 @@ public class BuildViewTest extends BuildViewTestBase {
   }
 
   @Test
-  public void testBadLabelInConfiguration() throws Exception {
-    useConfiguration("--crosstool_top=//third_party/crosstool/v2");
-    reporter.removeHandler(failFastHandler);
-    try {
-      update(defaultFlags().with(Flag.KEEP_GOING));
-      fail();
-    } catch (InvalidConfigurationException e) {
-      assertThat(e).hasMessageThat().contains("third_party/crosstool/v2");
-    }
-  }
-
-  @Test
-  public void testMissingFdoOptimize() throws Exception {
-    // The fdo_optimize flag uses a different code path, because it also accepts paths.
-    useConfiguration("--fdo_optimize=//does/not/exist");
-    reporter.removeHandler(failFastHandler);
-    try {
-      update(defaultFlags().with(Flag.KEEP_GOING));
-      fail();
-    } catch (InvalidConfigurationException e) {
-      assertContainsEvent(
-          "no such package 'does/not/exist': BUILD file not found on package path");
-    }
-  }
-
-  @Test
-  public void testMissingJavabase() throws Exception {
-    // The javabase flag uses yet another code path with its own redirection logic on top of the
-    // redirect chaser.
-    scratch.file("jdk/BUILD",
-        "filegroup(name = 'jdk', srcs = [",
-        "    '//does/not/exist:a-piii', '//does/not/exist:b-k8', '//does/not/exist:c-default'])");
-    scratch.file("does/not/exist/BUILD");
-    useConfiguration("--javabase=//jdk");
-    reporter.removeHandler(failFastHandler);
-    try {
-      update(defaultFlags().with(Flag.KEEP_GOING));
-      fail();
-    } catch (InvalidConfigurationException e) {
-      // Expected
-    }
-  }
-
-  @Test
-  public void testMissingXcodeVersion() throws Exception {
-    // The xcode_version flag uses yet another code path on top of the redirect chaser.
-    // Note that the redirect chaser throws if it can't find a package, but doesn't throw if it
-    // can't find a label in a package - that's why we use an empty package here.
-    scratch.file("xcode/BUILD");
-    useConfiguration("--xcode_version=1.2", "--xcode_version_config=//xcode:does_not_exist");
-    reporter.removeHandler(failFastHandler);
-    try {
-      update(defaultFlags().with(Flag.KEEP_GOING));
-      fail();
-    } catch (InvalidConfigurationException e) {
-      assertThat(e).hasMessageThat().contains("//xcode:does_not_exist");
-    }
-  }
-
-
-  @Test
   public void testVisibilityReferencesNonexistentPackage() throws Exception {
     scratch.file("z/a/BUILD",
         "py_library(name='a', visibility=['//nonexistent:nothing'])");
     scratch.file("z/b/BUILD",
         "py_library(name='b', deps=['//z/a:a'])");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//z/b:b");
-      fail();
-    } catch (ViewCreationFailedException expected) {
-      assertContainsEvent("no such package 'nonexistent'");
-    }
+    assertThrows(ViewCreationFailedException.class, () -> update("//z/b:b"));
+    assertContainsEvent("no such package 'nonexistent'");
   }
 
   // regression test ("java.lang.IllegalStateException: cannot happen")
@@ -1148,12 +1043,8 @@ public class BuildViewTest extends BuildViewTestBase {
     scratch.file("z/b/BUILD",
         "py_library(name='b', deps=['//z/a:alib'])");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//z/b:b");
-      fail();
-    } catch (ViewCreationFailedException expected) {
-      assertContainsEvent("no such package 'b'");
-    }
+    assertThrows(ViewCreationFailedException.class, () -> update("//z/b:b"));
+    assertContainsEvent("no such package 'b'");
   }
 
   @Test
@@ -1164,16 +1055,10 @@ public class BuildViewTest extends BuildViewTestBase {
     }
     scratch.file("parent/BUILD",
         "sh_library(name = 'a', deps = ['//child:b'])");
-    scratch.file("child/BUILD",
-        "sh_library(name = 'b')",
-        "undefined_symbol");
+    scratch.file("child/BUILD", "sh_library(name = 'b')", "fail('some error')");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//parent:a");
-      fail();
-    } catch (ViewCreationFailedException expected) {
-    }
-    assertContainsEventWithFrequency("name 'undefined_symbol' is not defined", 1);
+    assertThrows(ViewCreationFailedException.class, () -> update("//parent:a"));
+    assertContainsEventWithFrequency("some error", 1);
     assertContainsEventWithFrequency(
         "Target '//child:b' contains an error and its package is in error and referenced "
         + "by '//parent:a'", 1);
@@ -1187,12 +1072,10 @@ public class BuildViewTest extends BuildViewTestBase {
     }
     scratch.file("parent/BUILD",
         "sh_library(name = 'a', deps = ['//child:b'])");
-    scratch.file("child/BUILD",
-        "sh_library(name = 'b')",
-        "undefined_symbol");
+    scratch.file("child/BUILD", "sh_library(name = 'b')", "fail('some error')");
     reporter.removeHandler(failFastHandler);
     update(defaultFlags().with(Flag.KEEP_GOING), "//parent:a");
-    assertContainsEventWithFrequency("name 'undefined_symbol' is not defined", 1);
+    assertContainsEventWithFrequency("some error", 1);
     assertContainsEventWithFrequency(
         "Target '//child:b' contains an error and its package is in error and referenced "
         + "by '//parent:a'", 1);
@@ -1206,20 +1089,13 @@ public class BuildViewTest extends BuildViewTestBase {
     }
     scratch.file("parent/BUILD",
         "sh_library(name = 'a', deps = ['//child:b'])");
-    scratch.file("child/BUILD",
-        "sh_library(name = 'b')",
-        "undefined_symbol");
+    scratch.file("child/BUILD", "sh_library(name = 'b')", "fail('some error')");
     scratch.file("okay/BUILD",
         "sh_binary(name = 'okay', srcs = ['okay.sh'])");
     useConfiguration("--experimental_action_listener=//parent:a");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//okay");
-      fail();
-    } catch (ViewCreationFailedException e) {
-      // Expected.
-    }
-    assertContainsEventWithFrequency("name 'undefined_symbol' is not defined", 1);
+    assertThrows(ViewCreationFailedException.class, () -> update("//okay"));
+    assertContainsEventWithFrequency("some error", 1);
     assertContainsEventWithFrequency(
         "Target '//child:b' contains an error and its package is in error and referenced "
         + "by '//parent:a'", 1);
@@ -1233,15 +1109,13 @@ public class BuildViewTest extends BuildViewTestBase {
     }
     scratch.file("parent/BUILD",
         "sh_library(name = 'a', deps = ['//child:b'])");
-    scratch.file("child/BUILD",
-        "sh_library(name = 'b')",
-        "undefined_symbol");
+    scratch.file("child/BUILD", "sh_library(name = 'b')", "fail('some error')");
     scratch.file("okay/BUILD",
         "sh_binary(name = 'okay', srcs = ['okay.sh'])");
     useConfiguration("--experimental_action_listener=//parent:a");
     reporter.removeHandler(failFastHandler);
     update(defaultFlags().with(Flag.KEEP_GOING), "//okay");
-    assertContainsEventWithFrequency("name 'undefined_symbol' is not defined", 1);
+    assertContainsEventWithFrequency("some error", 1);
     assertContainsEventWithFrequency(
         "Target '//child:b' contains an error and its package is in error and referenced "
         + "by '//parent:a'", 1);
@@ -1255,30 +1129,8 @@ public class BuildViewTest extends BuildViewTestBase {
     useConfiguration("--experimental_dynamic_configs=on");
     AnalysisResult res = update("//foo:x");
     ConfiguredTarget topLevelTarget = Iterables.getOnlyElement(res.getTargetsToBuild());
-    assertThat(topLevelTarget.getConfiguration().getAllFragments().keySet())
-        .containsExactly(ruleClassProvider.getUniversalFragment());
-  }
-
-  @Test
-  public void errorOnMissingDepFragments() throws Exception {
-    scratch.file("foo/BUILD",
-        "cc_library(",
-        "    name = 'ccbin', ",
-        "    srcs = ['c.cc'],",
-        "    data = [':javalib'])",
-        "java_library(",
-        "    name = 'javalib',",
-        "    srcs = ['javalib.java'])");
-    useConfiguration("--experimental_dynamic_configs=on", "--experimental_disable_jvm");
-    reporter.removeHandler(failFastHandler);
-    try {
-      update("//foo:ccbin");
-      fail();
-    } catch (ViewCreationFailedException e) {
-      // Expected.
-    }
-    assertContainsEvent("//foo:ccbin: dependency //foo:javalib from attribute \"data\" is missing "
-        + "required config fragments: Jvm");
+    assertThat(getConfiguration(topLevelTarget).getFragmentsMap().keySet())
+        .containsExactlyElementsIn(ruleClassProvider.getUniversalFragments());
   }
 
   /**
@@ -1301,18 +1153,18 @@ public class BuildViewTest extends BuildViewTestBase {
         "x/extension.bzl",
         "def _aspect1_impl(target, ctx):",
         "  ctx.actions.do_nothing(mnemonic='Mnemonic')",
-        "  return struct()",
+        "  return []",
         "aspect1 = aspect(_aspect1_impl, attr_aspects=['deps'])",
         "",
         "def _injecting_rule_impl(ctx):",
-        "  return struct()",
+        "  return []",
         "injecting_rule = rule(_injecting_rule_impl, ",
         "    attrs = { 'deps' : attr.label_list(aspects = [aspect1]) })",
         "",
         "def _action_rule_impl(ctx):",
         "  out = ctx.actions.declare_file(ctx.label.name)",
         "  ctx.actions.run_shell(outputs = [out], command = 'dontcare', mnemonic='Mnemonic')",
-        "  return struct()",
+        "  return []",
         "action_rule = rule(_action_rule_impl, attrs = { 'deps' : attr.label_list() })");
 
     scratch.file(
@@ -1320,10 +1172,10 @@ public class BuildViewTest extends BuildViewTestBase {
         "extra_action(name='xa', cmd='echo dont-care')",
         "action_listener(name='listener', mnemonics=['Mnemonic'], extra_actions=[':xa'])");
 
-    BuildView.AnalysisResult analysisResult = update("//x:a");
+    AnalysisResult analysisResult = update("//x:a");
 
     List<String> owners = new ArrayList<>();
-    for (Artifact artifact : analysisResult.getAdditionalArtifactsToBuild()) {
+    for (Artifact artifact : analysisResult.getTopLevelArtifactsToOwnerLabels().getArtifacts()) {
       if ("xa".equals(artifact.getExtension())) {
         owners.add(artifact.getOwnerLabel().toString());
       }
@@ -1337,12 +1189,7 @@ public class BuildViewTest extends BuildViewTestBase {
         "apple/BUILD",
         "py_library(name='apple', visibility=['//non:existent'])");
     reporter.removeHandler(failFastHandler);
-    try {
-      update("//apple");
-      fail();
-    } catch (ViewCreationFailedException e) {
-      // Expected.
-    }
+    assertThrows(ViewCreationFailedException.class, () -> update("//apple"));
     assertDoesNotContainEvent("implicitly depends upon");
   }
 
@@ -1373,6 +1220,43 @@ public class BuildViewTest extends BuildViewTestBase {
   }
 
   @Test
+  public void errorInImplicitDeps() throws Exception {
+    setRulesAvailableInTests(
+        (MockRule)
+            () -> {
+              try {
+                return MockRule.define(
+                    "custom_rule",
+                    attr("$implicit1", BuildType.LABEL_LIST)
+                        .defaultValue(
+                            ImmutableList.of(
+                                Label.parseAbsoluteUnchecked("//bad2:label"),
+                                Label.parseAbsoluteUnchecked("//foo:dep"))),
+                    attr("$implicit2", BuildType.LABEL)
+                        .defaultValue(Label.parseAbsoluteUnchecked("//bad:label")));
+              } catch (Type.ConversionException e) {
+                throw new IllegalStateException(e);
+              }
+            });
+    scratch.file("foo/BUILD", "custom_rule(name = 'foo')", "sh_library(name = 'dep')");
+    scratch.file(
+        "bad/BUILD",
+        "sh_library(name = 'other_label', nonexistent_attribute = 'blah')",
+        "sh_library(name = 'label')");
+    // bad2/BUILD is completely missing.
+    reporter.removeHandler(failFastHandler);
+    update(defaultFlags().with(Flag.KEEP_GOING), "//foo:foo");
+    assertContainsEvent(
+        "every rule of type custom_rule implicitly depends upon the target '//bad2:label', but"
+            + " this target could not be found because of: no such package 'bad2': BUILD file not"
+            + " found");
+    assertContainsEvent(
+        "every rule of type custom_rule implicitly depends upon the target '//bad:label', but this "
+            + "target could not be found because of: Target '//bad:label' contains an error and its"
+            + " package is in error");
+  }
+
+  @Test
   public void onlyAllowedRuleClassesWithWarning() throws Exception {
     setRulesAvailableInTests(
         (MockRule) () -> MockRule.define(
@@ -1396,14 +1280,34 @@ public class BuildViewTest extends BuildViewTestBase {
         + "//foo:foo: genrule rule '//foo:genlib' is unexpected here; continuing anyway");
   }
 
-  /** Runs the same test with the reduced loading phase. */
-  @TestSpec(size = Suite.SMALL_TESTS)
-  @RunWith(JUnit4.class)
-  public static class WithSkyframeLoadingPhase extends BuildViewTest {
-    @Override
-    protected FlagBuilder defaultFlags() {
-      return super.defaultFlags().with(Flag.SKYFRAME_LOADING_PHASE);
-    }
+  @Test
+  public void testExistingRule() throws Exception {
+    scratch.file(
+        "pkg/BUILD",
+        "genrule(name='foo', ",
+        "        cmd = '',",
+        "        srcs=['a.src'],",
+        "        outs=['a.out'])",
+        "print(existing_rule('foo')['kind'])",
+        "print(existing_rule('bar'))");
+    reporter.setOutputFilter(RegexOutputFilter.forPattern(Pattern.compile("^//pkg")));
+    update("//pkg:foo");
+    assertContainsEvent("DEBUG /workspace/pkg/BUILD:5:1: genrule");
+    assertContainsEvent("DEBUG /workspace/pkg/BUILD:6:1: None");
+  }
+
+  @Test
+  public void testExistingRules() throws Exception {
+    scratch.file(
+        "pkg/BUILD",
+        "genrule(name='foo', ",
+        "        cmd = '',",
+        "        srcs=['a.src'],",
+        "        outs=['a.out'])",
+        "print(existing_rules().keys())");
+    reporter.setOutputFilter(RegexOutputFilter.forPattern(Pattern.compile("^//pkg")));
+    update("//pkg:foo");
+    assertContainsEvent("DEBUG /workspace/pkg/BUILD:5:1: [\"foo\"]");
   }
 
   /** Runs the same test with trimmed configurations. */
@@ -1414,5 +1318,63 @@ public class BuildViewTest extends BuildViewTestBase {
     protected FlagBuilder defaultFlags() {
       return super.defaultFlags().with(Flag.TRIMMED_CONFIGURATIONS);
     }
+  }
+
+  /** Runs the same test with the Skyframe-based analysis prep. */
+  @TestSpec(size = Suite.SMALL_TESTS)
+  @RunWith(JUnit4.class)
+  public static class WithSkyframePrepareAnalysis extends BuildViewTest {
+    @Override
+    protected FlagBuilder defaultFlags() {
+      return super.defaultFlags().with(Flag.SKYFRAME_PREPARE_ANALYSIS);
+    }
+  }
+
+  /** Runs the same test with the Skyframe-based analysis prep and trimmed configurations. */
+  @TestSpec(size = Suite.SMALL_TESTS)
+  @RunWith(JUnit4.class)
+  public static class WithSkyframePrepareAnalysisAndTrimmedConfigurations extends BuildViewTest {
+    @Override
+    protected FlagBuilder defaultFlags() {
+      return super.defaultFlags()
+          .with(Flag.SKYFRAME_PREPARE_ANALYSIS)
+          .with(Flag.TRIMMED_CONFIGURATIONS);
+    }
+
+    // We can't recover from dependency cycles in TransitiveTargetFunction, so we disable the tests
+    // for now. We will likely have to fix this before we can enable the new code by default.
+    @Override
+    @Test
+    public void testCircularDependency() {
+    }
+
+    @Override
+    @Test
+    public void testErrorBelowCycleKeepGoing() {
+    }
+
+    @Override
+    @Test
+    public void testCircularDependencyBelowTwoTargets() {
+    }
+
+    @Override
+    @Test
+    public void testCycleReporting_TargetCycleWhenPackageInError() {
+    }
+
+    @Override
+    @Test
+    public void testCircularDependencyWithKeepGoing() {
+    }
+
+    @Override
+    @Test
+    public void testErrorBelowCycle() {
+    }
+
+    @Override
+    @Test
+    public void testAnalysisReportsDependencyCycle() {}
   }
 }

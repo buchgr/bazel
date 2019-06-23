@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.query2.engine;
 
 import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import java.util.Collection;
@@ -73,7 +74,7 @@ public interface QueryEnvironment<T> {
     }
 
     public QueryExpression getExpression() {
-      return expression;
+      return Preconditions.checkNotNull(expression, "Expected expression argument");
     }
 
     public String getWord() {
@@ -112,21 +113,45 @@ public interface QueryEnvironment<T> {
     Iterable<ArgumentType> getArgumentTypes();
 
     /**
-     * Returns a {@link QueryTaskFuture} representing the asynchronous application of this
-     * {@link QueryFunction} to the given {@code args}, feeding the results to the given
-     * {@code callback}.
+     * Returns a {@link QueryTaskFuture} representing the asynchronous application of this {@link
+     * QueryFunction} to the given {@code args}, feeding the results to the given {@code callback}.
      *
      * @param env the query environment this function is evaluated in.
      * @param expression the expression being evaluated.
+     * @param context the context relevant to the expression being evaluated. Contains the variable
+     *     bindings from {@link LetExpression}s.
      * @param args the input arguments. These are type-checked against the specification returned by
      *     {@link #getArgumentTypes} and {@link #getMandatoryArguments}
      */
     <T> QueryTaskFuture<Void> eval(
         QueryEnvironment<T> env,
-        VariableContext<T> context,
+        QueryExpressionContext<T> context,
         QueryExpression expression,
         List<Argument> args,
         Callback<T> callback);
+
+    /**
+     * A filtering function is one whose outputs are a subset of a single input argument. Returns
+     * the function as a filtering function if it is one and {@code null} otherwise.
+     */
+    @Nullable
+    default FilteringQueryFunction asFilteringFunction() {
+      return null;
+    }
+  }
+
+  /** A {@link QueryFunction} whose output is a subset of some input argument expression. */
+  abstract class FilteringQueryFunction implements QueryFunction {
+    @Override
+    public final FilteringQueryFunction asFilteringFunction() {
+      return this;
+    }
+
+    /** Returns a function representing the filter but inverted. */
+    public abstract FilteringQueryFunction invert();
+
+    /** Returns the argument index of the expression that is used as the input to be filtered. */
+    public abstract int getExpressionToFilterIndex();
   }
 
   /**
@@ -141,6 +166,43 @@ public interface QueryEnvironment<T> {
     public TargetNotFoundException(Throwable cause) {
       super(cause.getMessage(), cause);
     }
+  }
+
+  /**
+   * QueryEnvironment implementations can optionally also implement this interface to provide custom
+   * implementations of various operators.
+   */
+  interface CustomFunctionQueryEnvironment<T> extends QueryEnvironment<T> {
+    /**
+     * Computes the transitive closure of dependencies at most maxDepth away from the given targets,
+     * and calls the given callback with the results.
+     */
+    void deps(Iterable<T> from, int maxDepth, QueryExpression caller, Callback<T> callback)
+        throws InterruptedException, QueryException;
+
+    /** Computes some path from a node in 'from' to a node in 'to'. */
+    void somePath(Iterable<T> from, Iterable<T> to, QueryExpression caller, Callback<T> callback)
+        throws InterruptedException, QueryException;
+
+    /** Computes all paths from a node in 'from' to a node in 'to'. */
+    void allPaths(Iterable<T> from, Iterable<T> to, QueryExpression caller, Callback<T> callback)
+        throws InterruptedException, QueryException;
+
+    /**
+     * Computes all reverse dependencies of a node in 'from' with at most distance maxDepth within
+     * the transitive closure of 'universe'.
+     */
+    void rdeps(
+        Iterable<T> from,
+        Iterable<T> universe,
+        int maxDepth,
+        QueryExpression caller,
+        Callback<T> callback)
+        throws InterruptedException, QueryException;
+
+    /** Computes direct reverse deps of all nodes in 'from' within the same package. */
+    void samePkgDirectRdeps(Iterable<T> from, QueryExpression caller, Callback<T> callback)
+        throws InterruptedException, QueryException;
   }
 
   /** Returns all of the targets in <code>target</code>'s package, in some stable order. */
@@ -159,16 +221,19 @@ public interface QueryEnvironment<T> {
   T getOrCreate(T target);
 
   /** Returns the direct forward dependencies of the specified targets. */
-  Iterable<T> getFwdDeps(Iterable<T> targets) throws InterruptedException;
+  Iterable<T> getFwdDeps(Iterable<T> targets, QueryExpressionContext<T> context)
+      throws InterruptedException;
 
   /** Returns the direct reverse dependencies of the specified targets. */
-  Iterable<T> getReverseDeps(Iterable<T> targets) throws InterruptedException;
+  Iterable<T> getReverseDeps(Iterable<T> targets, QueryExpressionContext<T> context)
+      throws InterruptedException;
 
   /**
    * Returns the forward transitive closure of all of the targets in "targets". Callers must ensure
    * that {@link #buildTransitiveClosure} has been called for the relevant subgraph.
    */
-  ThreadSafeMutableSet<T> getTransitiveClosure(ThreadSafeMutableSet<T> targets)
+  ThreadSafeMutableSet<T> getTransitiveClosure(
+      ThreadSafeMutableSet<T> targets, QueryExpressionContext<T> context)
       throws InterruptedException;
 
   /**
@@ -185,11 +250,12 @@ public interface QueryEnvironment<T> {
                               int maxDepth) throws QueryException, InterruptedException;
 
   /** Returns the ordered sequence of nodes on some path from "from" to "to". */
-  Iterable<T> getNodesOnPath(T from, T to) throws InterruptedException;
+  Iterable<T> getNodesOnPath(T from, T to, QueryExpressionContext<T> context)
+      throws InterruptedException;
 
   /**
-   * Returns a {@link QueryTaskFuture} representing the asynchronous evaluation of the given
-   * {@code expr} and passing of the results to the given {@code callback}.
+   * Returns a {@link QueryTaskFuture} representing the asynchronous evaluation of the given {@code
+   * expr} and passing of the results to the given {@code callback}.
    *
    * <p>Note that this method should guarantee that the callback does not see repeated elements.
    *
@@ -197,14 +263,14 @@ public interface QueryEnvironment<T> {
    * @param callback The caller callback to notify when results are available
    */
   QueryTaskFuture<Void> eval(
-      QueryExpression expr, VariableContext<T> context, Callback<T> callback);
+      QueryExpression expr, QueryExpressionContext<T> context, Callback<T> callback);
 
   /**
    * An asynchronous computation of part of a query evaluation.
    *
-   * <p>A {@link QueryTaskFuture} can only be produced from scratch via {@link #eval},
-   * {@link #executeAsync}, {@link #immediateSuccessfulFuture}, {@link #immediateFailedFuture}, and
-   * {@link #immediateCancelledFuture}.
+   * <p>A {@link QueryTaskFuture} can only be produced from scratch via {@link #eval}, {@link
+   * #execute}, {@link #immediateSuccessfulFuture}, {@link #immediateFailedFuture}, and {@link
+   * #immediateCancelledFuture}.
    *
    * <p>Combined with the helper methods like {@link #whenSucceedsCall} below, this is very similar
    * to Guava's {@link ListenableFuture}.
@@ -272,15 +338,31 @@ public interface QueryEnvironment<T> {
     T call() throws QueryException, InterruptedException;
   }
 
+  /** Like Guava's AsyncCallable, but for {@link QueryTaskFuture}. */
+  @ThreadSafe
+  public interface QueryTaskAsyncCallable<T> {
+    /**
+     * Returns a {@link QueryTaskFuture} whose completion encapsulates the result of the
+     * computation.
+     */
+    QueryTaskFuture<T> call();
+  }
+
   /**
    * Returns a {@link QueryTaskFuture} representing the given computation {@code callable} being
    * performed asynchronously.
    *
-   * <p>The returned {@link QueryTaskFuture} is considered "successful" for purposes of
-   * {@link #whenSucceedsCall}, {@link #whenAllSucceed}, and
-   * {@link QueryTaskFuture#getIfSuccessful} iff {@code callable#call} does not throw an exception.
+   * <p>The returned {@link QueryTaskFuture} is considered "successful" for purposes of {@link
+   * #whenSucceedsCall}, {@link #whenAllSucceed}, and {@link QueryTaskFuture#getIfSuccessful} iff
+   * {@code callable#call} does not throw an exception.
    */
-  <R> QueryTaskFuture<R> executeAsync(QueryTaskCallable<R> callable);
+  <R> QueryTaskFuture<R> execute(QueryTaskCallable<R> callable);
+
+  /**
+   * Returns a {@link QueryTaskFuture} representing both the given {@code callable} being performed
+   * asynchronously and also the returned {@link QueryTaskFuture} returned therein being completed.
+   */
+  <R> QueryTaskFuture<R> executeAsync(QueryTaskAsyncCallable<R> callable);
 
   /**
    * Returns a {@link QueryTaskFuture} representing the given computation {@code callable} being
@@ -333,9 +415,9 @@ public interface QueryEnvironment<T> {
    * The sole package-protected subclass of {@link QueryTaskFuture}.
    *
    * <p>Do not subclass this class; it's an implementation detail. {@link QueryExpression} and
-   * {@link QueryFunction} implementations should use {@link #eval} and {@link #executeAsync} to get
-   * access to {@link QueryTaskFuture} instances and the then use the helper methods like
-   * {@link #whenSucceedsCall} to transform them.
+   * {@link QueryFunction} implementations should use {@link #eval} and {@link #execute} to get
+   * access to {@link QueryTaskFuture} instances and the then use the helper methods like {@link
+   * #whenSucceedsCall} to transform them.
    */
   abstract class QueryTaskFutureImplBase<T> extends QueryTaskFuture<T> {
     protected QueryTaskFutureImplBase() {
@@ -395,12 +477,16 @@ public interface QueryEnvironment<T> {
   void reportBuildFileError(QueryExpression expression, String msg) throws QueryException;
 
   /**
-   * Returns the set of BUILD, and optionally sub-included and Skylark files that define the given
-   * set of targets. Each such file is itself represented as a target in the result.
+   * Returns the set of BUILD, and optionally Skylark files that define the given set of targets.
+   * Each such file is itself represented as a target in the result.
    */
   ThreadSafeMutableSet<T> getBuildFiles(
-      QueryExpression caller, ThreadSafeMutableSet<T> nodes, boolean buildFiles,
-      boolean subincludes, boolean loads) throws QueryException, InterruptedException;
+      QueryExpression caller,
+      ThreadSafeMutableSet<T> nodes,
+      boolean buildFiles,
+      boolean loads,
+      QueryExpressionContext<T> context)
+      throws QueryException, InterruptedException;
 
   /**
    * Returns an object that can be used to query information about targets. Implementations should
@@ -501,7 +587,7 @@ public interface QueryEnvironment<T> {
      *
      * @throws IllegalArgumentException if target is not a rule (according to {@link #isRule})
      */
-    List<T> getLabelListAttr(
+    Iterable<T> getLabelListAttr(
         QueryExpression caller, T target, String attrName, String errorMsgPrefix)
         throws QueryException, InterruptedException;
 
@@ -557,6 +643,7 @@ public interface QueryEnvironment<T> {
           new LabelsFunction(),
           new LoadFilesFunction(),
           new RdepsFunction(),
+          new SamePkgDirectRdepsFunction(),
           new SiblingsFunction(),
           new SomeFunction(),
           new SomePathFunction(),

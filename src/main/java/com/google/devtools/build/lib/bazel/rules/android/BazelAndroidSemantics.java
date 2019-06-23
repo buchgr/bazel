@@ -18,18 +18,17 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.actions.CustomCommandLine;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
-import com.google.devtools.build.lib.analysis.actions.SymlinkAction;
+import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
+import com.google.devtools.build.lib.rules.android.AndroidBinary;
 import com.google.devtools.build.lib.rules.android.AndroidCommon;
 import com.google.devtools.build.lib.rules.android.AndroidConfiguration;
-import com.google.devtools.build.lib.rules.android.AndroidIdeInfoProvider;
-import com.google.devtools.build.lib.rules.android.AndroidRuleClasses;
+import com.google.devtools.build.lib.rules.android.AndroidDataContext;
 import com.google.devtools.build.lib.rules.android.AndroidSemantics;
-import com.google.devtools.build.lib.rules.android.ApplicationManifest;
-import com.google.devtools.build.lib.rules.android.ResourceApk;
 import com.google.devtools.build.lib.rules.java.JavaCompilationArtifacts;
 import com.google.devtools.build.lib.rules.java.JavaSemantics;
-import com.google.devtools.build.lib.rules.java.JavaTargetAttributes.Builder;
+import com.google.devtools.build.lib.rules.java.JavaTargetAttributes;
+import com.google.devtools.build.lib.rules.java.ProguardHelper.ProguardOutput;
 
 /**
  * Implementation of Bazel-specific behavior in Android rules.
@@ -41,46 +40,16 @@ public class BazelAndroidSemantics implements AndroidSemantics {
   }
 
   @Override
-  public void addNonLocalResources(
-      RuleContext ruleContext,
-      ResourceApk resourceApk,
-      AndroidIdeInfoProvider.Builder ideInfoProviderBuilder) {}
-
-  @Override
-  public ApplicationManifest getManifestForRule(RuleContext ruleContext)
-      throws RuleErrorException, InterruptedException {
-    ApplicationManifest result = ApplicationManifest.fromRule(ruleContext);
-    Artifact manifest = result.getManifest();
-    if (manifest.getFilename().equals("AndroidManifest.xml")) {
-      return result;
-    } else {
-      /**
-       * If the manifest file is not named AndroidManifest.xml, we create a symlink named
-       * AndroidManifest.xml to it. aapt requires the manifest to be named as such.
-       */
-      Artifact manifestSymlink =
-          ruleContext.getImplicitOutputArtifact(AndroidRuleClasses.ANDROID_SYMLINKED_MANIFEST);
-      SymlinkAction symlinkAction =
-          new SymlinkAction(
-              ruleContext.getActionOwner(), manifest, manifestSymlink, "Renaming Android manifest");
-      ruleContext.registerAction(symlinkAction);
-      return ApplicationManifest.fromExplicitManifest(ruleContext, manifestSymlink);
-    }
-  }
-
-  @Override
   public String getNativeDepsFileName() {
     return "nativedeps";
   }
 
   @Override
-  public ImmutableList<String> getJavacArguments(RuleContext ruleContext) {
+  public ImmutableList<String> getCompatibleJavacOptions(RuleContext ruleContext) {
     ImmutableList.Builder<String> javacArgs = new ImmutableList.Builder<>();
-
     if (!ruleContext.getFragment(AndroidConfiguration.class).desugarJava8()) {
       javacArgs.add("-source", "7", "-target", "7");
     }
-
     return javacArgs.build();
   }
 
@@ -93,15 +62,18 @@ public class BazelAndroidSemantics implements AndroidSemantics {
 
   @Override
   public ImmutableList<Artifact> getProguardSpecsForManifest(
-      RuleContext ruleContext, Artifact manifest) {
+      AndroidDataContext context, Artifact manifest) {
     return ImmutableList.of();
   }
 
   @Override
-  public void addCoverageSupport(RuleContext ruleContext, AndroidCommon common,
-      JavaSemantics javaSemantics, boolean forAndroidTest, Builder attributes,
-      JavaCompilationArtifacts.Builder artifactsBuilder) {
-  }
+  public void addCoverageSupport(
+      RuleContext ruleContext,
+      AndroidCommon common,
+      JavaSemantics javaSemantics,
+      boolean forAndroidTest,
+      JavaTargetAttributes.Builder attributes,
+      JavaCompilationArtifacts.Builder artifactsBuilder) {}
 
   @Override
   public ImmutableList<String> getAttributesWithJavaRuntimeDeps(RuleContext ruleContext) {
@@ -111,5 +83,32 @@ public class BazelAndroidSemantics implements AndroidSemantics {
       default:
         throw new UnsupportedOperationException("Only supported for top-level binaries");
     }
+  }
+
+  @Override
+  public Artifact getProguardOutputMap(RuleContext ruleContext) throws InterruptedException {
+    return ruleContext.getImplicitOutputArtifact(JavaSemantics.JAVA_BINARY_PROGUARD_MAP);
+  }
+
+  /** Bazel does not currently support any dex postprocessing. */
+  @Override
+  public AndroidBinary.DexPostprocessingOutput postprocessClassesDexZip(
+      RuleContext ruleContext,
+      NestedSetBuilder<Artifact> filesBuilder,
+      Artifact classesDexZip,
+      ProguardOutput proguardOutput)
+      throws InterruptedException {
+    return AndroidBinary.DexPostprocessingOutput.create(classesDexZip, proguardOutput.getMapping());
+  }
+
+  @Override
+  public void registerMigrationRuleError(RuleContext ruleContext) throws RuleErrorException {
+    ruleContext.attributeError(
+        "tags",
+        "The native Android rules are deprecated. Please use the Starlark Android rules by adding "
+            + "the following load statement to the BUILD file: "
+            + "load(\"@build_bazel_rules_android//android:rules.bzl\", \""
+            + ruleContext.getRule().getRuleClass()
+            + "\"). See http://github.com/bazelbuild/rules_android.");
   }
 }

@@ -15,13 +15,7 @@ package com.google.devtools.build.lib.syntax;
 
 import static com.google.common.truth.Truth.assertThat;
 
-import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget;
 import com.google.devtools.build.lib.events.Event;
-import com.google.devtools.build.lib.packages.Info;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.syntax.SkylarkList.MutableList;
-import com.google.devtools.build.lib.syntax.SkylarkList.Tuple;
 import com.google.devtools.build.lib.syntax.util.EvaluationTestCase;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -66,14 +60,7 @@ public class ValidationTest extends EvaluationTestCase {
 
   @Test
   public void testForbiddenToplevelIfStatement() throws Exception {
-    env = newEnvironmentWithSkylarkOptions("--incompatible_disallow_toplevel_if_statement=true");
     checkError("if statements are not allowed at the top level", "if True: a = 2");
-  }
-
-  @Test
-  public void testAllowedToplevelIfStatement() throws Exception {
-    env = newEnvironmentWithSkylarkOptions("--incompatible_disallow_toplevel_if_statement=false");
-    parse("if True: a = 5");
   }
 
   @Test
@@ -106,10 +93,12 @@ public class ValidationTest extends EvaluationTestCase {
 
   @Test
   public void testDefinitionByItself() throws Exception {
-    checkError("name 'a' is not defined", "a = a");
-    checkError("name 'a' is not defined", "a += a");
-    checkError("name 'a' is not defined", "[[] for a in a]");
-    checkError("name 'a' is not defined", "def f():", "  for a in a: pass");
+    // Variables are assumed to be statically visible in the block (even if they might not be
+    // initialized).
+    parse("a = a");
+    parse("a += a");
+    parse("[[] for a in a]");
+    parse("def f():", "  for a in a: pass");
   }
 
   @Test
@@ -118,8 +107,8 @@ public class ValidationTest extends EvaluationTestCase {
   }
 
   @Test
-  public void testBuiltinSymbolsAreReadOnly() throws Exception {
-    checkError("Variable repr is read only", "repr = 1");
+  public void testBuiltinsCanBeShadowed() throws Exception {
+    parse("repr = 1");
   }
 
   @Test
@@ -140,6 +129,23 @@ public class ValidationTest extends EvaluationTestCase {
   @Test
   public void testFunctionDefinedBelow() {
     parse("def bar(): a = foo() + 'a'", "def foo(): return 1\n");
+  }
+
+  @Test
+  public void testGlobalDefinedBelow() throws Exception {
+    env = newEnvironmentWithSkylarkOptions();
+    parse("def bar(): return x", "x = 5\n");
+  }
+
+  @Test
+  public void testLocalVariableDefinedBelow() throws Exception {
+    env = newEnvironmentWithSkylarkOptions();
+    parse(
+        "def bar():",
+        "    for i in range(5):",
+        "        if i > 2: return x",
+        "        x = i" // x is visible in the entire function block
+        );
   }
 
   @Test
@@ -225,7 +231,7 @@ public class ValidationTest extends EvaluationTestCase {
     setFailFast(false);
     parseFile(
         "def GenerateMapNames():", "  a = 2", "  b = [3, 4]", "  if a not b:", "    print(a)");
-    assertContainsError("syntax error at 'b': expected in");
+    assertContainsError("syntax error at 'b': expected 'in'");
     // Parser uses "$error" symbol for error recovery.
     // It should not be used in error messages.
     for (Event event : getEventCollector()) {
@@ -234,81 +240,28 @@ public class ValidationTest extends EvaluationTestCase {
   }
 
   @Test
-  public void testGetSkylarkType() throws Exception {
-    Class<?> emptyTupleClass = Tuple.empty().getClass();
-    Class<?> tupleClass = Tuple.of(1, "a", "b").getClass();
-    Class<?> mutableListClass = MutableList.copyOf(env, Tuple.of(1, 2, 3)).getClass();
-
-    assertThat(EvalUtils.getSkylarkType(mutableListClass)).isEqualTo(MutableList.class);
-    assertThat(MutableList.class.isAnnotationPresent(SkylarkModule.class)).isTrue();
-    assertThat(EvalUtils.getSkylarkType(emptyTupleClass)).isEqualTo(Tuple.class);
-    assertThat(EvalUtils.getSkylarkType(tupleClass)).isEqualTo(Tuple.class);
-
-    assertThat(EvalUtils.getSkylarkType(Info.class)).isEqualTo(Info.class);
-    try {
-      EvalUtils.getSkylarkType(ClassObject.class);
-      throw new Exception("Should have raised IllegalArgumentException exception");
-    } catch (IllegalArgumentException e) {
-      assertThat(e)
-          .hasMessageThat()
-          .contains(
-              "interface com.google.devtools.build.lib.syntax.ClassObject is not allowed "
-                  + "as a Skylark value");
-    }
+  public void testPositionalAfterStarArg() throws Exception {
+    checkError(
+        "positional argument is misplaced (positional arguments come first)",
+        "def fct(*args, **kwargs): pass",
+        "fct(1, *[2], 3)");
   }
 
   @Test
-  public void testSkylarkTypeEquivalence() throws Exception {
-    Class<?> emptyTupleClass = Tuple.empty().getClass();
-    Class<?> tupleClass = Tuple.of(1, "a", "b").getClass();
-    Class<?> mutableListClass = MutableList.copyOf(env, Tuple.of(1, 2, 3)).getClass();
-
-    assertThat(SkylarkType.of(mutableListClass)).isEqualTo(SkylarkType.LIST);
-    assertThat(SkylarkType.of(emptyTupleClass)).isEqualTo(SkylarkType.TUPLE);
-    assertThat(SkylarkType.of(tupleClass)).isEqualTo(SkylarkType.TUPLE);
-    assertThat(SkylarkType.TUPLE).isNotEqualTo(SkylarkType.LIST);
-
-    try {
-      SkylarkType.of(ClassObject.class);
-      throw new Exception("foo");
-    } catch (Exception e) {
-      assertThat(e)
-          .hasMessageThat()
-          .contains(
-              "interface com.google.devtools.build.lib.syntax.ClassObject "
-                  + "is not allowed as a Skylark value");
-    }
-
-    // Also test for these bazel classes, to avoid some regression.
-    // TODO(bazel-team): move to some other place to remove dependency of syntax tests on Artifact?
-    assertThat(SkylarkType.of(Artifact.SpecialArtifact.class))
-        .isEqualTo(SkylarkType.of(Artifact.class));
-    assertThat(SkylarkType.of(RuleConfiguredTarget.class)).isNotEqualTo(SkylarkType.of(Info.class));
+  public void testTwoStarArgs() throws Exception {
+    checkError(
+        "*arg argument is misplaced",
+        "def fct(*args, **kwargs):",
+        "  pass",
+        "fct(1, 2, 3, *[], *[])");
   }
 
   @Test
-  public void testSkylarkTypeInclusion() throws Exception {
-    assertThat(SkylarkType.INT.includes(SkylarkType.BOTTOM)).isTrue();
-    assertThat(SkylarkType.BOTTOM.includes(SkylarkType.INT)).isFalse();
-    assertThat(SkylarkType.TOP.includes(SkylarkType.INT)).isTrue();
-
-    SkylarkType combo1 = SkylarkType.Combination.of(SkylarkType.LIST, SkylarkType.INT);
-    assertThat(SkylarkType.LIST.includes(combo1)).isTrue();
-
-    SkylarkType union1 =
-        SkylarkType.Union.of(SkylarkType.DICT, SkylarkType.LIST);
-    assertThat(union1.includes(SkylarkType.DICT)).isTrue();
-    assertThat(union1.includes(combo1)).isTrue();
-    assertThat(union1.includes(SkylarkType.STRING)).isFalse();
-
-    SkylarkType union2 =
-        SkylarkType.Union.of(
-            SkylarkType.LIST, SkylarkType.DICT, SkylarkType.STRING, SkylarkType.INT);
-    SkylarkType inter1 = SkylarkType.intersection(union1, union2);
-    assertThat(inter1.includes(SkylarkType.DICT)).isTrue();
-    assertThat(inter1.includes(SkylarkType.LIST)).isTrue();
-    assertThat(inter1.includes(combo1)).isTrue();
-    assertThat(inter1.includes(SkylarkType.INT)).isFalse();
+  public void testKeywordArgAfterStarArg() throws Exception {
+    checkError(
+        "keyword argument is misplaced (keyword arguments must be before any *arg or **kwarg)",
+        "def fct(*args, **kwargs): pass",
+        "fct(1, *[2], a=3)");
   }
 
   private void parse(String... lines) {

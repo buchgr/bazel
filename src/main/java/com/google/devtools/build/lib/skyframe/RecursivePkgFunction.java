@@ -20,7 +20,6 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
-import com.google.devtools.build.lib.skyframe.RecursivePkgValue.RecursivePkgKey;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
@@ -74,6 +73,9 @@ public class RecursivePkgFunction implements SkyFunction {
       // Aggregate the transitive subpackages.
       for (SkyValue childValue : subdirectorySkyValues.values()) {
         consumer.addTransitivePackages(((RecursivePkgValue) childValue).getPackages());
+        if (((RecursivePkgValue) childValue).hasErrors()) {
+          consumer.addTransitiveErrors();
+        }
       }
       return consumer.createRecursivePkgValue();
     }
@@ -83,6 +85,7 @@ public class RecursivePkgFunction implements SkyFunction {
       implements RecursiveDirectoryTraversalFunction.PackageDirectoryConsumer {
 
     private final NestedSetBuilder<String> packages = new NestedSetBuilder<>(Order.STABLE_ORDER);
+    private boolean hasErrors = false;
 
     @Override
     public void notePackage(PathFragment pkgPath) {
@@ -90,17 +93,20 @@ public class RecursivePkgFunction implements SkyFunction {
     }
 
     @Override
-    public void notePackageError(NoSuchPackageException e) {
-      // Nothing to do because the RecursiveDirectoryTraversalFunction has already emitted an error
-      // event.
+    public void notePackageError(String noSuchPackageExceptionErrorMessage) {
+      hasErrors = true;
     }
 
     void addTransitivePackages(NestedSet<String> transitivePackages) {
       packages.addTransitive(transitivePackages);
     }
 
+    void addTransitiveErrors() {
+      hasErrors = true;
+    }
+
     RecursivePkgValue createRecursivePkgValue() {
-      return RecursivePkgValue.create(packages);
+      return RecursivePkgValue.create(packages, hasErrors);
     }
   }
 

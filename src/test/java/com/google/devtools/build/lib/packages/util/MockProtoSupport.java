@@ -28,7 +28,7 @@ public final class MockProtoSupport {
    */
   public static void setup(MockToolsConfig config) throws IOException {
     createNetProto2(config);
-    createJavascriptClosureProto2(config);
+    createJavascriptJspb(config);
   }
 
   /**
@@ -36,9 +36,10 @@ public final class MockProtoSupport {
    * and versions.
    */
   private static void createNetProto2(MockToolsConfig config) throws IOException {
-    config.create("net/proto2/compiler/public/BUILD",
+    config.create(
+        "net/proto2/compiler/public/BUILD",
         "package(default_visibility=['//visibility:public'])",
-        "exports_files(['protocol_compiler'])");
+        "sh_binary(name='protocol_compiler', srcs=['protocol_compiler.sh'])");
 
     if (config.isRealFileSystem()) {
       // when using a "real" file system, import the jars and link to ensure compilation
@@ -91,18 +92,17 @@ public final class MockProtoSupport {
         "          srcs = [ 'composite_cc_plugin.cc' ])");
 
     // Fake targets for proto API libs of all languages and versions.
-    config.create("net/proto2/public/BUILD",
+    config.create(
+        "net/proto2/public/BUILD",
         "package(default_visibility=['//visibility:public'])",
-        "cc_library(name = 'proto2',",
-        "           srcs = [ 'proto2.cc' ])");
+        "cc_library(name = 'cc_proto_library_blaze_internal_deps',",
+        "           srcs = [ 'cc_proto_library_blaze_internal_deps.cc' ])");
     config.create("net/proto2/python/public/BUILD",
         "package(default_visibility=['//visibility:public'])",
          "py_library(name = 'public',",
          "           srcs = [ 'pyproto2.py' ])");
     config.create("net/proto2/bridge/public/BUILD",
         "package(default_visibility=['//visibility:public'])",
-        "cc_library(name = 'message_downgrader',",
-        "           srcs = [ 'downgrader.cc' ])",
         "cc_library(name = 'compatibility_mode_support',",
         "           srcs = [ 'compatibility.cc' ])");
     config.create(
@@ -116,28 +116,33 @@ public final class MockProtoSupport {
         "package(default_visibility=['//visibility:public'])",
         "py_library(name = 'proto1',",
         "           srcs = [ 'pyproto.py' ])");
-    config.create("net/rpc/BUILD",
+    config.create(
+        "net/rpc/BUILD",
         "package(default_visibility=['//visibility:public'])",
-        "cc_library(name = 'rpc_noloas')");
+        "cc_library(name = 'stubby12_proto_rpc_libs')",
+        "cc_library(name = 'no_stubby_rpc_libs_please_dont_depend_on_this')");
     config.create("net/rpc4/public/core/BUILD",
         "package(default_visibility=['//visibility:public'])",
-        "cc_library(name = 'rpc4_base')");
+        "cc_library(name = 'stubby4_rpc_libs')");
     config.create("net/grpc/BUILD",
         "package(default_visibility=['//visibility:public'])",
         "cc_library(name = 'grpc++_codegen_lib')");
     config.create("net/rpc/python/BUILD",
         "package(default_visibility=['//visibility:public'])",
-        "py_library(name = 'python_lite',",
-        "           srcs = [ 'pyrpc.py' ])");
+        "py_library(name = 'proto_python_api_1_stub',",
+        "           srcs = [ 'test_only_prefix_proto_python_api_1_stub.py' ])",
+        "py_library(name = 'proto_python_api_2_stub',",
+        "           srcs = [ 'test_only_prefix_proto_python_api_2_stub.py' ])");
     config.create("java/com/google/net/rpc/BUILD",
         "package(default_visibility=['//visibility:public'])",
         "java_library(name = 'rpc',",
         "             srcs = [ 'Rpc.java' ])",
         "java_library(name = 'rpc_noloas_internal',",
         "             srcs = [ 'RpcNoloas.java' ])");
-    config.create("java/com/google/net/rpc3/BUILD",
+    config.create(
+        "java/com/google/net/rpc3/BUILD",
         "package(default_visibility=['//visibility:public'])",
-        "java_library(name = 'rpc3',",
+        "java_library(name = 'rpc3_proto_runtime',",
         "             deps = [':rpc3_noloas_internal'],",
         "             srcs = [ 'Rpc3.java' ])",
         "java_library(name = 'rpc3_noloas_internal',",
@@ -150,8 +155,7 @@ public final class MockProtoSupport {
         "        outs = [ 'descriptor.pb.go' ],",
         "        cmd = '')",
         "proto_library(name='descriptor',",
-        "              srcs=['descriptor.proto'],",
-        "              internal_bootstrap_hack = 1)");
+        "              srcs=['descriptor.proto'])");
     config.create("net/proto2/go/BUILD",
         "package(default_visibility=['//visibility:public'])",
         "go_library(name = 'proto',",
@@ -168,17 +172,53 @@ public final class MockProtoSupport {
         "package(default_visibility=['//visibility:public'])",
         "go_library(name = 'context',",
         "           srcs = [ 'context.go' ])");
+    config.create("third_party/py/six/BUILD",
+        "package(default_visibility=['//visibility:public'])",
+        "licenses(['notice'])",
+        "py_library(name = 'six',",
+        "           srcs = [ '__init__.py' ])");
+    // TODO(b/77901188): remove once j_p_l migration is complete
+    config.create(
+        "third_party/java/jsr250_annotations/BUILD",
+        "package(default_visibility=['//visibility:public'])",
+        "licenses(['notice'])",
+        "java_library(name = 'jsr250_source_annotations',",
+        "           srcs = [ 'Generated.java' ])");
+    config.create(
+        "third_party/golang/grpc/metadata/BUILD",
+        "package(default_visibility=['//visibility:public'])",
+        "licenses(['notice'])",
+        "go_library(name = 'metadata',",
+        "           srcs = [ 'metadata.go' ])");
   }
 
-  /**
-   * Create a dummy "javascript/closure/proto2" package.
-   */
-  private static void createJavascriptClosureProto2(MockToolsConfig config) throws IOException {
+  /** Create a dummy jspb support package. */
+  private static void createJavascriptJspb(MockToolsConfig config) throws IOException {
     config.create(
-        "javascript/closure/proto2/BUILD",
+        "net/proto2/compiler/js/internal/BUILD",
+        "package(default_visibility=['//visibility:public'])",
+        "cc_binary(name = 'protoc-gen-js',",
+        "    srcs = ['plugin.cc'])");
+    config.create(
+        "javascript/apps/jspb/BUILD",
+        "load('//tools/build_defs/js:rules.bzl', 'js_library')",
         "package(default_visibility=['//visibility:public'])",
         "js_library(name = 'message',",
-        "           srcs = ['message.js'],",
-        "           deps_mgmt = 'legacy')");
+        "       srcs = ['message.js'],",
+        "       deps_mgmt = 'legacy')");
+    config.create(
+        "javascript/closure/array/BUILD",
+        "load('//tools/build_defs/js:rules.bzl', 'js_library')",
+        "package(default_visibility=['//visibility:public'])",
+        "js_library(name = 'array',",
+        "       srcs = ['array.js'],",
+        "       deps_mgmt = 'legacy')");
+    config.create(
+        "javascript/apps/xid/BUILD",
+        "load('//tools/build_defs/js:rules.bzl', 'js_library')",
+        "package(default_visibility=['//visibility:public'])",
+        "js_library(name = 'xid',",
+        "       srcs = ['xid.js'],",
+        "       deps_mgmt = 'legacy')");
   }
 }

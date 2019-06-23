@@ -24,16 +24,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.NavigableMap;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
-/**
- * Serializes {@link DataKey},{@link DataValue} entries to a binary file.
- */
+/** Serializes {@link DataKey},{@link DataValue} entries to a binary file. */
 public class AndroidDataSerializer {
   private static final Logger logger = Logger.getLogger(AndroidDataSerializer.class.getName());
 
@@ -48,7 +45,9 @@ public class AndroidDataSerializer {
   /**
    * Writes all of the collected DataKey -> DataValue.
    *
-   * The binary format will be: <pre>
+   * <p>The binary format will be:
+   *
+   * <pre>
    * {@link Header}
    * {@link com.google.devtools.build.android.proto.SerializeFormat.DataKey} keys...
    * {@link com.google.devtools.build.android.proto.SerializeFormat.DataValue} entries...
@@ -68,22 +67,19 @@ public class AndroidDataSerializer {
             Files.newOutputStream(out, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) {
 
       // Set the header for the deserialization process.
-      SerializeFormat.Header.Builder headerBuilder = Header.newBuilder()
-          .setEntryCount(entries.size());
+      SerializeFormat.Header.Builder headerBuilder =
+          Header.newBuilder().setEntryCount(entries.size());
 
       // Create table of source paths to allow references in the serialization format via an index.
       ByteArrayOutputStream sourceTableOutputStream = new ByteArrayOutputStream(2048);
       DataSourceTable sourceTable =
           DataSourceTable.createAndWrite(entries, sourceTableOutputStream, headerBuilder);
 
-      headerBuilder
-          .build()
-          .writeDelimitedTo(outStream);
+      headerBuilder.build().writeDelimitedTo(outStream);
 
       writeKeyValuesTo(entries, outStream, sourceTable, sourceTableOutputStream.toByteArray());
     }
-    logger.fine(
-        String.format("Serialized merged in %sms", timer.elapsed(TimeUnit.MILLISECONDS)));
+    logger.fine(String.format("Serialized merged in %sms", timer.elapsed(TimeUnit.MILLISECONDS)));
   }
 
   private void writeKeyValuesTo(
@@ -92,7 +88,7 @@ public class AndroidDataSerializer {
       DataSourceTable sourceTable,
       byte[] sourceTableBytes)
       throws IOException {
-    Set<Entry<DataKey, DataValue>> entries = map.entrySet();
+    Set<Map.Entry<DataKey, DataValue>> entries = map.entrySet();
     int[] orderedValueSizes = new int[entries.size()];
     int valueSizeIndex = 0;
     // Serialize all the values in sorted order to a intermediate buffer, so that the keys
@@ -100,8 +96,8 @@ public class AndroidDataSerializer {
     // TODO(corysmith): Tune the size of the byte array.
     ByteArrayOutputStream valuesOutputStream = new ByteArrayOutputStream(2048);
     for (Map.Entry<DataKey, DataValue> entry : entries) {
-      orderedValueSizes[valueSizeIndex++] = entry.getValue()
-          .serializeTo(entry.getKey(), sourceTable, valuesOutputStream);
+      orderedValueSizes[valueSizeIndex++] =
+          entry.getValue().serializeTo(sourceTable, valuesOutputStream);
     }
     // Serialize all the keys in sorted order
     valueSizeIndex = 0;

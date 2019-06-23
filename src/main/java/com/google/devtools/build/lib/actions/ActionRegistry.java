@@ -14,8 +14,6 @@
 
 package com.google.devtools.build.lib.actions;
 
-import com.google.common.annotations.VisibleForTesting;
-
 /**
  * An interface for registering actions.
  */
@@ -25,23 +23,6 @@ public interface ActionRegistry {
    */
   void registerAction(ActionAnalysisMetadata... actions);
 
-  /**
-   * Get the (Label and BuildConfiguration) of the ConfiguredTarget ultimately responsible for all
-   * these actions.
-   */
-  ArtifactOwner getOwner();
-
-  /**
-   * An action registry that does exactly nothing.
-   */
-  @VisibleForTesting
-  public static final ActionRegistry NOP = new ActionRegistry() {
-    @Override
-    public void registerAction(ActionAnalysisMetadata... actions) {}
-
-    @Override
-    public ArtifactOwner getOwner() {
-      return ArtifactOwner.NULL_OWNER;
-    }
-  };
+  /** Get the key of the ConfiguredTarget/Aspect ultimately responsible for all these actions. */
+  ActionLookupValue.ActionLookupKey getOwner();
 }

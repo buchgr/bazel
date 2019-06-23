@@ -14,36 +14,50 @@
 
 package com.google.devtools.build.lib.syntax;
 
+import com.google.devtools.build.lib.events.Location;
+
 /** This class contains Bazel-specific functions to extend or interoperate with Skylark. */
 public final class SkylarkUtils {
 
-  /** Bazel-specific information that we store in the Environment. */
-  private static class BazelInfo {
-    String toolsRepository;
+  private static final String PHASE_KEY = "$phase";
+
+  /** A phase for enabling or disabling certain builtin functions */
+  public enum Phase {
+    WORKSPACE,
+    LOADING,
+    ANALYSIS
   }
 
-  private static final String BAZEL_INFO_KEY = "$bazel";
+  public static void setPhase(Environment env, Phase phase) {
+    env.setupDynamic(PHASE_KEY, phase);
+  }
 
-  private static BazelInfo getInfo(Environment env) {
-    Object info = env.lookup(BAZEL_INFO_KEY);
-    if (info != null) {
-      return (BazelInfo) info;
+  private static Phase getPhase(Environment env) {
+    Phase phase = (Phase) env.dynamicLookup(PHASE_KEY);
+    return phase == null ? Phase.ANALYSIS : phase;
+  }
+
+  /**
+   * Checks that the current Environment is in the loading or the workspace phase.
+   *
+   * @param symbol name of the function being only authorized thus.
+   */
+  public static void checkLoadingOrWorkspacePhase(Environment env, String symbol, Location loc)
+      throws EvalException {
+    if (getPhase(env) == Phase.ANALYSIS) {
+      throw new EvalException(loc, symbol + "() cannot be called during the analysis phase");
     }
+  }
 
-    BazelInfo result = new BazelInfo();
-    try {
-      env.update(BAZEL_INFO_KEY, result);
-      return result;
-    } catch (EvalException e) {
-      throw new AssertionError(e);
+  /**
+   * Checks that the current Environment is in the loading phase.
+   *
+   * @param symbol name of the function being only authorized thus.
+   */
+  public static void checkLoadingPhase(Environment env, String symbol, Location loc)
+      throws EvalException {
+    if (getPhase(env) != Phase.LOADING) {
+      throw new EvalException(loc, symbol + "() can only be called during the loading phase");
     }
-  }
-
-  public static void setToolsRepository(Environment env, String toolsRepository) {
-    getInfo(env).toolsRepository = toolsRepository;
-  }
-
-  public static String getToolsRepository(Environment env) {
-    return getInfo(env).toolsRepository;
   }
 }

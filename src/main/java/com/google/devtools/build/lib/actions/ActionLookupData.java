@@ -13,42 +13,66 @@
 // limitations under the License.
 package com.google.devtools.build.lib.actions;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
+import com.google.common.base.Preconditions;
+import com.google.devtools.build.lib.actions.ActionLookupValue.ActionLookupKey;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.skyframe.ShareabilityOfValue;
+import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 
 /** Data that uniquely identifies an action. */
-public class ActionLookupData {
-  private final SkyKey actionLookupNode;
+@AutoCodec
+public class ActionLookupData implements SkyKey {
+  // Test actions are not shareable.
+  // Action execution can be nondeterministic, so is semi-hermetic.
+  public static final SkyFunctionName NAME = SkyFunctionName.createSemiHermetic("ACTION_EXECUTION");
+
+  private final ActionLookupKey actionLookupKey;
   private final int actionIndex;
 
-  public ActionLookupData(SkyKey actionLookupNode, int actionIndex) {
-    Preconditions.checkState(
-        actionLookupNode.argument() instanceof ActionLookupValue.ActionLookupKey, actionLookupNode);
-    this.actionLookupNode = actionLookupNode;
+  private ActionLookupData(ActionLookupKey actionLookupKey, int actionIndex) {
+    this.actionLookupKey = Preconditions.checkNotNull(actionLookupKey);
     this.actionIndex = actionIndex;
   }
 
-  public SkyKey getActionLookupNode() {
-    return actionLookupNode;
+  /**
+   * Creates a key for the result of action execution. Does <i>not</i> intern its results, so should
+   * only be called once per {@code (actionLookupKey, actionIndex)} pair.
+   */
+  @VisibleForTesting
+  @AutoCodec.Instantiator
+  public static ActionLookupData create(ActionLookupKey actionLookupKey, int actionIndex) {
+    return new ActionLookupData(actionLookupKey, actionIndex);
+  }
+
+  public ActionLookupKey getActionLookupKey() {
+    return actionLookupKey;
   }
 
   /**
-   * Index of the action in question in the node keyed by {@link #getActionLookupNode}. Should be
+   * Index of the action in question in the node keyed by {@link #getActionLookupKey}. Should be
    * passed to {@link ActionLookupValue#getAction}.
    */
   public int getActionIndex() {
     return actionIndex;
   }
 
-  public Label getLabelForErrors() {
-    return ((ActionLookupValue.ActionLookupKey) actionLookupNode.argument()).getLabel();
+  public Label getLabel() {
+    return actionLookupKey.getLabel();
+  }
+
+  @Override
+  public ShareabilityOfValue getShareabilityOfValue() {
+    // If the label is null, this is a weird action. Don't try to share it.
+    return getLabel() != null ? SkyKey.super.getShareabilityOfValue() : ShareabilityOfValue.NEVER;
   }
 
   @Override
   public int hashCode() {
-    return 37 * actionLookupNode.hashCode() + actionIndex;
+    return 37 * actionLookupKey.hashCode() + actionIndex;
   }
 
   @Override
@@ -61,14 +85,19 @@ public class ActionLookupData {
     }
     ActionLookupData that = (ActionLookupData) obj;
     return this.actionIndex == that.actionIndex
-        && this.actionLookupNode.equals(that.actionLookupNode);
+        && this.actionLookupKey.equals(that.actionLookupKey);
   }
 
   @Override
   public String toString() {
     return MoreObjects.toStringHelper(this)
-        .add("actionLookupNode", actionLookupNode)
+        .add("actionLookupKey", actionLookupKey)
         .add("actionIndex", actionIndex)
         .toString();
+  }
+
+  @Override
+  public SkyFunctionName functionName() {
+    return NAME;
   }
 }

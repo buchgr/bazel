@@ -18,7 +18,8 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Bui
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId.ConfigurationId;
 import com.google.devtools.build.lib.causes.Cause;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.protobuf.TextFormat;
 import java.io.Serializable;
 import java.util.List;
@@ -34,11 +35,13 @@ import javax.annotation.concurrent.Immutable;
  * identifiers that do not accidentally coincide is by providing a target or a target pattern;
  * therefore, those (if provided) are made specially visible.
  */
+@AutoCodec
 @Immutable
 public final class BuildEventId implements Serializable {
   private final BuildEventStreamProtos.BuildEventId protoid;
 
-  private BuildEventId(BuildEventStreamProtos.BuildEventId protoid) {
+  @AutoCodec.VisibleForSerialization
+  BuildEventId(BuildEventStreamProtos.BuildEventId protoid) {
     this.protoid = protoid;
   }
 
@@ -123,6 +126,13 @@ public final class BuildEventId implements Serializable {
             .build());
   }
 
+  public static BuildEventId workspaceConfigId() {
+    BuildEventStreamProtos.BuildEventId.WorkspaceConfigId workspaceConfigId =
+        BuildEventStreamProtos.BuildEventId.WorkspaceConfigId.getDefaultInstance();
+    return new BuildEventId(
+        BuildEventStreamProtos.BuildEventId.newBuilder().setWorkspace(workspaceConfigId).build());
+  }
+
   public static BuildEventId fetchId(String url) {
     BuildEventStreamProtos.BuildEventId.FetchId fetchId =
         BuildEventStreamProtos.BuildEventId.FetchId.newBuilder().setUrl(url).build();
@@ -195,10 +205,35 @@ public final class BuildEventId implements Serializable {
         BuildEventStreamProtos.BuildEventId.newBuilder().setTargetCompleted(targetId).build());
   }
 
-  public static BuildEventId aspectCompleted(Label target, String aspect) {
+  public static BuildEventId configuredLabelId(Label label, BuildEventId configuration) {
+    BuildEventStreamProtos.BuildEventId.ConfigurationId configId =
+        configuration.protoid.getConfiguration();
+    BuildEventStreamProtos.BuildEventId.ConfiguredLabelId labelId =
+        BuildEventStreamProtos.BuildEventId.ConfiguredLabelId.newBuilder()
+            .setLabel(label.toString())
+            .setConfiguration(configId)
+            .build();
+    return new BuildEventId(
+        BuildEventStreamProtos.BuildEventId.newBuilder().setConfiguredLabel(labelId).build());
+  }
+
+  public static BuildEventId unconfiguredLabelId(Label label) {
+    BuildEventStreamProtos.BuildEventId.UnconfiguredLabelId labelId =
+        BuildEventStreamProtos.BuildEventId.UnconfiguredLabelId.newBuilder()
+            .setLabel(label.toString())
+            .build();
+    return new BuildEventId(
+        BuildEventStreamProtos.BuildEventId.newBuilder().setUnconfiguredLabel(labelId).build());
+  }
+
+  public static BuildEventId aspectCompleted(
+      Label target, BuildEventId configuration, String aspect) {
+    BuildEventStreamProtos.BuildEventId.ConfigurationId configId =
+        configuration.protoid.getConfiguration();
     BuildEventStreamProtos.BuildEventId.TargetCompletedId targetId =
         BuildEventStreamProtos.BuildEventId.TargetCompletedId.newBuilder()
             .setLabel(target.toString())
+            .setConfiguration(configId)
             .setAspect(aspect)
             .build();
     return new BuildEventId(
@@ -209,12 +244,12 @@ public final class BuildEventId implements Serializable {
     return new BuildEventId(cause.getIdProto());
   }
 
-  public static BuildEventId actionCompleted(Path path) {
+  public static BuildEventId actionCompleted(PathFragment path) {
     return actionCompleted(path, null, null);
   }
 
   public static BuildEventId actionCompleted(
-      Path path, @Nullable Label label, @Nullable String configurationChecksum) {
+      PathFragment path, @Nullable Label label, @Nullable String configurationChecksum) {
     ActionCompletedId.Builder actionId =
         ActionCompletedId.newBuilder().setPrimaryOutput(path.toString());
     if (label != null) {
@@ -272,5 +307,21 @@ public final class BuildEventId implements Serializable {
         BuildEventStreamProtos.BuildEventId.BuildFinishedId.getDefaultInstance();
     return new BuildEventId(
         BuildEventStreamProtos.BuildEventId.newBuilder().setBuildFinished(finishedId).build());
+  }
+
+  public static BuildEventId buildToolLogs() {
+    return new BuildEventId(
+        BuildEventStreamProtos.BuildEventId.newBuilder()
+            .setBuildToolLogs(
+                BuildEventStreamProtos.BuildEventId.BuildToolLogsId.getDefaultInstance())
+            .build());
+  }
+
+  public static BuildEventId buildMetrics() {
+    return new BuildEventId(
+        BuildEventStreamProtos.BuildEventId.newBuilder()
+            .setBuildMetrics(
+                BuildEventStreamProtos.BuildEventId.BuildMetricsId.getDefaultInstance())
+            .build());
   }
 }

@@ -14,7 +14,7 @@
 package com.google.devtools.build.lib.packages;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
@@ -22,13 +22,18 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.packages.BuildType.LabelConversionContext;
 import com.google.devtools.build.lib.packages.BuildType.Selector;
+import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.EvalUtils;
 import com.google.devtools.build.lib.syntax.Printer;
 import com.google.devtools.build.lib.syntax.SelectorList;
 import com.google.devtools.build.lib.syntax.SelectorValue;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.syntax.Type.ConversionException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -43,30 +48,61 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class BuildTypeTest {
   private Label currentRule;
+  private LabelConversionContext labelConversionContext;
 
   @Before
   public final void setCurrentRule() throws Exception  {
-    this.currentRule = Label.parseAbsolute("//quux:baz");
+    this.currentRule = Label.parseAbsolute("//quux:baz", ImmutableMap.of());
+    this.labelConversionContext =
+        new LabelConversionContext(currentRule, /* repositoryMapping= */ ImmutableMap.of());
+  }
+
+  @Test
+  public void testKeepsDictOrdering() throws Exception {
+    Map<Object, String> input = new ImmutableMap.Builder<Object, String>()
+        .put("c", "//c")
+        .put("b", "//b")
+        .put("a", "//a")
+        .put("f", "//f")
+        .put("e", "//e")
+        .put("d", "//d")
+        .build();
+
+    assertThat(BuildType.LABEL_DICT_UNARY.convert(input, null, labelConversionContext).keySet())
+        .containsExactly("c", "b", "a", "f", "e", "d")
+        .inOrder();
   }
 
   @Test
   public void testLabelKeyedStringDictConvertsToMapFromLabelToString() throws Exception {
-    Map<Object, String> input = new ImmutableMap.Builder<Object, String>()
-        .put("//absolute:label", "absolute value")
-        .put(":relative", "theory of relativity")
-        .put("nocolon", "colonial times")
-        .put("//current/package:explicit", "explicit content")
-        .put(Label.parseAbsolute("//i/was/already/a/label"), "and that's okay")
-        .build();
-    Label context = Label.parseAbsolute("//current/package:this");
+    Map<Object, String> input =
+        new ImmutableMap.Builder<Object, String>()
+            .put("//absolute:label", "absolute value")
+            .put(":relative", "theory of relativity")
+            .put("nocolon", "colonial times")
+            .put("//current/package:explicit", "explicit content")
+            .put(
+                Label.parseAbsolute("//i/was/already/a/label", ImmutableMap.of()),
+                "and that's okay")
+            .build();
+    Label context = Label.parseAbsolute("//current/package:this", ImmutableMap.of());
 
-    Map<Label, String> expected = new ImmutableMap.Builder<Label, String>()
-        .put(Label.parseAbsolute("//absolute:label"), "absolute value")
-        .put(Label.parseAbsolute("//current/package:relative"), "theory of relativity")
-        .put(Label.parseAbsolute("//current/package:nocolon"), "colonial times")
-        .put(Label.parseAbsolute("//current/package:explicit"), "explicit content")
-        .put(Label.parseAbsolute("//i/was/already/a/label"), "and that's okay")
-        .build();
+    Map<Label, String> expected =
+        new ImmutableMap.Builder<Label, String>()
+            .put(Label.parseAbsolute("//absolute:label", ImmutableMap.of()), "absolute value")
+            .put(
+                Label.parseAbsolute("//current/package:relative", ImmutableMap.of()),
+                "theory of relativity")
+            .put(
+                Label.parseAbsolute("//current/package:nocolon", ImmutableMap.of()),
+                "colonial times")
+            .put(
+                Label.parseAbsolute("//current/package:explicit", ImmutableMap.of()),
+                "explicit content")
+            .put(
+                Label.parseAbsolute("//i/was/already/a/label", ImmutableMap.of()),
+                "and that's okay")
+            .build();
 
     assertThat(BuildType.LABEL_KEYED_STRING_DICT.convert(input, null, context))
         .containsExactlyEntriesIn(expected);
@@ -74,93 +110,101 @@ public class BuildTypeTest {
 
   @Test
   public void testLabelKeyedStringDictConvertingStringShouldFail() throws Exception {
-    try {
-      BuildType.LABEL_KEYED_STRING_DICT.convert("//actually/a:label", null, currentRule);
-      fail("Expected a conversion exception to be thrown.");
-    } catch (ConversionException expected) {
-      assertThat(expected)
-          .hasMessage(
-              "expected value of type 'dict(label, string)', "
-                  + "but got \"//actually/a:label\" (string)");
-    }
+    ConversionException expected =
+        assertThrows(
+            ConversionException.class,
+            () ->
+                BuildType.LABEL_KEYED_STRING_DICT.convert("//actually/a:label", null, currentRule));
+    assertThat(expected)
+        .hasMessageThat()
+        .isEqualTo(
+            "expected value of type 'dict(label, string)', "
+                + "but got \"//actually/a:label\" (string)");
   }
 
   @Test
   public void testLabelKeyedStringDictConvertingListShouldFail() throws Exception {
-    try {
-      BuildType.LABEL_KEYED_STRING_DICT.convert(
-          ImmutableList.of("//actually/a:label"), null, currentRule);
-      fail("Expected a conversion exception to be thrown.");
-    } catch (ConversionException expected) {
-      assertThat(expected)
-          .hasMessage(
-              "expected value of type 'dict(label, string)', "
-                  + "but got [\"//actually/a:label\"] (List)");
-    }
+    ConversionException expected =
+        assertThrows(
+            ConversionException.class,
+            () ->
+                BuildType.LABEL_KEYED_STRING_DICT.convert(
+                    ImmutableList.of("//actually/a:label"), null, currentRule));
+    assertThat(expected)
+        .hasMessageThat()
+        .isEqualTo(
+            "expected value of type 'dict(label, string)', "
+                + "but got [\"//actually/a:label\"] (List)");
   }
 
   @Test
   public void testLabelKeyedStringDictConvertingMapWithNonStringKeyShouldFail() throws Exception {
-    try {
-      BuildType.LABEL_KEYED_STRING_DICT.convert(ImmutableMap.of(1, "OK"), null, currentRule);
-      fail("Expected a conversion exception to be thrown.");
-    } catch (ConversionException expected) {
-      assertThat(expected)
-          .hasMessage("expected value of type 'string' for dict key element, but got 1 (int)");
-    }
+    ConversionException expected =
+        assertThrows(
+            ConversionException.class,
+            () ->
+                BuildType.LABEL_KEYED_STRING_DICT.convert(
+                    ImmutableMap.of(1, "OK"), null, currentRule));
+    assertThat(expected)
+        .hasMessageThat()
+        .isEqualTo("expected value of type 'string' for dict key element, but got 1 (int)");
   }
 
   @Test
   public void testLabelKeyedStringDictConvertingMapWithNonStringValueShouldFail() throws Exception {
-    try {
-      BuildType.LABEL_KEYED_STRING_DICT.convert(
-          ImmutableMap.of("//actually/a:label", 3), null, currentRule);
-      fail("Expected a conversion exception to be thrown.");
-    } catch (ConversionException expected) {
-      assertThat(expected)
-          .hasMessage("expected value of type 'string' for dict value element, but got 3 (int)");
-    }
+    ConversionException expected =
+        assertThrows(
+            ConversionException.class,
+            () ->
+                BuildType.LABEL_KEYED_STRING_DICT.convert(
+                    ImmutableMap.of("//actually/a:label", 3), null, currentRule));
+    assertThat(expected)
+        .hasMessageThat()
+        .isEqualTo("expected value of type 'string' for dict value element, but got 3 (int)");
   }
 
   @Test
   public void testLabelKeyedStringDictConvertingMapWithInvalidLabelKeyShouldFail()
       throws Exception {
-    try {
-      BuildType.LABEL_KEYED_STRING_DICT.convert(
-          ImmutableMap.of("//uplevel/references/are:../../forbidden", "OK"), null, currentRule);
-      fail("Expected a conversion exception to be thrown.");
-    } catch (ConversionException expected) {
-      assertThat(expected)
-          .hasMessage(
-              "invalid label '//uplevel/references/are:../../forbidden' in "
-                  + "dict key element: invalid target name '../../forbidden': "
-                  + "target names may not contain up-level references '..'");
-    }
+    ConversionException expected =
+        assertThrows(
+            ConversionException.class,
+            () ->
+                BuildType.LABEL_KEYED_STRING_DICT.convert(
+                    ImmutableMap.of("//uplevel/references/are:../../forbidden", "OK"),
+                    null,
+                    currentRule));
+    assertThat(expected)
+        .hasMessageThat()
+        .isEqualTo(
+            "invalid label '//uplevel/references/are:../../forbidden' in "
+                + "dict key element: invalid target name '../../forbidden': "
+                + "target names may not contain up-level references '..'");
   }
 
   @Test
   public void testLabelKeyedStringDictConvertingMapWithMultipleEquivalentKeysShouldFail()
       throws Exception {
-    Label context = Label.parseAbsolute("//current/package:this");
+    Label context = Label.parseAbsolute("//current/package:this", ImmutableMap.of());
     Map<String, String> input = new ImmutableMap.Builder<String, String>()
         .put(":reference", "value1")
         .put("//current/package:reference", "value2")
         .build();
-    try {
-      BuildType.LABEL_KEYED_STRING_DICT.convert(input, null, context);
-      fail("Expected a conversion exception to be thrown.");
-    } catch (ConversionException expected) {
-      assertThat(expected)
-          .hasMessage(
-              "duplicate labels: //current/package:reference "
-                  + "(as [\":reference\", \"//current/package:reference\"])");
-    }
+    ConversionException expected =
+        assertThrows(
+            ConversionException.class,
+            () -> BuildType.LABEL_KEYED_STRING_DICT.convert(input, null, context));
+    assertThat(expected)
+        .hasMessageThat()
+        .isEqualTo(
+            "duplicate labels: //current/package:reference "
+                + "(as [\":reference\", \"//current/package:reference\"])");
   }
 
   @Test
   public void testLabelKeyedStringDictConvertingMapWithMultipleSetsOfEquivalentKeysShouldFail()
       throws Exception {
-    Label context = Label.parseAbsolute("//current/rule:sibling");
+    Label context = Label.parseAbsolute("//current/rule:sibling", ImmutableMap.of());
     Map<String, String> input = new ImmutableMap.Builder<String, String>()
         .put(":rule", "first set")
         .put("//current/rule:rule", "also first set")
@@ -170,55 +214,64 @@ public class BuildTypeTest {
         .put("//not/involved/in/any:collisions", "same value")
         .put("//also/not/involved/in/any:collisions", "same value")
         .build();
-    try {
-      BuildType.LABEL_KEYED_STRING_DICT.convert(input, null, context);
-      fail("Expected a conversion exception to be thrown.");
-    } catch (ConversionException expected) {
-      assertThat(expected)
-          .hasMessage(
-              "duplicate labels: //current/rule:rule "
-                  + "(as [\":rule\", \"//current/rule:rule\", \"//current/rule\"]), "
-                  + "//other/package:package "
-                  + "(as [\"//other/package:package\", \"//other/package\"])");
-    }
+    ConversionException expected =
+        assertThrows(
+            ConversionException.class,
+            () -> BuildType.LABEL_KEYED_STRING_DICT.convert(input, null, context));
+    assertThat(expected)
+        .hasMessageThat()
+        .isEqualTo(
+            "duplicate labels: //current/rule:rule "
+                + "(as [\":rule\", \"//current/rule:rule\", \"//current/rule\"]), "
+                + "//other/package:package "
+                + "(as [\"//other/package:package\", \"//other/package\"])");
   }
 
   @Test
   public void testLabelKeyedStringDictErrorConvertingMapWithMultipleEquivalentKeysIncludesContext()
       throws Exception {
-    Label context = Label.parseAbsolute("//current/package:this");
+    Label context = Label.parseAbsolute("//current/package:this", ImmutableMap.of());
     Map<String, String> input = new ImmutableMap.Builder<String, String>()
         .put(":reference", "value1")
         .put("//current/package:reference", "value2")
         .build();
-    try {
-      BuildType.LABEL_KEYED_STRING_DICT.convert(input, "flag map", context);
-      fail("Expected a conversion exception to be thrown.");
-    } catch (ConversionException expected) {
-      assertThat(expected)
-          .hasMessage(
-              "duplicate labels in flag map: //current/package:reference "
-                  + "(as [\":reference\", \"//current/package:reference\"])");
-    }
+    ConversionException expected =
+        assertThrows(
+            ConversionException.class,
+            () -> BuildType.LABEL_KEYED_STRING_DICT.convert(input, "flag map", context));
+    assertThat(expected)
+        .hasMessageThat()
+        .isEqualTo(
+            "duplicate labels in flag map: //current/package:reference "
+                + "(as [\":reference\", \"//current/package:reference\"])");
   }
 
   @Test
   public void testLabelKeyedStringDictCollectLabels() throws Exception {
-    Map<Label, String> input = new ImmutableMap.Builder<Label, String>()
-        .put(Label.parseAbsolute("//absolute:label"), "absolute value")
-        .put(Label.parseAbsolute("//current/package:relative"), "theory of relativity")
-        .put(Label.parseAbsolute("//current/package:nocolon"), "colonial times")
-        .put(Label.parseAbsolute("//current/package:explicit"), "explicit content")
-        .put(Label.parseAbsolute("//i/was/already/a/label"), "and that's okay")
-        .build();
+    Map<Label, String> input =
+        new ImmutableMap.Builder<Label, String>()
+            .put(Label.parseAbsolute("//absolute:label", ImmutableMap.of()), "absolute value")
+            .put(
+                Label.parseAbsolute("//current/package:relative", ImmutableMap.of()),
+                "theory of relativity")
+            .put(
+                Label.parseAbsolute("//current/package:nocolon", ImmutableMap.of()),
+                "colonial times")
+            .put(
+                Label.parseAbsolute("//current/package:explicit", ImmutableMap.of()),
+                "explicit content")
+            .put(
+                Label.parseAbsolute("//i/was/already/a/label", ImmutableMap.of()),
+                "and that's okay")
+            .build();
 
     ImmutableList<Label> expected =
         ImmutableList.of(
-            Label.parseAbsolute("//absolute:label"),
-            Label.parseAbsolute("//current/package:relative"),
-            Label.parseAbsolute("//current/package:nocolon"),
-            Label.parseAbsolute("//current/package:explicit"),
-            Label.parseAbsolute("//i/was/already/a/label"));
+            Label.parseAbsolute("//absolute:label", ImmutableMap.of()),
+            Label.parseAbsolute("//current/package:relative", ImmutableMap.of()),
+            Label.parseAbsolute("//current/package:nocolon", ImmutableMap.of()),
+            Label.parseAbsolute("//current/package:explicit", ImmutableMap.of()),
+            Label.parseAbsolute("//i/was/already/a/label", ImmutableMap.of()));
 
     assertThat(collectLabels(BuildType.LABEL_KEYED_STRING_DICT, input))
         .containsExactlyElementsIn(expected);
@@ -265,6 +318,19 @@ public class BuildTypeTest {
         entry1Label, entry2Label);
   }
 
+  @Test
+  public void testLabelWithRemapping() throws Exception {
+    LabelConversionContext context =
+        new LabelConversionContext(
+            currentRule,
+            ImmutableMap.of(
+                RepositoryName.create("@orig_repo"), RepositoryName.create("@new_repo")));
+    Label label = BuildType.LABEL.convert("@orig_repo//foo:bar", null, context);
+    assertThat(label)
+        .isEquivalentAccordingToCompareTo(
+            Label.parseAbsolute("@new_repo//foo:bar", ImmutableMap.of()));
+  }
+
   /**
    * Tests basic {@link Selector} functionality.
    */
@@ -274,13 +340,15 @@ public class BuildTypeTest {
         "//conditions:a", "//a:a",
         "//conditions:b", "//b:b",
         Selector.DEFAULT_CONDITION_KEY, "//d:d");
-    Selector<Label> selector = new Selector<>(input, null, currentRule, BuildType.LABEL);
+    Selector<Label> selector = new Selector<>(input, null, labelConversionContext, BuildType.LABEL);
     assertThat(selector.getOriginalType()).isEqualTo(BuildType.LABEL);
 
-    Map<Label, Label> expectedMap = ImmutableMap.of(
-        Label.parseAbsolute("//conditions:a"), Label.create("@//a", "a"),
-        Label.parseAbsolute("//conditions:b"), Label.create("@//b", "b"),
-        Label.parseAbsolute(BuildType.Selector.DEFAULT_CONDITION_KEY), Label.create("@//d", "d"));
+    Map<Label, Label> expectedMap =
+        ImmutableMap.of(
+            Label.parseAbsolute("//conditions:a", ImmutableMap.of()), Label.create("@//a", "a"),
+            Label.parseAbsolute("//conditions:b", ImmutableMap.of()), Label.create("@//b", "b"),
+            Label.parseAbsolute(BuildType.Selector.DEFAULT_CONDITION_KEY, ImmutableMap.of()),
+                Label.create("@//d", "d"));
     assertThat(selector.getEntries().entrySet()).containsExactlyElementsIn(expectedMap.entrySet());
   }
 
@@ -293,12 +361,11 @@ public class BuildTypeTest {
     ImmutableMap<String, String> input = ImmutableMap.of(
         "//conditions:a", "not a/../label", "//conditions:b", "also not a/../label",
         BuildType.Selector.DEFAULT_CONDITION_KEY, "whatever");
-    try {
-      new Selector<>(input, null, currentRule, BuildType.LABEL);
-      fail("Expected Selector instantiation to fail since the input isn't a selection of labels");
-    } catch (ConversionException e) {
-      assertThat(e).hasMessageThat().contains("invalid label 'not a/../label'");
-    }
+    ConversionException e =
+        assertThrows(
+            ConversionException.class,
+            () -> new Selector<>(input, null, labelConversionContext, BuildType.LABEL));
+    assertThat(e).hasMessageThat().contains("invalid label 'not a/../label'");
   }
 
   /**
@@ -309,12 +376,11 @@ public class BuildTypeTest {
     ImmutableMap<String, String> input = ImmutableMap.of(
         "not a/../label", "//a:a",
         BuildType.Selector.DEFAULT_CONDITION_KEY, "whatever");
-    try {
-      new Selector<>(input, null, currentRule, BuildType.LABEL);
-      fail("Expected Selector instantiation to fail since the key isn't a label");
-    } catch (ConversionException e) {
-      assertThat(e).hasMessageThat().contains("invalid label 'not a/../label'");
-    }
+    ConversionException e =
+        assertThrows(
+            ConversionException.class,
+            () -> new Selector<>(input, null, labelConversionContext, BuildType.LABEL));
+    assertThat(e).hasMessageThat().contains("invalid label 'not a/../label'");
   }
 
   /**
@@ -326,7 +392,7 @@ public class BuildTypeTest {
         "//conditions:a", "//a:a",
         "//conditions:b", "//b:b",
         BuildType.Selector.DEFAULT_CONDITION_KEY, "//d:d");
-    assertThat(new Selector<>(input, null, currentRule, BuildType.LABEL).getDefault())
+    assertThat(new Selector<>(input, null, labelConversionContext, BuildType.LABEL).getDefault())
         .isEqualTo(Label.create("@//d", "d"));
   }
 
@@ -336,29 +402,37 @@ public class BuildTypeTest {
         ImmutableList.of("//a:a"), "//conditions:b", ImmutableList.of("//b:b")), "");
     Object selector2 = new SelectorValue(ImmutableMap.of("//conditions:c",
         ImmutableList.of("//c:c"), "//conditions:d", ImmutableList.of("//d:d")), "");
-    BuildType.SelectorList<List<Label>> selectorList = new BuildType.SelectorList<>(
-        ImmutableList.of(selector1, selector2), null, currentRule, BuildType.LABEL_LIST);
+    BuildType.SelectorList<List<Label>> selectorList =
+        new BuildType.SelectorList<>(
+            ImmutableList.of(selector1, selector2),
+            null,
+            labelConversionContext,
+            BuildType.LABEL_LIST);
 
     assertThat(selectorList.getOriginalType()).isEqualTo(BuildType.LABEL_LIST);
     assertThat(selectorList.getKeyLabels())
         .containsExactly(
-            Label.parseAbsolute("//conditions:a"),
-            Label.parseAbsolute("//conditions:b"),
-            Label.parseAbsolute("//conditions:c"),
-            Label.parseAbsolute("//conditions:d"));
+            Label.parseAbsolute("//conditions:a", ImmutableMap.of()),
+            Label.parseAbsolute("//conditions:b", ImmutableMap.of()),
+            Label.parseAbsolute("//conditions:c", ImmutableMap.of()),
+            Label.parseAbsolute("//conditions:d", ImmutableMap.of()));
 
     List<Selector<List<Label>>> selectors = selectorList.getSelectors();
     assertThat(selectors.get(0).getEntries().entrySet())
         .containsExactlyElementsIn(
-            ImmutableMap.of(Label.parseAbsolute("//conditions:a"),
-            ImmutableList.of(Label.create("@//a", "a")), Label.parseAbsolute("//conditions:b"),
-            ImmutableList.of(Label.create("@//b", "b")))
+            ImmutableMap.of(
+                    Label.parseAbsolute("//conditions:a", ImmutableMap.of()),
+                    ImmutableList.of(Label.create("@//a", "a")),
+                    Label.parseAbsolute("//conditions:b", ImmutableMap.of()),
+                    ImmutableList.of(Label.create("@//b", "b")))
                 .entrySet());
     assertThat(selectors.get(1).getEntries().entrySet())
         .containsExactlyElementsIn(
             ImmutableMap.of(
-                Label.parseAbsolute("//conditions:c"), ImmutableList.of(Label.create("@//c", "c")),
-                Label.parseAbsolute("//conditions:d"), ImmutableList.of(Label.create("@//d", "d")))
+                    Label.parseAbsolute("//conditions:c", ImmutableMap.of()),
+                        ImmutableList.of(Label.create("@//c", "c")),
+                    Label.parseAbsolute("//conditions:d", ImmutableMap.of()),
+                        ImmutableList.of(Label.create("@//d", "d")))
                 .entrySet());
   }
 
@@ -368,13 +442,61 @@ public class BuildTypeTest {
         new SelectorValue(ImmutableMap.of("//conditions:a", ImmutableList.of("//a:a")), "");
     Object selector2 =
         new SelectorValue(ImmutableMap.of("//conditions:b", "//b:b"), "");
-    try {
-      new BuildType.SelectorList<>(ImmutableList.of(selector1, selector2), null, currentRule,
-          BuildType.LABEL_LIST);
-      fail("Expected SelectorList initialization to fail on mixed element types");
-    } catch (ConversionException e) {
-      assertThat(e).hasMessageThat().contains("expected value of type 'list(label)'");
-    }
+    ConversionException e =
+        assertThrows(
+            ConversionException.class,
+            () ->
+                new BuildType.SelectorList<>(
+                    ImmutableList.of(selector1, selector2),
+                    null,
+                    labelConversionContext,
+                    BuildType.LABEL_LIST));
+    assertThat(e).hasMessageThat().contains("expected value of type 'list(label)'");
+  }
+
+  @Test
+  public void testSelectorList_concatenate_selectorList() throws Exception {
+    SelectorList selectorList =
+        SelectorList.of(
+            new SelectorValue(ImmutableMap.of("//conditions:a", ImmutableList.of("//a:a")), ""));
+    List<String> list = ImmutableList.of("//a:a", "//b:b");
+
+    // Creating a SelectorList from a SelectorList and a list should work properly.
+    SelectorList result = SelectorList.of(Location.BUILTIN, selectorList, list);
+    assertThat(result).isNotNull();
+    assertThat(result.getType()).isAssignableTo(List.class);
+  }
+
+  @Test
+  public void testSelectorList_concatenate_selectorValue() throws Exception {
+    SelectorValue selectorValue =
+        new SelectorValue(ImmutableMap.of("//conditions:a", ImmutableList.of("//a:a")), "");
+    List<String> list = ImmutableList.of("//a:a", "//b:b");
+
+    // Creating a SelectorList from a SelectorValue and a list should work properly.
+    SelectorList result = SelectorList.of(Location.BUILTIN, selectorValue, list);
+    assertThat(result).isNotNull();
+    assertThat(result.getType()).isAssignableTo(List.class);
+  }
+
+  @Test
+  public void testSelectorList_concatenate_differentListTypes() throws Exception {
+    List<String> list = ImmutableList.of("//a:a", "//b:b");
+    List<String> arrayList = new ArrayList<>();
+    arrayList.add("//a:a");
+
+    // Creating a SelectorList from two lists of different types should work properly.
+    SelectorList result = SelectorList.of(Location.BUILTIN, list, arrayList);
+    assertThat(result).isNotNull();
+    assertThat(result.getType()).isAssignableTo(List.class);
+  }
+
+  @Test
+  public void testSelectorList_concatenate_invalidType() throws Exception {
+    List<String> list = ImmutableList.of("//a:a", "//b:b");
+
+    // Creating a SelectorList from a list and a non-list should fail.
+    assertThrows(EvalException.class, () -> SelectorList.of(Location.BUILTIN, list, "A string"));
   }
 
   /**
@@ -393,21 +515,24 @@ public class BuildTypeTest {
         ImmutableList.of(Label.create("@//a", "a1"), Label.create("@//a", "a2"));
 
     // Conversion to direct type:
-    Object converted = BuildType
-        .selectableConvert(BuildType.LABEL_LIST, nativeInput, null, currentRule);
+    Object converted =
+        BuildType.selectableConvert(
+            BuildType.LABEL_LIST, nativeInput, null, labelConversionContext);
     assertThat(converted instanceof List<?>).isTrue();
     assertThat((List<Label>) converted).containsExactlyElementsIn(expectedLabels);
 
     // Conversion to selectable type:
-    converted = BuildType
-        .selectableConvert(BuildType.LABEL_LIST, selectableInput, null, currentRule);
+    converted =
+        BuildType.selectableConvert(
+            BuildType.LABEL_LIST, selectableInput, null, labelConversionContext);
     BuildType.SelectorList<?> selectorList = (BuildType.SelectorList<?>) converted;
     assertThat(((Selector<Label>) selectorList.getSelectors().get(0)).getEntries().entrySet())
         .containsExactlyElementsIn(
             ImmutableMap.of(
-                    Label.parseAbsolute("//conditions:a"),
+                    Label.parseAbsolute("//conditions:a", ImmutableMap.of()),
                     expectedLabels,
-                    Label.parseAbsolute(BuildType.Selector.DEFAULT_CONDITION_KEY),
+                    Label.parseAbsolute(
+                        BuildType.Selector.DEFAULT_CONDITION_KEY, ImmutableMap.of()),
                     expectedLabels)
                 .entrySet());
   }
@@ -420,12 +545,11 @@ public class BuildTypeTest {
     Object selectableInput = SelectorList.of(
         new SelectorValue(
             ImmutableMap.of("//conditions:a", Arrays.asList("//a:a1", "//a:a2")), ""));
-    try {
-      BuildType.LABEL_LIST.convert(selectableInput, null, currentRule);
-      fail("Expected conversion to fail on a selectable input");
-    } catch (ConversionException e) {
-      assertThat(e).hasMessageThat().contains("expected value of type 'list(label)'");
-    }
+    ConversionException e =
+        assertThrows(
+            ConversionException.class,
+            () -> BuildType.LABEL_LIST.convert(selectableInput, null, currentRule));
+    assertThat(e).hasMessageThat().contains("expected value of type 'list(label)'");
   }
 
   /**
@@ -433,10 +557,13 @@ public class BuildTypeTest {
    */
   @Test
   public void testReservedKeyLabels() throws Exception {
-    assertThat(BuildType.Selector.isReservedLabel(Label.parseAbsolute("//condition:a"))).isFalse();
     assertThat(
             BuildType.Selector.isReservedLabel(
-                Label.parseAbsolute(BuildType.Selector.DEFAULT_CONDITION_KEY)))
+                Label.parseAbsolute("//condition:a", ImmutableMap.of())))
+        .isFalse();
+    assertThat(
+            BuildType.Selector.isReservedLabel(
+                Label.parseAbsolute(BuildType.Selector.DEFAULT_CONDITION_KEY, ImmutableMap.of())))
         .isTrue();
   }
 
@@ -444,7 +571,10 @@ public class BuildTypeTest {
   public void testUnconditionalSelects() throws Exception {
     assertThat(
             new Selector<>(
-                    ImmutableMap.of("//conditions:a", "//a:a"), null, currentRule, BuildType.LABEL)
+                    ImmutableMap.of("//conditions:a", "//a:a"),
+                    null,
+                    labelConversionContext,
+                    BuildType.LABEL)
                 .isUnconditional())
         .isFalse();
     assertThat(
@@ -455,7 +585,7 @@ public class BuildTypeTest {
                         BuildType.Selector.DEFAULT_CONDITION_KEY,
                         "//b:b"),
                     null,
-                    currentRule,
+                    labelConversionContext,
                     BuildType.LABEL)
                 .isUnconditional())
         .isFalse();
@@ -463,7 +593,7 @@ public class BuildTypeTest {
             new Selector<>(
                     ImmutableMap.of(BuildType.Selector.DEFAULT_CONDITION_KEY, "//b:b"),
                     null,
-                    currentRule,
+                    labelConversionContext,
                     BuildType.LABEL)
                 .isUnconditional())
         .isTrue();
@@ -472,7 +602,7 @@ public class BuildTypeTest {
   private static FilesetEntry makeFilesetEntry() {
     try {
       return new FilesetEntry(
-          /* srcLabel */ Label.parseAbsolute("//foo:bar"),
+          /* srcLabel */ Label.parseAbsolute("//foo:bar", ImmutableMap.of()),
           /* files */ ImmutableList.<Label>of(),
           /* excludes */ ImmutableSet.of("xyz"),
           /* destDir */ null,
@@ -502,7 +632,7 @@ public class BuildTypeTest {
   private FilesetEntry createTestFilesetEntry(
       FilesetEntry.SymlinkBehavior symlinkBehavior)
       throws LabelSyntaxException {
-    Label label = Label.parseAbsolute("//x");
+    Label label = Label.parseAbsolute("//x", ImmutableMap.of());
     return new FilesetEntry(
         /* srcLabel */ label,
         /* files */ Arrays.asList(label),
@@ -539,7 +669,7 @@ public class BuildTypeTest {
   }
 
   private FilesetEntry createStripPrefixFilesetEntry(String stripPrefix)  throws Exception {
-    Label label = Label.parseAbsolute("//x");
+    Label label = Label.parseAbsolute("//x", ImmutableMap.of());
     return new FilesetEntry(
         /* srcLabel */ label,
         /* files */ Arrays.asList(label),
@@ -564,23 +694,25 @@ public class BuildTypeTest {
   @Test
   public void testPrintFilesetEntry() throws Exception {
     assertThat(
-        Printer.repr(
-            new FilesetEntry(
-                /* srcLabel */ Label.parseAbsolute("//foo:BUILD"),
-                /* files */ ImmutableList.of(Label.parseAbsolute("//foo:bar")),
-                /* excludes */ ImmutableSet.of("baz"),
-                /* destDir */ "qux",
-                /* symlinkBehavior */ FilesetEntry.SymlinkBehavior.DEREFERENCE,
-                /* stripPrefix */ "blah")))
+            Printer.repr(
+                new FilesetEntry(
+                    /* srcLabel */ Label.parseAbsolute("//foo:BUILD", ImmutableMap.of()),
+                    /* files */ ImmutableList.of(
+                        Label.parseAbsolute("//foo:bar", ImmutableMap.of())),
+                    /* excludes */ ImmutableSet.of("baz"),
+                    /* destDir */ "qux",
+                    /* symlinkBehavior */ FilesetEntry.SymlinkBehavior.DEREFERENCE,
+                    /* stripPrefix */ "blah")))
         .isEqualTo(
-            Joiner.on(" ").join(
-                ImmutableList.of(
-                    "FilesetEntry(srcdir = \"//foo:BUILD\",",
-                    "files = [\"//foo:bar\"],",
-                    "excludes = [\"baz\"],",
-                    "destdir = \"qux\",",
-                    "strip_prefix = \"blah\",",
-                    "symlinks = \"dereference\")")));
+            Joiner.on(" ")
+                .join(
+                    ImmutableList.of(
+                        "FilesetEntry(srcdir = \"//foo:BUILD\",",
+                        "files = [\"//foo:bar\"],",
+                        "excludes = [\"baz\"],",
+                        "destdir = \"qux\",",
+                        "strip_prefix = \"blah\",",
+                        "symlinks = \"dereference\")")));
   }
 
   @Test
@@ -589,19 +721,9 @@ public class BuildTypeTest {
     assertThat(EvalUtils.isImmutable(makeFilesetEntry())).isFalse();
   }
 
-  private static ImmutableList<Label> collectLabels(Type<?> type, Object value)
-      throws InterruptedException {
+  private static ImmutableList<Label> collectLabels(Type<?> type, Object value) {
     final ImmutableList.Builder<Label> result = ImmutableList.builder();
-    type.visitLabels(
-        new Type.LabelVisitor<Object>() {
-          @SuppressWarnings("unchecked")
-          @Override
-          public void visit(Label label, Object dummy) throws InterruptedException {
-            result.add(label);
-          }
-        },
-        value,
-        /*context=*/ null);
+    type.visitLabels((label, dummy) -> result.add(label), value, /*context=*/ null);
     return result.build();
   }
 }

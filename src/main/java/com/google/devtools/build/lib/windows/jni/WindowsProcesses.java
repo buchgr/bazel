@@ -33,7 +33,6 @@ public class WindowsProcesses {
    *     Windows path with a drive letter (e.g. "c:\foo\bar app.exe") or a single file name (e.g.
    *     "foo app.exe")
    * @param argvRest the rest of the command line, i.e. argv[1:] (needs to be quoted Windows style)
-   * @param commandLine the command line (needs to be quoted Windows style)
    * @param env the environment of the new process. null means inherit that of the Bazel server
    * @param cwd the working directory of the new process. if null, the same as that of the current
    *     process
@@ -41,16 +40,36 @@ public class WindowsProcesses {
    *     work.
    * @param stderrFile the file the stdout should be redirected to. if null, nativeReadStderr will
    *     work.
+   * @param redirectErrorStream whether we merge the process's standard error and standard output.
    * @return the opaque identifier of the created process
    */
   public static long createProcess(
+      String argv0,
+      String argvRest,
+      byte[] env,
+      String cwd,
+      String stdoutFile,
+      String stderrFile,
+      boolean redirectErrorStream) {
+    WindowsJniLoader.loadJni();
+    return nativeCreateProcess(
+        argv0, argvRest, env, cwd, stdoutFile, stderrFile, redirectErrorStream);
+  }
+
+  public static long createProcess(
       String argv0, String argvRest, byte[] env, String cwd, String stdoutFile, String stderrFile) {
     WindowsJniLoader.loadJni();
-    return nativeCreateProcess(argv0, argvRest, env, cwd, stdoutFile, stderrFile);
+    return nativeCreateProcess(argv0, argvRest, env, cwd, stdoutFile, stderrFile, false);
   }
 
   private static native long nativeCreateProcess(
-      String argv0, String argvRest, byte[] env, String cwd, String stdoutFile, String stderrFile);
+      String argv0,
+      String argvRest,
+      byte[] env,
+      String cwd,
+      String stdoutFile,
+      String stderrFile,
+      boolean redirectErrorStream);
 
   /**
    * Writes data from the given array to the stdin of the specified process.
@@ -197,6 +216,8 @@ public class WindowsProcesses {
 
   private static native int nativeGetpid();
 
+  // TODO(laszlocsomor): Replace this method with ShellUtils.windowsEscapeArg in order to fix
+  // https://github.com/bazelbuild/bazel/issues/7122
   public static String quoteCommandLine(List<String> argv) {
     StringBuilder result = new StringBuilder();
     for (int iArg = 0; iArg < argv.size(); iArg++) {
@@ -204,6 +225,10 @@ public class WindowsProcesses {
         result.append(" ");
       }
       String arg = argv.get(iArg);
+      if (arg.isEmpty()) {
+        result.append("\"\"");
+        continue;
+      }
       boolean hasSpace = arg.contains(" ");
       if (!arg.contains("\"") && !arg.contains("\\") && !hasSpace) {
         // fast path. Just append the input string.

@@ -13,10 +13,18 @@
 // limitations under the License.
 package com.google.devtools.build.lib.packages;
 
+import com.google.common.base.Preconditions;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.util.Preconditions;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import com.google.devtools.build.lib.skyframe.serialization.DeserializationContext;
+import com.google.devtools.build.lib.skyframe.serialization.ObjectCodec;
+import com.google.devtools.build.lib.skyframe.serialization.SerializationContext;
+import com.google.devtools.build.lib.skyframe.serialization.SerializationException;
+import com.google.protobuf.CodedInputStream;
+import com.google.protobuf.CodedOutputStream;
+import java.io.IOException;
 
 /**
  * An instance of a given {@code AspectClass} with loaded definition and parameters.
@@ -29,9 +37,6 @@ import java.util.concurrent.ConcurrentHashMap;
 @Immutable
 public final class Aspect implements DependencyFilter.AttributeInfoProvider {
 
-  /** */
-  public static final String INJECTING_RULE_KIND_PARAMETER_KEY = "$injecting_rule_kind";
-
   /**
    * The aspect definition is a function of the aspect class + its parameters, so we can cache that.
    *
@@ -40,8 +45,18 @@ public final class Aspect implements DependencyFilter.AttributeInfoProvider {
    *
    * <p>Caching of Skylark aspects is not yet implemented.
    */
-  private static final Map<NativeAspectClass, Map<AspectParameters, AspectDefinition>>
-      definitionCache = new ConcurrentHashMap<>();
+  private static final LoadingCache<
+          NativeAspectClass, LoadingCache<AspectParameters, AspectDefinition>>
+      definitionCache =
+          CacheBuilder.newBuilder()
+              .build(
+                  CacheLoader.from(
+                      nativeAspectClass ->
+                          CacheBuilder.newBuilder()
+                              .build(
+                                  CacheLoader.from(
+                                      aspectParameters ->
+                                          nativeAspectClass.getDefinition(aspectParameters)))));
 
   private final AspectDescriptor aspectDescriptor;
   private final AspectDefinition aspectDefinition;
@@ -59,9 +74,7 @@ public final class Aspect implements DependencyFilter.AttributeInfoProvider {
   public static Aspect forNative(
       NativeAspectClass nativeAspectClass, AspectParameters parameters) {
     AspectDefinition definition =
-        definitionCache
-            .computeIfAbsent(nativeAspectClass, key -> new ConcurrentHashMap<>())
-            .computeIfAbsent(parameters, nativeAspectClass::getDefinition);
+        definitionCache.getUnchecked(nativeAspectClass).getUnchecked(parameters);
     return new Aspect(nativeAspectClass, definition, parameters);
   }
 
@@ -107,5 +120,41 @@ public final class Aspect implements DependencyFilter.AttributeInfoProvider {
   public boolean isAttributeValueExplicitlySpecified(Attribute attribute) {
     // All aspect attributes are implicit.
     return false;
+  }
+
+  /** {@link ObjectCodec} for {@link Aspect}. */
+  static class AspectCodec implements ObjectCodec<Aspect> {
+    @Override
+    public Class<Aspect> getEncodedClass() {
+      return Aspect.class;
+    }
+
+    @Override
+    public void serialize(SerializationContext context, Aspect obj, CodedOutputStream codedOut)
+        throws SerializationException, IOException {
+      context.serialize(obj.getDescriptor(), codedOut);
+      boolean nativeAspect = obj.getDescriptor().getAspectClass() instanceof NativeAspectClass;
+      codedOut.writeBoolNoTag(nativeAspect);
+      if (!nativeAspect) {
+        context.serialize(obj.getDefinition(), codedOut);
+      }
+    }
+
+    @Override
+    public Aspect deserialize(DeserializationContext context, CodedInputStream codedIn)
+        throws SerializationException, IOException {
+      AspectDescriptor aspectDescriptor = context.deserialize(codedIn);
+      if (codedIn.readBool()) {
+        return forNative(
+            (NativeAspectClass) aspectDescriptor.getAspectClass(),
+            aspectDescriptor.getParameters());
+      } else {
+        AspectDefinition aspectDefinition = context.deserialize(codedIn);
+        return forSkylark(
+            (SkylarkAspectClass) aspectDescriptor.getAspectClass(),
+            aspectDefinition,
+            aspectDescriptor.getParameters());
+      }
+    }
   }
 }

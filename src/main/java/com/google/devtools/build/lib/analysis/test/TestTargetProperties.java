@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.analysis.test;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
@@ -28,7 +29,6 @@ import com.google.devtools.build.lib.packages.TargetUtils;
 import com.google.devtools.build.lib.packages.TestSize;
 import com.google.devtools.build.lib.packages.TestTimeout;
 import com.google.devtools.build.lib.syntax.Type;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.util.List;
 import java.util.Map;
 
@@ -44,10 +44,10 @@ public class TestTargetProperties {
    * <p>When changing these values, remember to update the documentation at
    * attributes/test/size.html.
    */
-  private static final ResourceSet SMALL_RESOURCES = ResourceSet.create(20, 0.9, 0.00, 1);
-  private static final ResourceSet MEDIUM_RESOURCES = ResourceSet.create(100, 0.9, 0.1, 1);
-  private static final ResourceSet LARGE_RESOURCES = ResourceSet.create(300, 0.8, 0.1, 1);
-  private static final ResourceSet ENORMOUS_RESOURCES = ResourceSet.create(800, 0.7, 0.4, 1);
+  private static final ResourceSet SMALL_RESOURCES = ResourceSet.create(20, 1, 1);
+  private static final ResourceSet MEDIUM_RESOURCES = ResourceSet.create(100, 1, 1);
+  private static final ResourceSet LARGE_RESOURCES = ResourceSet.create(300, 1, 1);
+  private static final ResourceSet ENORMOUS_RESOURCES = ResourceSet.create(800, 1, 1);
   private static final ResourceSet LOCAL_TEST_JOBS_BASED_RESOURCES =
       ResourceSet.createWithLocalTestCount(1);
 
@@ -81,8 +81,6 @@ public class TestTargetProperties {
     size = TestSize.getTestSize(rule);
     timeout = TestTimeout.getTestTimeout(rule);
     tags = ruleContext.attributes().get("tags", Type.STRING_LIST);
-    boolean isTaggedLocal = TargetUtils.isLocalTestRule(rule)
-        || TargetUtils.isExclusiveTestRule(rule);
 
     // We need to use method on ruleConfiguredTarget to perform validation.
     isFlaky = ruleContext.attributes().get("flaky", Type.BOOLEAN);
@@ -90,21 +88,18 @@ public class TestTargetProperties {
 
     Map<String, String> executionInfo = Maps.newLinkedHashMap();
     executionInfo.putAll(TargetUtils.getExecutionInfo(rule));
-    if (isTaggedLocal) {
-      executionInfo.put("local", "");
+    if (TargetUtils.isLocalTestRule(rule) || TargetUtils.isExclusiveTestRule(rule)) {
+      executionInfo.put(ExecutionRequirements.LOCAL, "");
     }
 
-    boolean isRequestedLocalByProvider = false;
     if (executionRequirements != null) {
       // This will overwrite whatever TargetUtils put there, which might be confusing.
       executionInfo.putAll(executionRequirements.getExecutionInfo());
-
-      // We also need to mark it as local if the execution requirements specifies it.
-      isRequestedLocalByProvider = executionRequirements.getExecutionInfo().containsKey("local");
     }
+    ruleContext.getConfiguration().modifyExecutionInfo(executionInfo, TestRunnerAction.MNEMONIC);
     this.executionInfo = ImmutableMap.copyOf(executionInfo);
 
-    isLocal = isTaggedLocal || isRequestedLocalByProvider;
+    isLocal = executionInfo.containsKey(ExecutionRequirements.LOCAL);
 
     language = TargetUtils.getRuleLanguage(rule);
   }
@@ -157,7 +152,6 @@ public class TestTargetProperties {
               ResourceSet.create(
                   testResourcesFromSize.getMemoryMb(),
                   Float.parseFloat(cpus),
-                  testResourcesFromSize.getIoUsage(),
                   testResourcesFromSize.getLocalTestCount());
         }
       } catch (ValidationException e) {

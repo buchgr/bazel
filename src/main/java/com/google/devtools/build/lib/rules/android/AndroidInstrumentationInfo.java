@@ -13,37 +13,48 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.android;
 
-import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.packages.BuiltinProvider;
 import com.google.devtools.build.lib.packages.NativeInfo;
-import com.google.devtools.build.lib.packages.NativeProvider;
+import com.google.devtools.build.lib.skylarkbuildapi.android.AndroidInstrumentationInfoApi;
+import com.google.devtools.build.lib.syntax.EvalException;
 
 /**
- * A provider for targets that create Android instrumentations. Consumed by {@link
- * AndroidInstrumentationTest}.
+ * A provider for targets that create Android instrumentations. Consumed by Android testing rules.
  */
 @Immutable
-public class AndroidInstrumentationInfo extends NativeInfo {
+public class AndroidInstrumentationInfo extends NativeInfo
+    implements AndroidInstrumentationInfoApi<ApkInfo> {
 
   private static final String SKYLARK_NAME = "AndroidInstrumentationInfo";
-  static final NativeProvider<AndroidInstrumentationInfo> PROVIDER =
-      new NativeProvider<AndroidInstrumentationInfo>(
-          AndroidInstrumentationInfo.class, SKYLARK_NAME) {};
 
-  private final Artifact targetApk;
-  private final Artifact instrumentationApk;
+  public static final AndroidInstrumentationInfoProvider PROVIDER =
+      new AndroidInstrumentationInfoProvider();
 
-  public AndroidInstrumentationInfo(Artifact targetApk, Artifact instrumentationApk) {
+  private final ApkInfo target;
+
+  AndroidInstrumentationInfo(ApkInfo target) {
     super(PROVIDER);
-    this.targetApk = targetApk;
-    this.instrumentationApk = instrumentationApk;
+    this.target = target;
   }
 
-  public Artifact getTargetApk() {
-    return targetApk;
+  @Override
+  public ApkInfo getTarget() {
+    return target;
   }
 
-  public Artifact getInstrumentationApk() {
-    return instrumentationApk;
+  /** Provider for {@link AndroidInstrumentationInfo}. */
+  public static class AndroidInstrumentationInfoProvider
+      extends BuiltinProvider<AndroidInstrumentationInfo>
+      implements AndroidInstrumentationInfoApiProvider<ApkInfo> {
+
+    private AndroidInstrumentationInfoProvider() {
+      super(SKYLARK_NAME, AndroidInstrumentationInfo.class);
+    }
+
+    @Override
+    public AndroidInstrumentationInfoApi<ApkInfo> createInfo(ApkInfo target) throws EvalException {
+      return new AndroidInstrumentationInfo(target);
+    }
   }
 }

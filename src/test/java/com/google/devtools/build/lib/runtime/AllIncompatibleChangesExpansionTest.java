@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.runtime;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 import static org.junit.Assert.fail;
 
 import com.google.common.collect.ImmutableList;
@@ -72,8 +73,10 @@ public class AllIncompatibleChangesExpansionTest {
 
     @Option(
       name = "incompatible_A",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false",
@@ -83,22 +86,40 @@ public class AllIncompatibleChangesExpansionTest {
 
     @Option(
       name = "incompatible_B",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false",
       help = "Migrate to B"
     )
     public boolean incompatibleB;
+
+    @Option(
+        name = "incompatible_C",
+        oldName = "experimental_C",
+        metadataTags = {
+            OptionMetadataTag.INCOMPATIBLE_CHANGE,
+            OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+        },
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.NO_OP},
+        defaultValue = "true",
+        help = "Migrate to C"
+    )
+    public boolean incompatibleC;
   }
 
   /** Dummy comment (linter suppression) */
   public static class ExampleExpansionOptions extends OptionsBase {
     @Option(
       name = "incompatible_expX",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "null",
@@ -108,7 +129,7 @@ public class AllIncompatibleChangesExpansionTest {
     public Void incompatibleExpX;
 
     /** Dummy comment (linter suppression) */
-    public static class YExpansion implements ExpansionFunction {
+    public static class NoYExpansion implements ExpansionFunction {
       @Override
       public ImmutableList<String> getExpansion(IsolatedOptionsData optionsData) {
         return ImmutableList.of("--noY");
@@ -117,12 +138,14 @@ public class AllIncompatibleChangesExpansionTest {
 
     @Option(
       name = "incompatible_expY",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "null",
-      expansionFunction = YExpansion.class,
+      expansionFunction = NoYExpansion.class,
       help = "Stop using Y"
     )
     public Void incompatibleExpY;
@@ -130,31 +153,33 @@ public class AllIncompatibleChangesExpansionTest {
 
   @Test
   public void noChangesSelected() throws OptionsParsingException {
-    OptionsParser parser = OptionsParser.newOptionsParser(ExampleOptions.class);
+    OptionsParser parser = OptionsParser.builder().optionsClasses(ExampleOptions.class).build();
     parser.parse("");
     ExampleOptions opts = parser.getOptions(ExampleOptions.class);
     assertThat(opts.x).isFalse();
     assertThat(opts.y).isTrue();
     assertThat(opts.incompatibleA).isFalse();
     assertThat(opts.incompatibleB).isFalse();
+    assertThat(opts.incompatibleC).isTrue();
   }
 
   @Test
   public void allChangesSelected() throws OptionsParsingException {
-    OptionsParser parser = OptionsParser.newOptionsParser(ExampleOptions.class);
+    OptionsParser parser = OptionsParser.builder().optionsClasses(ExampleOptions.class).build();
     parser.parse("--all");
     ExampleOptions opts = parser.getOptions(ExampleOptions.class);
     assertThat(opts.x).isFalse();
     assertThat(opts.y).isTrue();
     assertThat(opts.incompatibleA).isTrue();
     assertThat(opts.incompatibleB).isTrue();
+    assertThat(opts.incompatibleC).isTrue();
   }
 
   @Test
   public void rightmostOverrides() throws OptionsParsingException {
     // Check that all-expansion behaves just like any other expansion flag:
     // the rightmost setting of any individual option wins.
-    OptionsParser parser = OptionsParser.newOptionsParser(ExampleOptions.class);
+    OptionsParser parser = OptionsParser.builder().optionsClasses(ExampleOptions.class).build();
     parser.parse("--noincompatible_A", "--all", "--noincompatible_B");
     ExampleOptions opts = parser.getOptions(ExampleOptions.class);
     assertThat(opts.incompatibleA).isTrue();
@@ -166,7 +191,9 @@ public class AllIncompatibleChangesExpansionTest {
     // Check that all-expansion behaves just like any other expansion flag:
     // the rightmost setting of any individual option wins.
     OptionsParser parser =
-        OptionsParser.newOptionsParser(ExampleOptions.class, ExampleExpansionOptions.class);
+        OptionsParser.builder()
+            .optionsClasses(ExampleOptions.class, ExampleExpansionOptions.class)
+            .build();
     parser.parse("--all");
     ExampleOptions opts = parser.getOptions(ExampleOptions.class);
     assertThat(opts.x).isTrue();
@@ -187,8 +214,7 @@ public class AllIncompatibleChangesExpansionTest {
     InvocationPolicy policy = invocationPolicyBuilder.build();
     InvocationPolicyEnforcer enforcer = new InvocationPolicyEnforcer(policy);
 
-    OptionsParser parser =
-        OptionsParser.newOptionsParser(ExampleOptions.class);
+    OptionsParser parser = OptionsParser.builder().optionsClasses(ExampleOptions.class).build();
     parser.parse("--all");
     enforcer.enforce(parser);
 
@@ -197,6 +223,34 @@ public class AllIncompatibleChangesExpansionTest {
     assertThat(opts.y).isTrue();
     assertThat(opts.incompatibleA).isFalse(); // A should have been removed from the expansion.
     assertThat(opts.incompatibleB).isTrue(); // B, without a policy, should have been left alone.
+  }
+
+  /** Option with the right prefix, but the wrong metadata tag. */
+  public static class IncompatibleChangeTagOption extends OptionsBase {
+    @Option(
+      name = "some_option_with_a_tag",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      effectTags = {OptionEffectTag.NO_OP},
+      defaultValue = "false",
+      help = "nohelp"
+    )
+    public boolean opt;
+  }
+
+  @Test
+  public void incompatibleChangeTagDoesNotTriggerAllIncompatibleChangesCheck() {
+    try {
+      OptionsParser.builder()
+          .optionsClasses(ExampleOptions.class, IncompatibleChangeTagOption.class)
+          .build();
+    } catch (OptionsParser.ConstructionException e) {
+      fail(
+          "some_option_with_a_tag should not trigger the expansion, so there should be no checks "
+              + "on it having the right prefix and metadata tags. Instead, the following exception "
+              + "was thrown: "
+              + e.getMessage());
+    }
   }
 
   // There's no unit test to check that the expansion of --all is sorted. IsolatedOptionsData is not
@@ -210,20 +264,25 @@ public class AllIncompatibleChangesExpansionTest {
   // Because javadoc can't resolve inner classes.
   @SuppressWarnings("javadoc")
   private static void assertBadness(Class<? extends OptionsBase> optionsBaseClass, String message) {
-    try {
-      OptionsParser.newOptionsParser(ExampleOptions.class, optionsBaseClass);
-      fail("Should have failed with message \"" + message + "\"");
-    } catch (OptionsParser.ConstructionException e) {
-      assertThat(e).hasMessageThat().contains(message);
-    }
+    OptionsParser.ConstructionException e =
+        assertThrows(
+            "Should have failed with message \"" + message + "\"",
+            OptionsParser.ConstructionException.class,
+            () ->
+                OptionsParser.builder()
+                    .optionsClasses(ExampleOptions.class, optionsBaseClass)
+                    .build());
+    assertThat(e).hasMessageThat().contains(message);
   }
 
   /** Dummy comment (linter suppression) */
   public static class BadNameOptions extends OptionsBase {
     @Option(
       name = "badname",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false",
@@ -240,33 +299,12 @@ public class AllIncompatibleChangesExpansionTest {
             + "starting with \"incompatible_\"");
   }
 
-  /**
-   * Option with the right prefix and tag, but the wrong "category." The category is deprecated and
-   * this test will be deleted when the option field is removed.
-   */
-  public static class BadCategoryOptions extends OptionsBase {
+  /** Option with the right prefix, but the wrong metadata tag. */
+  public static class MissingTriggeredByTagOptions extends OptionsBase {
     @Option(
       name = "incompatible_bad",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.NO_OP},
-      defaultValue = "false",
-      help = "nohelp"
-    )
-    public boolean bad;
-  }
-
-  @Test
-  public void badCategory() {
-    assertBadness(BadCategoryOptions.class, "must have category \"incompatible changes\"");
-  }
-
-  /** Option with the right prefix and "category," but the wrong metadata tag. */
-  public static class BadTagOptions extends OptionsBase {
-    @Option(
-      name = "incompatible_bad",
-      category = "incompatible changes",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false",
       help = "nohelp"
@@ -277,16 +315,38 @@ public class AllIncompatibleChangesExpansionTest {
   @Test
   public void badTag() {
     assertBadness(
-        BadTagOptions.class,
-        "must have metadata tag \"OptionMetadataTag.INCOMPATIBLE_CHANGE\"");
+        MissingTriggeredByTagOptions.class,
+        "must have metadata tag OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES");
+  }
+
+  /** Option with the right prefix, but the wrong metadata tag. */
+  public static class MissingIncompatibleTagOptions extends OptionsBase {
+    @Option(
+      name = "incompatible_bad",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      metadataTags = {OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES},
+      effectTags = {OptionEffectTag.NO_OP},
+      defaultValue = "false",
+      help = "nohelp"
+    )
+    public boolean bad;
+  }
+
+  @Test
+  public void otherBadTag() {
+    assertBadness(
+        MissingIncompatibleTagOptions.class,
+        "must have metadata tag OptionMetadataTag.INCOMPATIBLE_CHANGE");
   }
 
   /** Dummy comment (linter suppression) */
   public static class BadTypeOptions extends OptionsBase {
     @Option(
       name = "incompatible_bad",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "0",
@@ -304,8 +364,10 @@ public class AllIncompatibleChangesExpansionTest {
   public static class BadHelpOptions extends OptionsBase {
     @Option(
       name = "incompatible_bad",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false"
@@ -322,8 +384,10 @@ public class AllIncompatibleChangesExpansionTest {
   public static class BadAbbrevOptions extends OptionsBase {
     @Option(
       name = "incompatible_bad",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false",
@@ -342,8 +406,10 @@ public class AllIncompatibleChangesExpansionTest {
   public static class BadValueHelpOptions extends OptionsBase {
     @Option(
       name = "incompatible_bad",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false",
@@ -362,8 +428,10 @@ public class AllIncompatibleChangesExpansionTest {
   public static class BadConverterOptions extends OptionsBase {
     @Option(
       name = "incompatible_bad",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false",
@@ -382,8 +450,10 @@ public class AllIncompatibleChangesExpansionTest {
   public static class BadAllowMultipleOptions extends OptionsBase {
     @Option(
       name = "incompatible_bad",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "null",
@@ -402,8 +472,10 @@ public class AllIncompatibleChangesExpansionTest {
   public static class BadImplicitRequirementsOptions extends OptionsBase {
     @Option(
       name = "incompatible_bad",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false",
@@ -423,8 +495,10 @@ public class AllIncompatibleChangesExpansionTest {
   public static class BadOldNameOptions extends OptionsBase {
     @Option(
       name = "incompatible_bad",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.NO_OP},
       defaultValue = "false",
@@ -437,26 +511,5 @@ public class AllIncompatibleChangesExpansionTest {
   @Test
   public void badOldName() {
     assertBadness(BadOldNameOptions.class, "must not use the oldName field");
-  }
-
-  /** Dummy comment (linter suppression) */
-  public static class BadWrapperOptionOptions extends OptionsBase {
-    @Option(
-      name = "incompatible_bad",
-      category = "incompatible changes",
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE, OptionMetadataTag.DEPRECATED},
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.NO_OP},
-      defaultValue = "false",
-      help = "nohelp",
-      deprecationWarning = "wrapper options are deprecated, including this one.",
-      wrapperOption = true
-    )
-    public boolean bad;
-  }
-
-  @Test
-  public void badWrapperOption() {
-    assertBadness(BadWrapperOptionOptions.class, "must not use the wrapperOption field");
   }
 }

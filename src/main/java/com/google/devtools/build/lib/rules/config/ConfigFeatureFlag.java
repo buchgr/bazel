@@ -25,21 +25,22 @@ import com.google.common.collect.ImmutableMultiset;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multiset;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
-import com.google.devtools.build.lib.analysis.whitelisting.Whitelist;
+import com.google.devtools.build.lib.analysis.Whitelist;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.Attribute.ComputedDefault;
 import com.google.devtools.build.lib.packages.AttributeMap;
-import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.syntax.Printer;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * The implementation of the config_feature_flag rule for defining custom flags for Android rules.
@@ -88,7 +89,7 @@ public class ConfigFeatureFlag implements RuleConfiguredTargetFactory {
 
   @Override
   public ConfiguredTarget create(RuleContext ruleContext)
-      throws InterruptedException, RuleErrorException {
+      throws InterruptedException, RuleErrorException, ActionConflictException {
     if (!ConfigFeatureFlag.isAvailable(ruleContext)) {
       ruleContext.ruleError(
           String.format(
@@ -115,14 +116,17 @@ public class ConfigFeatureFlag implements RuleConfiguredTargetFactory {
               + Printer.repr(duplicates.build()));
     }
 
-    String defaultValue = ruleContext.attributes().get("default_value", STRING);
-    if (!isValidValue.apply(defaultValue)) {
+    Optional<String> defaultValue =
+        ruleContext.attributes().isAttributeValueExplicitlySpecified("default_value")
+            ? Optional.of(ruleContext.attributes().get("default_value", STRING))
+            : Optional.empty();
+    if (defaultValue.isPresent() && !isValidValue.apply(defaultValue.get())) {
       ruleContext.attributeError(
           "default_value",
           "must be one of "
               + Printer.repr(values.asList())
               + ", but was "
-              + Printer.repr(defaultValue));
+              + Printer.repr(defaultValue.get()));
     }
 
     if (ruleContext.hasErrors()) {
@@ -131,21 +135,28 @@ public class ConfigFeatureFlag implements RuleConfiguredTargetFactory {
       return null;
     }
 
-    String value =
+    Optional<String> configuredValue =
         ruleContext
             .getFragment(ConfigFeatureFlagConfiguration.class)
-            .getFeatureFlagValue(ruleContext.getOwner())
-            .or(defaultValue);
+            .getFeatureFlagValue(ruleContext.getOwner());
 
-    if (!isValidValue.apply(value)) {
+    if (configuredValue.isPresent() && !isValidValue.apply(configuredValue.get())) {
       // TODO(mstaib): When configurationError is available, use that instead.
       ruleContext.ruleError(
           "value must be one of "
               + Printer.repr(values.asList())
               + ", but was "
-              + Printer.repr(value));
+              + Printer.repr(configuredValue.get()));
       return null;
     }
+
+    if (!configuredValue.isPresent() && !defaultValue.isPresent()) {
+      // TODO(mstaib): When configurationError is available, use that instead.
+      ruleContext.ruleError("flag has no default and must be set, but was not set");
+      return null;
+    }
+
+    String value = configuredValue.orElseGet(defaultValue::get);
 
     ConfigFeatureFlagProvider provider = ConfigFeatureFlagProvider.create(value, isValidValue);
 

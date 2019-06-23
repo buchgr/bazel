@@ -1,4 +1,4 @@
-// Copyright 2014 The Bazel Authors. All rights reserved.
+// Copyright 2018 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,11 +16,15 @@ package com.google.devtools.build.lib.analysis;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
-import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -30,13 +34,12 @@ import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.packages.BuildType;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
+import com.google.devtools.build.lib.skylarkbuildapi.RunfilesApi;
+import com.google.devtools.build.lib.skylarkbuildapi.SymlinkEntryApi;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -46,10 +49,8 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
-import java.util.TreeSet;
 import javax.annotation.Nullable;
 
 /**
@@ -62,12 +63,8 @@ import javax.annotation.Nullable;
  * manifests" (see {@link PruningManifest}).
  */
 @Immutable
-@SkylarkModule(
-  name = "runfiles",
-  category = SkylarkModuleCategory.NONE,
-  doc = "An interface for a set of runfiles."
-)
-public final class Runfiles {
+@AutoCodec
+public final class Runfiles implements RunfilesApi {
   private static final Function<SymlinkEntry, Artifact> TO_ARTIFACT =
       new Function<SymlinkEntry, Artifact>() {
         @Override
@@ -76,29 +73,17 @@ public final class Runfiles {
         }
       };
 
-  private static final EmptyFilesSupplier DUMMY_EMPTY_FILES_SUPPLIER =
-      new EmptyFilesSupplier() {
-        @Override
-        public Iterable<PathFragment> getExtraPaths(Set<PathFragment> manifestPaths) {
-          return ImmutableList.of();
-        }
-      };
+  private static class DummyEmptyFilesSupplier implements EmptyFilesSupplier {
+    private DummyEmptyFilesSupplier() {}
 
-  private static final Function<Artifact, PathFragment> GET_ROOT_RELATIVE_PATH =
-      new Function<Artifact, PathFragment>() {
-        @Override
-        public PathFragment apply(Artifact input) {
-          return input.getRootRelativePath();
-        }
-      };
+    @Override
+    public Iterable<PathFragment> getExtraPaths(Set<PathFragment> manifestPaths) {
+      return ImmutableList.of();
+    }
+  }
 
-  private static final Function<PathFragment, String> PATH_FRAGMENT_TO_STRING =
-      new Function<PathFragment, String>() {
-        @Override
-        public String apply(PathFragment input) {
-          return input.toString();
-        }
-      };
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final EmptyFilesSupplier DUMMY_EMPTY_FILES_SUPPLIER = new DummyEmptyFilesSupplier();
 
   /**
    * An entry in the runfiles map.
@@ -129,19 +114,28 @@ public final class Runfiles {
   // equals to the third one if they are not the same instance (which they almost never are)
   //
   // Goodnight, prince(ss)?, and sweet dreams.
-  private static final class SymlinkEntry implements SkylarkValue {
+  @AutoCodec
+  @VisibleForSerialization
+  static final class SymlinkEntry implements SymlinkEntryApi {
     private final PathFragment path;
     private final Artifact artifact;
 
-    private SymlinkEntry(PathFragment path, Artifact artifact) {
+    @VisibleForSerialization
+    SymlinkEntry(PathFragment path, Artifact artifact) {
       this.path = Preconditions.checkNotNull(path);
       this.artifact = Preconditions.checkNotNull(artifact);
+    }
+
+    @Override
+    public String getPathString() {
+      return getPath().getPathString();
     }
 
     public PathFragment getPath() {
       return path;
     }
 
+    @Override
     public Artifact getArtifact() {
       return artifact;
     }
@@ -154,8 +148,8 @@ public final class Runfiles {
     @Override
     public void repr(SkylarkPrinter printer) {
       printer.append("SymlinkEntry(path = ");
-      printer.repr(getPath().toString());
-      printer.append(", artifact = ");
+      printer.repr(getPathString());
+      printer.append(", target_file = ");
       getArtifact().repr(printer);
       printer.append(")");
     }
@@ -201,6 +195,12 @@ public final class Runfiles {
   private final NestedSet<SymlinkEntry> rootSymlinks;
 
   /**
+   * A set of middlemen artifacts. {@link RuleConfiguredTargetBuilder} adds these to the {@link
+   * FilesToRunProvider} of binaries that include this runfiles tree in their runfiles.
+   */
+  private final NestedSet<Artifact> extraMiddlemen;
+
+  /**
    * Interface used for adding empty files to the runfiles at the last minute. Mainly to support
    * python-related rules adding __init__.py files.
    */
@@ -233,12 +233,12 @@ public final class Runfiles {
   private ConflictPolicy conflictPolicy = ConflictPolicy.IGNORE;
 
   /**
-   * Defines a set of artifacts that may or may not be included in the runfiles directory and
-   * a manifest file that makes that determination. These are applied on top of any artifacts
+   * Defines a set of artifacts that may or may not be included in the runfiles directory and a
+   * manifest file that makes that determination. These are applied on top of any artifacts
    * specified in {@link #unconditionalArtifacts}.
    *
-   * <p>The incentive behind this is to enable execution-phase "pruning" of runfiles. Anything
-   * set in unconditionalArtifacts is hard-set in Blaze's analysis phase, and thus unchangeable in
+   * <p>The incentive behind this is to enable execution-phase "pruning" of runfiles. Anything set
+   * in unconditionalArtifacts is hard-set in Blaze's analysis phase, and thus unchangeable in
    * response to execution phase results. This isn't always convenient. For example, say we have an
    * action that consumes a set of "possible" runtime dependencies for a source file, parses that
    * file for "import a.b.c" statements, and outputs a manifest of the actual dependencies that are
@@ -250,6 +250,7 @@ public final class Runfiles {
    * superset of the pruned dependencies, so undeclared inclusions (which can break build
    * correctness) aren't possible.
    */
+  @AutoCodec
   public static class PruningManifest {
     private final NestedSet<Artifact> candidateRunfiles;
     private final Artifact manifestFile;
@@ -288,19 +289,23 @@ public final class Runfiles {
    */
   private final boolean legacyExternalRunfiles;
 
-  private Runfiles(
+  @AutoCodec.Instantiator
+  @VisibleForSerialization
+  Runfiles(
       PathFragment suffix,
-      NestedSet<Artifact> artifacts,
+      NestedSet<Artifact> unconditionalArtifacts,
       NestedSet<SymlinkEntry> symlinks,
       NestedSet<SymlinkEntry> rootSymlinks,
       NestedSet<PruningManifest> pruningManifests,
+      NestedSet<Artifact> extraMiddlemen,
       EmptyFilesSupplier emptyFilesSupplier,
       ConflictPolicy conflictPolicy,
       boolean legacyExternalRunfiles) {
     this.suffix = suffix;
-    this.unconditionalArtifacts = Preconditions.checkNotNull(artifacts);
+    this.unconditionalArtifacts = Preconditions.checkNotNull(unconditionalArtifacts);
     this.symlinks = Preconditions.checkNotNull(symlinks);
     this.rootSymlinks = Preconditions.checkNotNull(rootSymlinks);
+    this.extraMiddlemen = Preconditions.checkNotNull(extraMiddlemen);
     this.pruningManifests = Preconditions.checkNotNull(pruningManifests);
     this.emptyFilesSupplier = Preconditions.checkNotNull(emptyFilesSupplier);
     this.conflictPolicy = conflictPolicy;
@@ -322,59 +327,44 @@ public final class Runfiles {
     return unconditionalArtifacts;
   }
 
-  /**
-   * Returns the artifacts that are unconditionally included in the runfiles (as opposed to
-   * pruning manifest candidates, which may or may not be included). Middleman artifacts are
-   * excluded.
-   */
-  public Iterable<Artifact> getUnconditionalArtifactsWithoutMiddlemen() {
-    return Iterables.filter(unconditionalArtifacts, Artifact.MIDDLEMAN_FILTER);
+  public NestedSet<Artifact> getExtraMiddlemen() {
+    return extraMiddlemen;
   }
 
   /**
    * Returns the collection of runfiles as artifacts, including both unconditional artifacts and
    * pruning manifest candidates.
    */
-  @SkylarkCallable(
-    name = "files",
-    doc = "Returns the set of runfiles as files.",
-    structField = true
-  )
+  @Override
   public NestedSet<Artifact> getArtifacts() {
     NestedSetBuilder<Artifact> allArtifacts = NestedSetBuilder.stableOrder();
-    allArtifacts.addAll(unconditionalArtifacts.toCollection());
+    allArtifacts.addTransitive(unconditionalArtifacts);
     for (PruningManifest manifest : getPruningManifests()) {
       allArtifacts.addTransitive(manifest.getCandidateRunfiles());
     }
     return allArtifacts.build();
   }
 
-  /**
-   * Returns the collection of runfiles as artifacts, including both unconditional artifacts
-   * and pruning manifest candidates. Middleman artifacts are excluded.
-   */
-  public Iterable<Artifact> getArtifactsWithoutMiddlemen() {
-    return Iterables.filter(getArtifacts(), Artifact.MIDDLEMAN_FILTER);
-  }
-
   /** Returns the symlinks. */
-  @SkylarkCallable(name = "symlinks", doc = "Returns the set of symlinks.", structField = true)
+  @Override
   public NestedSet<SymlinkEntry> getSymlinks() {
     return symlinks;
   }
 
-  @SkylarkCallable(
-    name = "empty_filenames",
-    doc = "Returns names of empty files to create.",
-    structField = true
-  )
+  @Override
   public NestedSet<String> getEmptyFilenames() {
-    Set<PathFragment> manifest = new TreeSet<>();
-    Iterables.addAll(
-        manifest, Iterables.transform(getArtifacts().toCollection(), GET_ROOT_RELATIVE_PATH));
-    return NestedSetBuilder.wrap(
-        Order.STABLE_ORDER,
-        Iterables.transform(emptyFilesSupplier.getExtraPaths(manifest), PATH_FRAGMENT_TO_STRING));
+    Set<PathFragment> manifestKeys =
+        Streams.concat(
+                Streams.stream(symlinks).map(SymlinkEntry::getPath),
+                Streams.stream(getArtifacts()).map(Artifact::getRootRelativePath))
+            .collect(ImmutableSet.toImmutableSet());
+    Iterable<PathFragment> emptyKeys = emptyFilesSupplier.getExtraPaths(manifestKeys);
+    return NestedSetBuilder.<String>stableOrder()
+        .addAll(
+            Streams.stream(emptyKeys)
+                .map(PathFragment::toString)
+                .collect(ImmutableList.toImmutableList()))
+        .build();
   }
 
   /**
@@ -399,9 +389,9 @@ public final class Runfiles {
     Map<PathFragment, Artifact> newManifest = new HashMap<>();
 
     outer:
-    for (Iterator<Entry<PathFragment, Artifact>> i = workingManifest.entrySet().iterator();
-         i.hasNext(); ) {
-      Entry<PathFragment, Artifact> entry = i.next();
+    for (Iterator<Map.Entry<PathFragment, Artifact>> i = workingManifest.entrySet().iterator();
+        i.hasNext(); ) {
+      Map.Entry<PathFragment, Artifact> entry = i.next();
       PathFragment source = entry.getKey();
       Artifact symlink = entry.getValue();
       // drop nested entries; warn if this changes anything
@@ -415,11 +405,20 @@ public final class Runfiles {
             continue outer;
           }
           PathFragment suffix = source.subFragment(n - j, n);
-          Path viaAncestor = ancestor.getPath().getRelative(suffix);
-          Path expected = symlink.getPath();
+          PathFragment viaAncestor = ancestor.getExecPath().getRelative(suffix);
+          PathFragment expected = symlink.getExecPath();
           if (!viaAncestor.equals(expected)) {
-            eventHandler.handle(Event.warn(location, "runfiles symlink " + source + " -> "
-                + expected + " obscured by " + prefix + " -> " + ancestor.getPath()));
+            eventHandler.handle(
+                Event.warn(
+                    location,
+                    "runfiles symlink "
+                        + source
+                        + " -> "
+                        + expected
+                        + " obscured by "
+                        + prefix
+                        + " -> "
+                        + ancestor.getExecPath()));
           }
           continue outer;
         }
@@ -436,15 +435,16 @@ public final class Runfiles {
    *     normal source tree entries, or runfile conflicts. May be null, in which case obscuring
    *     symlinks are silently discarded, and conflicts are overwritten.
    * @param location Location for eventHandler warnings. Ignored if eventHandler is null.
+   * @param resolver The {@link ArtifactPathResolver} to use for the pruning manifest, if present.
    * @return Map<PathFragment, Artifact> path fragment to artifact, of normal source tree entries
    *     and elements that live outside the source tree. Null values represent empty input files.
    */
-  public Map<PathFragment, Artifact> getRunfilesInputs(EventHandler eventHandler, Location location)
-      throws IOException {
+  public Map<PathFragment, Artifact> getRunfilesInputs(EventHandler eventHandler, Location location,
+      ArtifactPathResolver resolver) throws IOException {
     ConflictChecker checker = new ConflictChecker(conflictPolicy, eventHandler, location);
     Map<PathFragment, Artifact> manifest = getSymlinksAsMap(checker);
     // Add unconditional artifacts (committed to inclusion on construction of runfiles).
-    for (Artifact artifact : getUnconditionalArtifactsWithoutMiddlemen()) {
+    for (Artifact artifact : getUnconditionalArtifacts()) {
       checker.put(manifest, artifact.getRootRelativePath(), artifact);
     }
 
@@ -456,7 +456,7 @@ public final class Runfiles {
         allowedRunfiles.put(artifact.getRootRelativePath().getPathString(), artifact);
       }
       try (BufferedReader reader = new BufferedReader(
-          new InputStreamReader(pruningManifest.getManifestFile().getPath().getInputStream()))) {
+          new InputStreamReader(resolver.toPath(pruningManifest.getManifestFile()).getInputStream()))) {
         String line;
         while ((line = reader.readLine()) != null) {
           Artifact artifact = allowedRunfiles.get(line);
@@ -554,7 +554,7 @@ public final class Runfiles {
     }
 
     private PathFragment getExternalPath(PathFragment path) {
-      return checkForWorkspace(path.relativeTo(Label.EXTERNAL_PACKAGE_NAME));
+      return checkForWorkspace(path.relativeTo(LabelConstants.EXTERNAL_PACKAGE_NAME));
     }
 
     private PathFragment checkForWorkspace(PathFragment path) {
@@ -564,7 +564,7 @@ public final class Runfiles {
     }
 
     private static boolean isUnderWorkspace(PathFragment path) {
-      return !path.startsWith(Label.EXTERNAL_PACKAGE_NAME);
+      return !path.startsWith(LabelConstants.EXTERNAL_PACKAGE_NAME);
     }
   }
 
@@ -572,9 +572,8 @@ public final class Runfiles {
     return legacyExternalRunfiles;
   }
 
-  /**
-   * Returns the root symlinks.
-   */
+  /** Returns the root symlinks. */
+  @Override
   public NestedSet<SymlinkEntry> getRootSymlinks() {
     return rootSymlinks;
   }
@@ -597,7 +596,7 @@ public final class Runfiles {
     // If multiple artifacts have the same root-relative path, the last one in the list will win.
     // That is because the runfiles tree cannot contain the same artifact for different
     // configurations, because it only uses root-relative paths.
-    for (Artifact artifact : Iterables.filter(unconditionalArtifacts, Artifact.MIDDLEMAN_FILTER)) {
+    for (Artifact artifact : unconditionalArtifacts) {
       result.put(artifact.getRootRelativePath(), artifact);
     }
     return result;
@@ -641,8 +640,11 @@ public final class Runfiles {
    * Returns if there are no runfiles.
    */
   public boolean isEmpty() {
-    return unconditionalArtifacts.isEmpty() && symlinks.isEmpty() && rootSymlinks.isEmpty()
-        && pruningManifests.isEmpty();
+    return unconditionalArtifacts.isEmpty()
+        && symlinks.isEmpty()
+        && rootSymlinks.isEmpty()
+        && pruningManifests.isEmpty()
+        && extraMiddlemen.isEmpty();
   }
 
   /**
@@ -714,12 +716,16 @@ public final class Runfiles {
      * @param artifact Artifact to store in map. This may be null to indicate an empty file.
      */
     public void put(Map<PathFragment, Artifact> map, PathFragment path, Artifact artifact) {
+      Preconditions.checkArgument(
+          artifact == null || !artifact.isMiddlemanArtifact(), "%s", artifact);
       if (policy != ConflictPolicy.IGNORE && map.containsKey(path)) {
         // Previous and new entry might have value of null
         Artifact previous = map.get(path);
         if (!Objects.equals(previous, artifact)) {
-          String previousStr = (previous == null) ? "empty file" : previous.getPath().toString();
-          String artifactStr = (artifact == null) ? "empty file" : artifact.getPath().toString();
+          String previousStr =
+              (previous == null) ? "empty file" : previous.getExecPath().toString();
+          String artifactStr =
+              (artifact == null) ? "empty file" : artifact.getExecPath().toString();
           String message =
               String.format(
                   "overwrote runfile %s, was symlink to %s, now symlink to %s",
@@ -753,6 +759,7 @@ public final class Runfiles {
         NestedSetBuilder.stableOrder();
     private NestedSetBuilder<PruningManifest> pruningManifestsBuilder =
         NestedSetBuilder.stableOrder();
+    private NestedSetBuilder<Artifact> extraMiddlemenBuilder = NestedSetBuilder.stableOrder();
     private EmptyFilesSupplier emptyFilesSupplier = DUMMY_EMPTY_FILES_SUPPLIER;
 
     /** Build the Runfiles object with this policy */
@@ -804,9 +811,16 @@ public final class Runfiles {
      * Builds a new Runfiles object.
      */
     public Runfiles build() {
-      return new Runfiles(suffix, artifactsBuilder.build(), symlinksBuilder.build(),
-          rootSymlinksBuilder.build(), pruningManifestsBuilder.build(),
-          emptyFilesSupplier, conflictPolicy, legacyExternalRunfiles);
+      return new Runfiles(
+          suffix,
+          artifactsBuilder.build(),
+          symlinksBuilder.build(),
+          rootSymlinksBuilder.build(),
+          pruningManifestsBuilder.build(),
+          extraMiddlemenBuilder.build(),
+          emptyFilesSupplier,
+          conflictPolicy,
+          legacyExternalRunfiles);
     }
 
     /**
@@ -814,6 +828,8 @@ public final class Runfiles {
      */
     public Builder addArtifact(Artifact artifact) {
       Preconditions.checkNotNull(artifact);
+      Preconditions.checkArgument(
+          !artifact.isMiddlemanArtifact(), "unexpected middleman artifact: %s", artifact);
       artifactsBuilder.add(artifact);
       return this;
     }
@@ -830,7 +846,7 @@ public final class Runfiles {
 
     /**
      * @deprecated Use {@link #addTransitiveArtifacts} instead, to prevent increased memory use.
-     *     <p>See alse {@link Builder#addTransitiveArtifactsWrappedInStableOrder}
+     *     <p>See also {@link Builder#addTransitiveArtifactsWrappedInStableOrder}
      */
     @Deprecated
     public Builder addArtifacts(NestedSet<Artifact> artifacts) {
@@ -986,7 +1002,8 @@ public final class Runfiles {
      * Collects runfiles from data dependencies of a target.
      */
     public Builder addDataDeps(RuleContext ruleContext) {
-      addTargets(getPrerequisites(ruleContext, "data", Mode.DATA), RunfilesProvider.DATA_RUNFILES);
+      addTargets(getPrerequisites(ruleContext, "data", Mode.DONT_CHECK),
+          RunfilesProvider.DATA_RUNFILES);
       return this;
     }
 
@@ -1051,6 +1068,17 @@ public final class Runfiles {
     }
 
     /**
+     * Add extra middlemen artifacts that should be built by reverse dependency binaries. This
+     * method exists solely to support the unfortunate legacy behavior of some rules; new uses
+     * should not be added.
+     */
+    public Builder addLegacyExtraMiddleman(Artifact middleman) {
+      Preconditions.checkArgument(middleman.isMiddlemanArtifact(), middleman);
+      extraMiddlemenBuilder.add(middleman);
+      return this;
+    }
+
+    /**
      * Add the other {@link Runfiles} object transitively.
      */
     public Builder merge(Runfiles runfiles) {
@@ -1088,7 +1116,8 @@ public final class Runfiles {
       }
       // The suffix should be the same within any blaze build, except for the EMPTY runfiles, which
       // may have an empty suffix, but that is covered above.
-      Preconditions.checkArgument(suffix.equals(runfiles.suffix));
+      Preconditions.checkArgument(
+          suffix.equals(runfiles.suffix), "%s != %s", suffix, runfiles.suffix);
       if (includeUnconditionalArtifacts) {
         artifactsBuilder.addTransitive(runfiles.getUnconditionalArtifacts());
       }
@@ -1097,6 +1126,7 @@ public final class Runfiles {
       if (includePruningManifests) {
         pruningManifestsBuilder.addTransitive(runfiles.getPruningManifests());
       }
+      extraMiddlemenBuilder.addTransitive(runfiles.getExtraMiddlemen());
       if (emptyFilesSupplier == DUMMY_EMPTY_FILES_SUPPLIER) {
         emptyFilesSupplier = runfiles.getEmptyFilesProvider();
       } else {
@@ -1134,17 +1164,46 @@ public final class Runfiles {
     }
   }
 
-  /** Provides a Skylark-visible way to merge two Runfiles objects. */
-  @SkylarkCallable(
-    name = "merge",
-    doc =
-        "Returns a new runfiles object that includes all the contents of this one and the "
-            + "argument."
-  )
-  public Runfiles merge(Runfiles other) {
-    Runfiles.Builder builder = new Runfiles.Builder(suffix, false);
-    builder.merge(this);
-    builder.merge(other);
-    return builder.build();
+  @Override
+  public Runfiles merge(RunfilesApi other) {
+    Runfiles o = (Runfiles) other;
+    if (isEmpty()) {
+      // This is not just a memory / performance optimization. The Builder requires a valid suffix,
+      // but the {@code Runfiles.EMPTY} singleton has an invalid one, which must not be used to
+      // construct a Runfiles.Builder.
+      return o;
+    } else if (o.isEmpty()) {
+      return this;
+    }
+    return new Runfiles.Builder(suffix, false).merge(this).merge(o).build();
+  }
+
+  /**
+   * Fingerprint this {@link Runfiles} tree.
+   */
+  public void fingerprint(Fingerprint fp) {
+    fp.addBoolean(getLegacyExternalRunfiles());
+    fp.addPath(getSuffix());
+    Map<PathFragment, Artifact> symlinks = getSymlinksAsMap(null);
+    fp.addInt(symlinks.size());
+    for (Map.Entry<PathFragment, Artifact> symlink : symlinks.entrySet()) {
+      fp.addPath(symlink.getKey());
+      fp.addPath(symlink.getValue().getExecPath());
+    }
+    Map<PathFragment, Artifact> rootSymlinks = getRootSymlinksAsMap(null);
+    fp.addInt(rootSymlinks.size());
+    for (Map.Entry<PathFragment, Artifact> rootSymlink : rootSymlinks.entrySet()) {
+      fp.addPath(rootSymlink.getKey());
+      fp.addPath(rootSymlink.getValue().getExecPath());
+    }
+
+    for (Artifact artifact : getArtifacts()) {
+      fp.addPath(artifact.getRootRelativePath());
+      fp.addPath(artifact.getExecPath());
+    }
+
+    for (String name : getEmptyFilenames()) {
+      fp.addString(name);
+    }
   }
 }

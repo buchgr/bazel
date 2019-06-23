@@ -13,11 +13,10 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-
 import javax.annotation.Nullable;
 
 /**
@@ -25,8 +24,10 @@ import javax.annotation.Nullable;
  * up to date.
  */
 public abstract class SkyValueDirtinessChecker {
-
-  /** Returns {@code true} iff the checker can handle {@code key}. */
+  /**
+   * Returns {@code true} iff the checker can handle {@code key}. Can only be true if {@code
+   * key.functionName().getHermeticity() == FunctionHermeticity.NONHERMETIC}.
+   */
   public abstract boolean applies(SkyKey key);
 
   /**
@@ -87,7 +88,7 @@ public abstract class SkyValueDirtinessChecker {
       this.newValue = newValue;
     }
 
-    boolean isDirty() {
+    public boolean isDirty() {
       return isDirty;
     }
 

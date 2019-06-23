@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.syntax;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -24,7 +25,6 @@ import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkInterfaceUtils;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.Collection;
 import java.util.List;
@@ -58,6 +58,10 @@ public final class EvalUtils {
   public static final Ordering<Object> SKYLARK_COMPARATOR =
       new Ordering<Object>() {
         private int compareLists(SkylarkList o1, SkylarkList o2) {
+          if (o1 instanceof RangeList || o2 instanceof RangeList) {
+            throw new ComparisonException("Cannot compare range objects");
+          }
+
           for (int i = 0; i < Math.min(o1.size(), o2.size()); i++) {
             int cmp = compare(o1.get(i), o2.get(i));
             if (cmp != 0) {
@@ -70,17 +74,13 @@ public final class EvalUtils {
         @Override
         @SuppressWarnings("unchecked")
         public int compare(Object o1, Object o2) {
-          o1 = SkylarkType.convertToSkylark(o1, /*env=*/ null);
-          o2 = SkylarkType.convertToSkylark(o2, /*env=*/ null);
+          o1 = SkylarkType.convertToSkylark(o1, (Environment) null);
+          o2 = SkylarkType.convertToSkylark(o2, (Environment) null);
 
           if (o1 instanceof SkylarkList
               && o2 instanceof SkylarkList
               && ((SkylarkList) o1).isTuple() == ((SkylarkList) o2).isTuple()) {
             return compareLists((SkylarkList) o1, (SkylarkList) o2);
-          }
-          if (!o1.getClass().equals(o2.getClass())) {
-            throw new ComparisonException(
-                "Cannot compare " + getDataTypeName(o1) + " with " + getDataTypeName(o2));
           }
 
           if (o1 instanceof ClassObject) {
@@ -171,7 +171,7 @@ public final class EvalUtils {
    * @return a super-class of c to be used in validation-time type inference.
    */
   public static Class<?> getSkylarkType(Class<?> c) {
-    // TODO(bazel-team): replace these with SkylarkValue-s
+    // TODO(bazel-team): Iterable and Class likely do not belong here.
     if (String.class.equals(c)
         || Boolean.class.equals(c)
         || Integer.class.equals(c)
@@ -179,14 +179,17 @@ public final class EvalUtils {
         || Class.class.equals(c)) {
       return c;
     }
-    // TODO(bazel-team): also unify all implementations of ClassObject,
-    // that we used to all print the same as "struct"?
+    // TODO(bazel-team): We should require all Skylark-addressable values that aren't builtin types
+    // (String/Boolean/Integer) to implement SkylarkValue. We should also require them to have a
+    // (possibly inherited) @SkylarkModule annotation.
     Class<?> parent = SkylarkInterfaceUtils.getParentWithSkylarkModule(c);
     if (parent != null) {
       return parent;
     }
-    Preconditions.checkArgument(SkylarkValue.class.isAssignableFrom(c),
-        "%s is not allowed as a Skylark value", c);
+    Preconditions.checkArgument(
+        SkylarkValue.class.isAssignableFrom(c),
+        "%s is not allowed as a Starlark value (getSkylarkType() failed)",
+        c);
     return c;
   }
 
@@ -245,7 +248,7 @@ public final class EvalUtils {
       return "List"; // This case shouldn't happen in normal code, but we keep it for debugging.
     } else if (Map.class.isAssignableFrom(c)) { // This is a Java Map that isn't a SkylarkDict
       return "Map"; // This case shouldn't happen in normal code, but we keep it for debugging.
-    } else if (BaseFunction.class.isAssignableFrom(c)) {
+    } else if (StarlarkFunction.class.isAssignableFrom(c)) {
       return "function";
     } else if (c.equals(SelectorValue.class)) {
       return "select";
@@ -295,7 +298,7 @@ public final class EvalUtils {
     } else if (o instanceof SkylarkNestedSet) {
       return !((SkylarkNestedSet) o).isEmpty();
     } else if (o instanceof Iterable<?>) {
-      return !(Iterables.isEmpty((Iterable<?>) o));
+      return !Iterables.isEmpty((Iterable<?>) o);
     } else {
       return true;
     }
@@ -316,7 +319,7 @@ public final class EvalUtils {
         for (Map.Entry<?, ?> entries : dict.entrySet()) {
           list.add(entries.getKey());
         }
-        return  ImmutableList.copyOf(list);
+        return ImmutableList.copyOf(list);
       }
       // For determinism, we sort the keys.
       try {
@@ -345,11 +348,7 @@ public final class EvalUtils {
 
   public static Iterable<?> toIterable(Object o, Location loc, @Nullable Environment env)
       throws EvalException {
-    if (o instanceof String) {
-      // This is not as efficient as special casing String in for and dict and list comprehension
-      // statements. However this is a more unified way.
-      return split((String) o, loc, env);
-    } else if (o instanceof SkylarkNestedSet) {
+    if (o instanceof SkylarkNestedSet) {
       return nestedSetToCollection((SkylarkNestedSet) o, loc, env);
     } else if (o instanceof Iterable) {
       return (Iterable<?>) o;
@@ -390,51 +389,15 @@ public final class EvalUtils {
   }
 
   public static void lock(Object object, Location loc) {
-    if (object instanceof SkylarkMutable) {
-      ((SkylarkMutable) object).lock(loc);
+    if (object instanceof StarlarkMutable) {
+      ((StarlarkMutable) object).lock(loc);
     }
   }
 
   public static void unlock(Object object, Location loc) {
-    if (object instanceof SkylarkMutable) {
-      ((SkylarkMutable) object).unlock(loc);
+    if (object instanceof StarlarkMutable) {
+      ((StarlarkMutable) object).unlock(loc);
     }
-  }
-
-  private static ImmutableList<String> split(String value, Location loc, @Nullable Environment env)
-      throws EvalException {
-    if (env != null && env.getSemantics().incompatibleStringIsNotIterable()) {
-      throw new EvalException(
-          loc,
-          "type 'string' is not iterable. You may still use `len` and string indexing. Use "
-              + "--incompatible_string_is_not_iterable=false to temporarily disable this check.");
-    }
-
-    ImmutableList.Builder<String> builder = new ImmutableList.Builder<>();
-    for (char c : value.toCharArray()) {
-      builder.add(String.valueOf(c));
-    }
-    return builder.build();
-  }
-
-  /**
-   * @return the size of the Skylark object or -1 in case the object doesn't have a size.
-   */
-  public static int size(Object arg) {
-    if (arg instanceof String) {
-      return ((String) arg).length();
-    } else if (arg instanceof Map) {
-      return ((Map<?, ?>) arg).size();
-    } else if (arg instanceof SkylarkList) {
-      return ((SkylarkList<?>) arg).size();
-    } else if (arg instanceof SkylarkNestedSet) {
-      // TODO(bazel-team): Add a deprecation warning: don't implicitly flatten depsets.
-      return ((SkylarkNestedSet) arg).toCollection().size();
-    } else if (arg instanceof Iterable) {
-      // Iterables.size() checks if arg is a Collection so it's efficient in that sense.
-      return Iterables.size((Iterable<?>) arg);
-    }
-    return -1;
   }
 
   // The following functions for indexing and slicing match the behavior of Python.
@@ -509,7 +472,10 @@ public final class EvalUtils {
     }
     start = clampRangeEndpoint(start, length, step < 0);
     end = clampRangeEndpoint(end, length, step < 0);
-    ImmutableList.Builder<Integer> indices = ImmutableList.builder();
+    // precise computation is slightly more involved, but since it can overshoot only by a single
+    // element it's fine
+    final int expectedMaxSize = Math.abs(start - end) / Math.abs(step) + 1;
+    ImmutableList.Builder<Integer> indices = ImmutableList.builderWithExpectedSize(expectedMaxSize);
     for (int current = start; step > 0 ? current < end : current > end; current += step) {
       indices.add(current);
     }
@@ -528,7 +494,6 @@ public final class EvalUtils {
     int step;
 
     if (stepObj == Runtime.NONE) {
-      // This case is excluded by the parser, but let's handle it for completeness.
       step = 1;
     } else if (stepObj instanceof Integer) {
       step = ((Integer) stepObj).intValue();

@@ -22,32 +22,46 @@
 namespace bazel {
 namespace launcher {
 
-using std::ostringstream;
-using std::string;
 using std::vector;
+using std::wostringstream;
+using std::wstring;
 
 static constexpr const char* BASH_BIN_PATH = "bash_bin_path";
 
 ExitCode BashBinaryLauncher::Launch() {
-  string bash_binary = this->GetLaunchInfoByKey(BASH_BIN_PATH);
-  // If specified bash binary path doesn't exist, then fall back to
-  // bash.exe and hope it's in PATH.
-  if (!DoesFilePathExist(bash_binary.c_str())) {
-    bash_binary = "bash.exe";
+  wstring bash_binary = this->GetLaunchInfoByKey(BASH_BIN_PATH);
+
+  // If bash_binary is already "bash" or "bash.exe", that means we want to
+  // rely on the shell binary in PATH, no need to do Rlocation.
+  if (GetBinaryPathWithoutExtension(bash_binary) != L"bash") {
+    // Rlocation returns the original path if bash_binary is an absolute path.
+    bash_binary = this->Rlocation(bash_binary, true);
   }
 
-  vector<string> origin_args = this->GetCommandlineArguments();
-  ostringstream bash_command;
-  string bash_main_file = GetBinaryPathWithoutExtension(origin_args[0]);
-  bash_command << GetEscapedArgument(bash_main_file);
+  if (DoesFilePathExist(bash_binary.c_str())) {
+    wstring bash_bin_dir = GetParentDirFromPath(bash_binary);
+    wstring path_env;
+    GetEnv(L"PATH", &path_env);
+    path_env = bash_bin_dir + L";" + path_env;
+    SetEnv(L"PATH", path_env);
+  } else {
+    // If specified bash binary path doesn't exist, then fall back to
+    // bash.exe and hope it's in PATH.
+    bash_binary = L"bash.exe";
+  }
+
+  vector<wstring> origin_args = this->GetCommandlineArguments();
+  wostringstream bash_command;
+  wstring bash_main_file = GetBinaryPathWithoutExtension(origin_args[0]);
+  bash_command << BashEscapeArg(bash_main_file);
   for (int i = 1; i < origin_args.size(); i++) {
-    bash_command << ' ';
-    bash_command << GetEscapedArgument(origin_args[i]);
+    bash_command << L' ';
+    bash_command << BashEscapeArg(origin_args[i]);
   }
 
-  vector<string> args;
-  args.push_back("-c");
-  args.push_back(bash_command.str());
+  vector<wstring> args;
+  args.push_back(L"-c");
+  args.push_back(BashEscapeArg(bash_command.str()));
   return this->LaunchProcess(bash_binary, args);
 }
 

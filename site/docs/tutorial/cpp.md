@@ -3,14 +3,13 @@ layout: documentation
 title: Build Tutorial - C++
 ---
 
-Introduction to Bazel: Build a C++ Project
-==========
+# Introduction to Bazel: Building a C++ Project
 
 In this tutorial, you'll learn the basics of building C++ applications with
 Bazel. You will set up your workspace and build a simple C++ project that
 illustrates key Bazel concepts, such as targets and `BUILD` files. After
 completing this tutorial, take a look at
-[Common C++ Build Use Cases](cpp-use-cases.md) for information on more advanced
+[Common C++ Build Use Cases](../cpp-use-cases.md) for information on more advanced
 concepts such as writing and running C++ tests.
 
 Estimated completion time: 30 minutes.
@@ -26,20 +25,11 @@ In this tutorial you'll learn how to:
 *  Reference targets through labels
 
 ## Contents
+{:.no_toc}
 
-*  [Before you begin](#before-you-begin)
-   *  [Install Bazel](#install-bazel)
-   *  [Get the sample project](#get-the-sample-project)
-*  [Build with Bazel](#build-with-bazel)
-   *  [Set up the workspace](#set-up-the-workspace)
-   *  [Understand the BUILD file](#understand-the-build-file)
-   *  [Build the project](#build-the-project)
-   *  [Review the dependency graph](#review-the-dependency-graph)
-*  [Refine your Bazel build](#refine-your-bazel-build)
-   *  [Specify multiple build targets](#specify-multiple-build-targets)
-   *  [Use multiple packages](#use-multiple-packages)
-*  [Use labels to reference targets](#use-labels-to-reference-targets)
-*  [Further reading](#further-reading)
+* ToC
+{:toc}
+
 
 ## Before you begin
 
@@ -59,16 +49,16 @@ and is structured as follows:
 examples
 └── cpp-tutorial
     ├──stage1
-    │  └── main
-    │      ├── BUILD
-    │      ├── hello-world.cc
+    │  ├── main
+    │  │   ├── BUILD
+    │  │   └── hello-world.cc
     │  └── WORKSPACE
     ├──stage2
     │  ├── main
     │  │   ├── BUILD
     │  │   ├── hello-world.cc
     │  │   ├── hello-greet.cc
-    │  │   ├── hello-greet.h
+    │  │   └── hello-greet.h
     │  └── WORKSPACE
     └──stage3
        ├── main
@@ -191,6 +181,21 @@ The above command tells Bazel to look for all dependencies for the target
 output as a graph.
 
 Then, paste the text into [GraphViz](http://www.webgraphviz.com/).
+
+On Ubuntu, you can view the graph locally by installing GraphViz and the xdot
+Dot Viewer:
+
+```
+sudo apt update && sudo apt install graphviz xdot
+```
+
+Then you can generate and view the graph by piping the text output above
+straight to xdot:
+
+```
+xdot <(bazel query --nohost_deps --noimplicit_deps 'deps(//main:hello-world)' \
+  --output graph)
+```
 
 As you can see, the first stage of the sample project has a single target
 that builds a single source file with no additional dependencies:
@@ -382,8 +387,8 @@ file, you can even skip the `//` workspace root identifier and just use
 ## Further reading
 
 Congratulations! You now know the basics of building a C++ project with Bazel.
-Next, read up on the most common [C++ build use cases](cpp-use-cases.md). Then,
-check out the following:
+Next, read up on the most common [C++ build use cases](../cpp-use-cases.md).
+Then, check out the following:
 
 *  [External Dependencies](../external.html) to learn more about working with
    local and remote repositories.
@@ -393,7 +398,10 @@ check out the following:
 *  The [Java build tutorial](java.md) to get started with
    building Java applications with Bazel.
 
-*  The [mobile application tutorial](app.md) to get started with
-   building mobile applications for Android and iOS with Bazel.
+*  The [Android application tutorial](android-app.md) to get started with
+   building mobile applications for Android with Bazel.
+
+*  The [iOS application tutorial](ios-app.md) to get started with
+   building mobile applications for iOS with Bazel.
 
 Happy building!

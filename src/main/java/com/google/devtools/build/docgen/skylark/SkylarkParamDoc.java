@@ -15,6 +15,7 @@ package com.google.devtools.build.docgen.skylark;
 
 import com.google.devtools.build.lib.skylarkinterface.Param;
 import com.google.devtools.build.lib.skylarkinterface.ParamType;
+import com.google.devtools.build.lib.syntax.StarlarkSemantics.FlagIdentifier;
 
 /**
  * A class containing the documentation for a Skylark method parameter.
@@ -42,10 +43,13 @@ public final class SkylarkParamDoc extends SkylarkDoc {
       StringBuilder sb = new StringBuilder();
       for (int i = 0; i < param.allowedTypes().length; i++) {
         ParamType paramType = param.allowedTypes()[i];
-        if (paramType.generic1().equals(Object.class)) {
+        // Use the paramType's generic class if provided, otherwise the param's generic class
+        Class<?> generic =
+            paramType.generic1() == Object.class ? param.generic1() : paramType.generic1();
+        if (generic.equals(Object.class)) {
           sb.append(getTypeAnchor(paramType.type()));
         } else {
-          sb.append(getTypeAnchor(paramType.type(), paramType.generic1()));
+          sb.append(getTypeAnchor(paramType.type(), generic));
         }
         if (i < param.allowedTypes().length - 1) {
           sb.append("; or ");
@@ -68,8 +72,23 @@ public final class SkylarkParamDoc extends SkylarkDoc {
     return param.name();
   }
 
+  public String getDefaultValue() {
+    return param.defaultValue();
+  }
+
   @Override
   public String getDocumentation() {
-    return param.doc();
+    String prefixWarning = "";
+    if (param.enableOnlyWithFlag() != FlagIdentifier.NONE) {
+      prefixWarning = "<b>Experimental</b>. This parameter is experimental and may change at any "
+          + "time. Please do not depend on it. It may be enabled on an experimental basis by "
+          + "setting <code>--" + param.enableOnlyWithFlag().getFlagName() + "</code> <br>";
+    } else if (param.disableWithFlag() != FlagIdentifier.NONE) {
+      prefixWarning = "<b>Deprecated</b>. This parameter is deprecated and will be removed soon. "
+          + "Please do not depend on it. It is <i>disabled</i> with "
+          + "<code>--" + param.disableWithFlag().getFlagName() + "</code>. Use this flag "
+          + "to verify your code is compatible with its imminent removal. <br>";
+    }
+    return prefixWarning + SkylarkDocUtils.substituteVariables(param.doc());
   }
 }

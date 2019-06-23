@@ -23,7 +23,7 @@
 #include "src/main/cpp/blaze_util.h"
 #include "src/main/cpp/blaze_util_platform.h"
 #include "src/main/cpp/util/file.h"
-#include "gtest/gtest.h"
+#include "googletest/include/gtest/gtest.h"
 
 namespace blaze {
 
@@ -93,10 +93,6 @@ class BlazeUtilTest : public ::testing::Test {
 
   static void AssertReadFrom(string input) { AssertReadFrom2(input, ""); }
 
-  static void AssertReadJvmVersion(string expected, const string& input) {
-    ASSERT_EQ(expected, ReadJvmVersion(input));
-  }
-
   void ReadFromTest() const {
     AssertReadFrom(
         "DummyJDK Blabla\n"
@@ -107,59 +103,13 @@ class BlazeUtilTest : public ::testing::Test {
         "More DummyJDK Blabla\n");
     AssertReadFrom2("first_line\n", "second line version \"1.4.2_0\"\n");
   }
-
-  void ReadJvmVersionTest() const {
-    AssertReadJvmVersion("1.42", "dummyjdk version \"1.42\"\n"
-                         "DummyJDK Blabla\n"
-                         "More DummyJDK Blabla\n");
-    AssertReadJvmVersion("1.42.qual", "dummyjdk version \"1.42.qual\"\n"
-                         "DummyJDK Blabla\n"
-                         "More DummyJDK Blabla\n");
-    AssertReadJvmVersion("1.42.qualifie", "dummyjdk version \"1.42.qualifie");
-    AssertReadJvmVersion("", "dummyjdk version ");
-    AssertReadJvmVersion("1.4.2_0",
-                          "first_line\nsecond line version \"1.4.2_0\"\n");
-  }
-
-  void CheckJavaVersionIsAtLeastTest() const {
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", ""));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "0"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "1"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "1.7"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "1.7.0"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "1.0"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "1.6"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.42", "1"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.42", "1.7"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.42", "1.11"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.42.42", "1.11"));
-    ASSERT_TRUE(CheckJavaVersionIsAtLeast("1.42.42", "1.11.11"));
-
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "42"));
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "2"));
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "1.8"));
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "1.7.1"));
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.7.0-ver-specifier-42", "1.42"));
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.42", "2"));
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.42", "1.69"));
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.42", "1.42.1"));
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.42.42", "1.42.43"));
-    ASSERT_FALSE(CheckJavaVersionIsAtLeast("1.42.42.0", "1.42.42.1"));
-  }
 };
-
-TEST_F(BlazeUtilTest, CheckJavaVersionIsAtLeast) {
-  CheckJavaVersionIsAtLeastTest();
-}
 
 TEST_F(BlazeUtilTest, ReadFrom) { ReadFromTest(); }
 
-TEST_F(BlazeUtilTest, ReadJvmVersion) {
-  ReadJvmVersionTest();
-}
-
 TEST_F(BlazeUtilTest, TestSearchNullaryEmptyCase) {
-  ASSERT_FALSE(SearchNullaryOption({}, "--flag"));
+  ASSERT_FALSE(SearchNullaryOption({}, "flag", false));
+  ASSERT_TRUE(SearchNullaryOption({}, "flag", true));
 }
 
 TEST_F(BlazeUtilTest, TestSearchUnaryEmptyCase) {
@@ -167,39 +117,51 @@ TEST_F(BlazeUtilTest, TestSearchUnaryEmptyCase) {
 }
 
 TEST_F(BlazeUtilTest, TestSearchNullaryForEmpty) {
-  ASSERT_FALSE(SearchNullaryOption({"bazel", "build", ":target"}, ""));
+  ASSERT_TRUE(SearchNullaryOption({"bazel", "build", ":target"}, "", true));
+  ASSERT_FALSE(SearchNullaryOption({"bazel", "build", ":target"}, "", false));
 }
 
 TEST_F(BlazeUtilTest, TestSearchNullaryForFlagNotPresent) {
   ASSERT_FALSE(SearchNullaryOption({"bazel", "build", ":target"},
-                                   "--flag"));
+                                   "flag", false));
+  ASSERT_TRUE(SearchNullaryOption({"bazel", "build", ":target"},
+                                   "flag", true));
 }
 
 TEST_F(BlazeUtilTest, TestSearchNullaryStartupOption) {
   ASSERT_TRUE(SearchNullaryOption({"bazel", "--flag", "build", ":target"},
-                                  "--flag"));
+                                  "flag", false));
+  ASSERT_TRUE(SearchNullaryOption({"bazel", "--flag", "build", ":target"},
+                                  "flag", true));
 }
 
 TEST_F(BlazeUtilTest, TestSearchNullaryStartupOptionWithEquals) {
   ASSERT_DEATH(SearchNullaryOption(
-      {"bazel", "--flag=value", "build", ":target"}, "--flag"),
+      {"bazel", "--flag=value", "build", ":target"}, "flag", false),
               "In argument '--flag=value': option "
               "'--flag' does not take a value");
 }
 
 TEST_F(BlazeUtilTest, TestSearchNullaryCommandOption) {
   ASSERT_TRUE(SearchNullaryOption({"bazel", "build", ":target", "--flag"},
-                                  "--flag"));
+                                  "flag", false));
 }
 
 TEST_F(BlazeUtilTest, TestSearchNullarySkipsAfterDashDash) {
   ASSERT_FALSE(SearchNullaryOption(
-      {"bazel", "build", ":target", "--", "--flag"}, "--flag"));
+      {"bazel", "build", ":target", "--", "--flag"}, "flag", false));
 }
 
 TEST_F(BlazeUtilTest, TestSearchNullarySucceedsWithEqualsAndDashDash) {
   ASSERT_FALSE(SearchNullaryOption(
-      {"bazel", "build", ":target", "--", "--flag=value"}, "--flag"));
+      {"bazel", "build", ":target", "--", "--flag=value"}, "flag", false));
+}
+
+TEST_F(BlazeUtilTest, TestSearchNullaryLastFlagWins) {
+  ASSERT_FALSE(SearchNullaryOption(
+      {"bazel", "--flag", "--noflag", "build"}, "flag", false));
+  ASSERT_FALSE(SearchNullaryOption(
+      {"bazel", "--flag", "--noflag", "build"}, "flag", true));
 }
 
 TEST_F(BlazeUtilTest, TestSearchUnaryForEmpty) {
@@ -247,22 +209,6 @@ TEST_F(BlazeUtilTest, TestSearchUnarySkipsAfterDashDashWithoutEquals) {
                SearchUnaryOption(
                    {"bazel", "build", ":target", "--", "--flag=value"},
                    "--flag"));
-}
-
-TEST_F(BlazeUtilTest, MakeAbsolute) {
-#if defined(WIN32)
-  EXPECT_EQ(MakeAbsolute("C:\\foo\\bar"), "C:\\foo\\bar");
-  EXPECT_EQ(MakeAbsolute("C:/foo/bar"), "C:\\foo\\bar");
-  EXPECT_EQ(MakeAbsolute("C:\\foo\\bar\\"), "C:\\foo\\bar\\");
-  EXPECT_EQ(MakeAbsolute("C:/foo/bar/"), "C:\\foo\\bar\\");
-  EXPECT_EQ(MakeAbsolute("foo"), blaze_util::GetCwd() + "\\foo");
-#else
-  EXPECT_EQ(MakeAbsolute("/foo/bar"), "/foo/bar");
-  EXPECT_EQ(MakeAbsolute("/foo/bar/"), "/foo/bar/");
-  EXPECT_EQ(MakeAbsolute("foo"), blaze_util::GetCwd() + "/foo");
-#endif
-  EXPECT_EQ(MakeAbsolute(std::string()), blaze_util::GetCwd());
-  EXPECT_EQ(MakeAbsolute("/dev/null"), "/dev/null");
 }
 
 }  // namespace blaze

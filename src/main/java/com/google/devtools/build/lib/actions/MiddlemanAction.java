@@ -13,19 +13,23 @@
 // limitations under the License.
 package com.google.devtools.build.lib.actions;
 
-import com.google.common.collect.ImmutableList;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
+import com.google.devtools.build.lib.util.Fingerprint;
 
 /**
- * An action that depends on a set of inputs and creates a single output file whenever it
- * runs. This is useful for bundling up a bunch of dependencies that are shared
- * between individual targets in the action graph; for example generated header files.
+ * An action that depends on a set of inputs and creates a single output file whenever it runs. This
+ * is useful for bundling up a bunch of dependencies that are shared between individual targets in
+ * the action graph; for example generated header files.
  */
 @Immutable
+@AutoCodec
 public final class MiddlemanAction extends AbstractAction {
-
   public static final String MIDDLEMAN_MNEMONIC = "Middleman";
   private final String description;
   private final MiddlemanType middlemanType;
@@ -43,9 +47,20 @@ public final class MiddlemanAction extends AbstractAction {
    */
   public MiddlemanAction(ActionOwner owner, Iterable<Artifact> inputs, Artifact stampFile,
       String description, MiddlemanType middlemanType) {
-    super(owner, inputs, ImmutableList.of(stampFile));
+    this(owner, inputs, ImmutableSet.of(stampFile), description, middlemanType);
+  }
+
+  @VisibleForSerialization
+  @AutoCodec.Instantiator
+  MiddlemanAction(
+      ActionOwner owner,
+      Iterable<Artifact> inputs,
+      ImmutableSet<Artifact> outputs,
+      String description,
+      MiddlemanType middlemanType) {
+    super(owner, inputs, outputs);
     Preconditions.checkNotNull(middlemanType);
-    Preconditions.checkArgument(stampFile.isMiddlemanArtifact(), stampFile);
+    Preconditions.checkArgument(Iterables.getOnlyElement(outputs).isMiddlemanArtifact(), outputs);
     this.description = description;
     this.middlemanType = middlemanType;
   }
@@ -56,11 +71,10 @@ public final class MiddlemanAction extends AbstractAction {
   }
 
   @Override
-  protected String computeKey() {
+  protected void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp) {
     // TODO(bazel-team): Need to take middlemanType into account here.
     // Only the set of inputs matters, and the dependency checker is
     // responsible for considering those.
-    return "";
   }
 
   /**
@@ -69,13 +83,6 @@ public final class MiddlemanAction extends AbstractAction {
   @Override
   public MiddlemanType getActionType() {
     return middlemanType;
-  }
-
-  @Override
-  public boolean canRemoveAfterExecution() {
-    // Aggregating middleman actions' inputs are needed by their output artifacts, and the type of
-    // the middleman isn't known without having the action, so we just make sure it stays.
-    return false;
   }
 
   @Override
@@ -91,6 +98,11 @@ public final class MiddlemanAction extends AbstractAction {
   @Override
   public String getMnemonic() {
     return MIDDLEMAN_MNEMONIC;
+  }
+
+  @Override
+  public boolean mayInsensitivelyPropagateInputs() {
+    return true;
   }
 
   /**

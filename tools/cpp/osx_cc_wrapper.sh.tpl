@@ -41,7 +41,7 @@ for i in "$@"; do
         LIBS="${BASH_REMATCH[1]} $LIBS"
     elif [[ "$i" =~ ^-L(.*)$ ]]; then
         LIB_DIRS="${BASH_REMATCH[1]} $LIB_DIRS"
-    elif [[ "$i" =~ ^-Wl,-rpath,\$ORIGIN/(.*)$ ]]; then
+    elif [[ "$i" =~ ^-Wl,-rpath,\@loader_path/(.*)$ ]]; then
         RPATHS="${BASH_REMATCH[1]} ${RPATHS}"
     elif [[ "$i" = "-o" ]]; then
         # output is coming
@@ -86,6 +86,7 @@ function get_otool_path() {
 # Do replacements in the output
 for rpath in ${RPATHS}; do
     for lib in ${LIBS}; do
+        unset libname
         if [ -f "$(dirname ${OUTPUT})/${rpath}/lib${lib}.so" ]; then
             libname="lib${lib}.so"
         elif [ -f "$(dirname ${OUTPUT})/${rpath}/lib${lib}.dylib" ]; then

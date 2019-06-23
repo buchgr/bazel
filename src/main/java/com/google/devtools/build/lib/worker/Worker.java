@@ -14,13 +14,19 @@
 package com.google.devtools.build.lib.worker;
 
 import com.google.common.hash.HashCode;
+import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxOutputs;
+import com.google.devtools.build.lib.shell.Subprocess;
+import com.google.devtools.build.lib.shell.SubprocessBuilder;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.lang.ProcessBuilder.Redirect;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.SortedMap;
 
 /**
@@ -40,7 +46,7 @@ class Worker {
   private final Path workDir;
   private final Path logFile;
 
-  private Process process;
+  private Subprocess process;
   private Thread shutdownHook;
 
   Worker(WorkerKey workerKey, int workerId, final Path workDir, Path logFile) {
@@ -51,35 +57,30 @@ class Worker {
 
     final Worker self = this;
     this.shutdownHook =
-        new Thread() {
-          @Override
-          public void run() {
-            try {
-              self.shutdownHook = null;
-              self.destroy();
-            } catch (IOException e) {
-              // We can't do anything here.
-            }
-          }
-        };
+        new Thread(
+            () -> {
+              try {
+                self.shutdownHook = null;
+                self.destroy();
+              } catch (IOException e) {
+                // We can't do anything here.
+              }
+            });
     Runtime.getRuntime().addShutdownHook(shutdownHook);
   }
 
   void createProcess() throws IOException {
-    String[] command = workerKey.getArgs().toArray(new String[0]);
-
-    // Follows the logic of {@link com.google.devtools.build.lib.shell.Command}.
-    File executable = new File(command[0]);
+    List<String> args = workerKey.getArgs();
+    File executable = new File(args.get(0));
     if (!executable.isAbsolute() && executable.getParent() != null) {
-      command[0] = new File(workDir.getPathFile(), command[0]).getAbsolutePath();
+      args = new ArrayList<>(args);
+      args.set(0, new File(workDir.getPathFile(), args.get(0)).getAbsolutePath());
     }
-    ProcessBuilder processBuilder =
-        new ProcessBuilder(command)
-            .directory(workDir.getPathFile())
-            .redirectError(Redirect.appendTo(logFile.getPathFile()));
-    processBuilder.environment().clear();
-    processBuilder.environment().putAll(workerKey.getEnv());
-
+    SubprocessBuilder processBuilder = new SubprocessBuilder();
+    processBuilder.setArgv(args);
+    processBuilder.setWorkingDirectory(workDir.getPathFile());
+    processBuilder.setStderr(logFile.getPathFile());
+    processBuilder.setEnv(workerKey.getEnv());
     this.process = processBuilder.start();
   }
 
@@ -98,7 +99,7 @@ class Worker {
    *
    * @param process the process to destroy.
    */
-  private static void destroyProcess(Process process) {
+  private static void destroyProcess(Subprocess process) {
     boolean wasInterrupted = false;
     try {
       process.destroy();
@@ -137,12 +138,7 @@ class Worker {
   boolean isAlive() {
     // This is horrible, but Process.isAlive() is only available from Java 8 on and this is the
     // best we can do prior to that.
-    try {
-      process.exitValue();
-      return false;
-    } catch (IllegalThreadStateException e) {
-      return true;
-    }
+    return !process.finished();
   }
 
   InputStream getInputStream() {
@@ -153,9 +149,15 @@ class Worker {
     return process.getOutputStream();
   }
 
-  public void prepareExecution(WorkerKey key) throws IOException {}
+  public void prepareExecution(
+      Map<PathFragment, Path> inputFiles, SandboxOutputs outputs, Set<PathFragment> workerFiles)
+      throws IOException {
+    if (process == null) {
+      createProcess();
+    }
+  }
 
-  public void finishExecution(WorkerKey key) throws IOException {}
+  public void finishExecution(Path execRoot) throws IOException {}
 
   public Path getLogFile() {
     return logFile;

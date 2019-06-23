@@ -14,11 +14,13 @@
 
 package com.google.devtools.build.lib.analysis;
 
+import com.google.common.collect.ImmutableCollection;
+import com.google.devtools.build.lib.actions.Artifact.SourceArtifact;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
-import com.google.devtools.build.lib.analysis.configuredtargets.InputFileConfiguredTarget;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
 import com.google.devtools.build.lib.syntax.ClassObject;
+import com.google.devtools.build.lib.syntax.EvalException;
 import javax.annotation.Nullable;
 
 /**
@@ -43,19 +45,34 @@ public interface ConfiguredTarget extends TransitiveInfoCollection, ClassObject,
    */
   String FILES_FIELD = "files";
 
+  default String getConfigurationChecksum() {
+    return getConfigurationKey() == null
+        ? null
+        : getConfigurationKey().getOptionsDiff().getChecksum();
+  }
 
   /**
-   * Returns the Target with which this {@link ConfiguredTarget} is associated.
-   */
-  Target getTarget();
-
-  /**
-   * <p>Returns the {@link BuildConfiguration} for which this {@link ConfiguredTarget} is
-   * defined. Configuration is defined for all configured targets with exception
-   * of the {@link InputFileConfiguredTarget} for which it is always
-   * <b>null</b>.</p>
+   * Returns keys for a legacy Skylark provider.
+   *
+   * Overrides {@link ClassObject#getFieldNames()}, but does not allow {@link EvalException} to
+   * be thrown.
    */
   @Override
+  ImmutableCollection<String> getFieldNames();
+
+  /**
+   * Returns a legacy Skylark provider.
+   *
+   * Overrides {@link ClassObject#getValue(String)}, but does not allow EvalException to
+   * be thrown.
+   */
   @Nullable
-  BuildConfiguration getConfiguration();
+  @Override
+  Object getValue(String name);
+
+  /** Returns a source artifact if this is an input file. */
+  @Nullable
+  default SourceArtifact getSourceArtifact() {
+    return null;
+  }
 }

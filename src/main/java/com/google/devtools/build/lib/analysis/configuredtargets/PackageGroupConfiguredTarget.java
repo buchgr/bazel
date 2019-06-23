@@ -25,54 +25,71 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.events.Event;
-import com.google.devtools.build.lib.packages.Info;
+import com.google.devtools.build.lib.packages.InfoInterface;
 import com.google.devtools.build.lib.packages.PackageGroup;
-import com.google.devtools.build.lib.packages.PackageSpecification;
+import com.google.devtools.build.lib.packages.PackageSpecification.PackageGroupContents;
 import com.google.devtools.build.lib.packages.Provider;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.Instantiator;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
 
 /**
- * Dummy ConfiguredTarget for package groups. Contains no functionality, since
- * package groups are not really first-class Targets.
+ * Dummy ConfiguredTarget for package groups. Contains no functionality, since package groups are
+ * not really first-class Targets.
  */
+@AutoCodec
 public final class PackageGroupConfiguredTarget extends AbstractConfiguredTarget
     implements PackageSpecificationProvider {
   private static final FileProvider NO_FILES = new FileProvider(
       NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER));
 
-  private final NestedSet<PackageSpecification> packageSpecifications;
+  private final NestedSet<PackageGroupContents> packageSpecifications;
+
+  @VisibleForSerialization
+  @Instantiator
+  PackageGroupConfiguredTarget(
+      Label label,
+      NestedSet<PackageGroupContents> visibility,
+      NestedSet<PackageGroupContents> packageSpecifications) {
+    super(label, null, visibility);
+    this.packageSpecifications = packageSpecifications;
+  }
 
   public PackageGroupConfiguredTarget(TargetContext targetContext, PackageGroup packageGroup) {
-    super(targetContext);
-    Preconditions.checkArgument(targetContext.getConfiguration() == null);
+    this(
+        targetContext.getLabel(),
+        targetContext.getVisibility(),
+        getPackageSpecifications(targetContext, packageGroup));
+  }
 
-    NestedSetBuilder<PackageSpecification> builder =
-        NestedSetBuilder.stableOrder();
+  private static NestedSet<PackageGroupContents> getPackageSpecifications(
+      TargetContext targetContext, PackageGroup packageGroup) {
+    NestedSetBuilder<PackageGroupContents> builder = NestedSetBuilder.stableOrder();
     for (Label label : packageGroup.getIncludes()) {
       TransitiveInfoCollection include = targetContext.maybeFindDirectPrerequisite(
           label, targetContext.getConfiguration());
       PackageSpecificationProvider provider = include == null ? null
           : include.getProvider(PackageSpecificationProvider.class);
       if (provider == null) {
-        targetContext.getAnalysisEnvironment().getEventHandler().handle(Event.error(getTarget().getLocation(),
-            String.format("label '%s' does not refer to a package group", label)));
+        targetContext
+            .getAnalysisEnvironment()
+            .getEventHandler()
+            .handle(
+                Event.error(
+                    targetContext.getTarget().getLocation(),
+                    String.format("label '%s' does not refer to a package group", label)));
         continue;
       }
 
       builder.addTransitive(provider.getPackageSpecifications());
     }
 
-    builder.addAll(packageGroup.getPackageSpecifications());
-    packageSpecifications = builder.build();
+    builder.add(packageGroup.getPackageSpecifications());
+    return builder.build();
   }
 
   @Override
-  public PackageGroup getTarget() {
-    return (PackageGroup) super.getTarget();
-  }
-
-  @Override
-  public NestedSet<PackageSpecification> getPackageSpecifications() {
+  public NestedSet<PackageGroupContents> getPackageSpecifications() {
     return packageSpecifications;
   }
 
@@ -86,7 +103,7 @@ public final class PackageGroupConfiguredTarget extends AbstractConfiguredTarget
   }
 
   @Override
-  protected Info rawGetSkylarkProvider(Provider.Key providerKey) {
+  protected InfoInterface rawGetSkylarkProvider(Provider.Key providerKey) {
     return null;
   }
 

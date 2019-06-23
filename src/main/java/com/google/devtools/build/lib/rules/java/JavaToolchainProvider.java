@@ -13,62 +13,95 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.java;
 
-import com.google.auto.value.AutoValue;
+import static com.google.common.base.StandardSystemProperty.JAVA_SPECIFICATION_VERSION;
+
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
+import com.google.devtools.build.lib.analysis.ProviderCollection;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
+import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
+import com.google.devtools.build.lib.analysis.platform.ToolchainInfo;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import java.util.List;
+import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.packages.RuleErrorConsumer;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
+import com.google.devtools.build.lib.skylarkbuildapi.FileApi;
+import com.google.devtools.build.lib.skylarkbuildapi.java.JavaToolchainSkylarkApiProviderApi;
+import com.google.devtools.build.lib.syntax.SkylarkList;
+import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
+import java.util.Iterator;
 import javax.annotation.Nullable;
 
-/**
- * Information about the JDK used by the <code>java_*</code> rules.
- */
-@AutoValue
+/** Information about the JDK used by the <code>java_*</code> rules. */
 @Immutable
-public abstract class JavaToolchainProvider implements TransitiveInfoProvider {
+@AutoCodec
+public class JavaToolchainProvider extends ToolchainInfo
+    implements JavaToolchainSkylarkApiProviderApi {
 
   /** Returns the Java Toolchain associated with the rule being analyzed or {@code null}. */
-  public static JavaToolchainProvider fromRuleContext(RuleContext ruleContext) {
-    return ruleContext.getPrerequisite(":java_toolchain", Mode.TARGET, JavaToolchainProvider.class);
+  public static JavaToolchainProvider from(RuleContext ruleContext) {
+    TransitiveInfoCollection prerequisite =
+        ruleContext.getPrerequisite(JavaRuleClasses.JAVA_TOOLCHAIN_ATTRIBUTE_NAME, Mode.TARGET);
+    return from(prerequisite, ruleContext);
+  }
+
+  public static JavaToolchainProvider from(ProviderCollection collection) {
+    return from(collection, null);
+  }
+
+  private static JavaToolchainProvider from(
+      ProviderCollection collection, @Nullable RuleErrorConsumer errorConsumer) {
+    ToolchainInfo toolchainInfo = collection.get(ToolchainInfo.PROVIDER);
+    if (toolchainInfo instanceof JavaToolchainProvider) {
+      return (JavaToolchainProvider) toolchainInfo;
+    }
+    if (errorConsumer != null) {
+      errorConsumer.ruleError("The selected Java toolchain is not a JavaToolchainProvider");
+    }
+    return null;
   }
 
   public static JavaToolchainProvider create(
       Label label,
-      JavaToolchainData data,
+      ImmutableList<String> javacOptions,
+      ImmutableList<String> jvmOptions,
+      ImmutableList<String> javabuilderJvmOptions,
+      boolean javacSupportsWorkers,
       NestedSet<Artifact> bootclasspath,
       NestedSet<Artifact> extclasspath,
-      List<String> defaultJavacFlags,
-      Artifact javac,
+      @Nullable Artifact javac,
       NestedSet<Artifact> tools,
-      Artifact javaBuilder,
-      @Nullable Artifact headerCompiler,
+      FilesToRunProvider javaBuilder,
+      @Nullable FilesToRunProvider headerCompiler,
+      @Nullable FilesToRunProvider headerCompilerDirect,
       boolean forciblyDisableHeaderCompilation,
       Artifact singleJar,
-      Artifact oneVersion,
-      Artifact oneVersionWhitelist,
+      @Nullable Artifact oneVersion,
+      @Nullable Artifact oneVersionWhitelist,
       Artifact genClass,
       @Nullable Artifact resourceJarBuilder,
       @Nullable Artifact timezoneData,
       FilesToRunProvider ijar,
-      ImmutableListMultimap<String, String> compatibleJavacOptions) {
-    return new AutoValue_JavaToolchainProvider(
+      ImmutableListMultimap<String, String> compatibleJavacOptions,
+      ImmutableList<JavaPackageConfigurationProvider> packageConfiguration,
+      FilesToRunProvider jacocoRunner,
+      JavaSemantics javaSemantics) {
+    return new JavaToolchainProvider(
         label,
-        data.getSourceVersion(),
-        data.getTargetVersion(),
         bootclasspath,
         extclasspath,
-        data.getEncoding(),
         javac,
         tools,
         javaBuilder,
         headerCompiler,
+        headerCompilerDirect,
         forciblyDisableHeaderCompilation,
         singleJar,
         oneVersion,
@@ -78,83 +111,195 @@ public abstract class JavaToolchainProvider implements TransitiveInfoProvider {
         timezoneData,
         ijar,
         compatibleJavacOptions,
-        // merges the defaultJavacFlags from
-        // {@link JavaConfiguration} with the flags from the {@code java_toolchain} rule.
-        ImmutableList.<String>builder()
-            .addAll(data.getJavacOptions())
-            .addAll(defaultJavacFlags)
-            .build(),
-        data.getJvmOptions(),
-        data.getJavacSupportsWorkers());
+        javacOptions,
+        jvmOptions,
+        javabuilderJvmOptions,
+        javacSupportsWorkers,
+        packageConfiguration,
+        jacocoRunner,
+        javaSemantics);
+  }
+
+  private final Label label;
+  private final NestedSet<Artifact> bootclasspath;
+  private final NestedSet<Artifact> extclasspath;
+  @Nullable private final Artifact javac;
+  private final NestedSet<Artifact> tools;
+  private final FilesToRunProvider javaBuilder;
+  @Nullable private final FilesToRunProvider headerCompiler;
+  @Nullable private final FilesToRunProvider headerCompilerDirect;
+  private final boolean forciblyDisableHeaderCompilation;
+  private final Artifact singleJar;
+  @Nullable private final Artifact oneVersion;
+  @Nullable private final Artifact oneVersionWhitelist;
+  private final Artifact genClass;
+  @Nullable private final Artifact resourceJarBuilder;
+  @Nullable private final Artifact timezoneData;
+  private final FilesToRunProvider ijar;
+  private final ImmutableListMultimap<String, String> compatibleJavacOptions;
+  private final ImmutableList<String> javacOptions;
+  private final ImmutableList<String> jvmOptions;
+  private final ImmutableList<String> javabuilderJvmOptions;
+  private final boolean javacSupportsWorkers;
+  private final ImmutableList<JavaPackageConfigurationProvider> packageConfiguration;
+  private final FilesToRunProvider jacocoRunner;
+  private final JavaSemantics javaSemantics;
+
+  @VisibleForSerialization
+  JavaToolchainProvider(
+      Label label,
+      NestedSet<Artifact> bootclasspath,
+      NestedSet<Artifact> extclasspath,
+      @Nullable Artifact javac,
+      NestedSet<Artifact> tools,
+      FilesToRunProvider javaBuilder,
+      @Nullable FilesToRunProvider headerCompiler,
+      @Nullable FilesToRunProvider headerCompilerDirect,
+      boolean forciblyDisableHeaderCompilation,
+      Artifact singleJar,
+      @Nullable Artifact oneVersion,
+      @Nullable Artifact oneVersionWhitelist,
+      Artifact genClass,
+      @Nullable Artifact resourceJarBuilder,
+      @Nullable Artifact timezoneData,
+      FilesToRunProvider ijar,
+      ImmutableListMultimap<String, String> compatibleJavacOptions,
+      ImmutableList<String> javacOptions,
+      ImmutableList<String> jvmOptions,
+      ImmutableList<String> javabuilderJvmOptions,
+      boolean javacSupportsWorkers,
+      ImmutableList<JavaPackageConfigurationProvider> packageConfiguration,
+      FilesToRunProvider jacocoRunner,
+      JavaSemantics javaSemantics) {
+    super(ImmutableMap.of(), Location.BUILTIN);
+
+    this.label = label;
+    this.bootclasspath = bootclasspath;
+    this.extclasspath = extclasspath;
+    this.javac = javac;
+    this.tools = tools;
+    this.javaBuilder = javaBuilder;
+    this.headerCompiler = headerCompiler;
+    this.headerCompilerDirect = headerCompilerDirect;
+    this.forciblyDisableHeaderCompilation = forciblyDisableHeaderCompilation;
+    this.singleJar = singleJar;
+    this.oneVersion = oneVersion;
+    this.oneVersionWhitelist = oneVersionWhitelist;
+    this.genClass = genClass;
+    this.resourceJarBuilder = resourceJarBuilder;
+    this.timezoneData = timezoneData;
+    this.ijar = ijar;
+    this.compatibleJavacOptions = compatibleJavacOptions;
+    this.javacOptions = javacOptions;
+    this.jvmOptions = jvmOptions;
+    this.javabuilderJvmOptions = javabuilderJvmOptions;
+    this.javacSupportsWorkers = javacSupportsWorkers;
+    this.packageConfiguration = packageConfiguration;
+    this.jacocoRunner = jacocoRunner;
+    this.javaSemantics = javaSemantics;
   }
 
   /** Returns the label for this {@code java_toolchain}. */
-  public abstract Label getToolchainLabel();
-
-  /** @return the input Java language level */
-  public abstract String getSourceVersion();
-
-  /** @return the target Java language level */
-  public abstract String getTargetVersion();
+  public Label getToolchainLabel() {
+    return label;
+  }
 
   /** @return the target Java bootclasspath */
-  public abstract NestedSet<Artifact> getBootclasspath();
+  public NestedSet<Artifact> getBootclasspath() {
+    return bootclasspath;
+  }
 
   /** @return the target Java extclasspath */
-  public abstract NestedSet<Artifact> getExtclasspath();
-
-  /** @return the encoding for Java source files */
-  public abstract String getEncoding();
+  public NestedSet<Artifact> getExtclasspath() {
+    return extclasspath;
+  }
 
   /** Returns the {@link Artifact} of the javac jar */
-  public abstract Artifact getJavac();
+  @Nullable
+  public Artifact getJavac() {
+    return javac;
+  }
 
   /** Returns the {@link Artifact}s of compilation tools. */
-  public abstract NestedSet<Artifact> getTools();
+  public NestedSet<Artifact> getTools() {
+    return tools;
+  }
 
-  /** Returns the {@link Artifact} of the JavaBuilder deploy jar */
-  public abstract Artifact getJavaBuilder();
+  /** Returns the {@link FilesToRunProvider} of JavaBuilder */
+  public FilesToRunProvider getJavaBuilder() {
+    return javaBuilder;
+  }
 
-  /** @return the {@link Artifact} of the Header Compiler deploy jar */
-  @Nullable public abstract Artifact getHeaderCompiler();
+  /** @return the {@link FilesToRunProvider} of the Header Compiler deploy jar */
+  @Nullable
+  public FilesToRunProvider getHeaderCompiler() {
+    return headerCompiler;
+  }
 
   /**
-   * Returns true if header compilation should be forcibly disabled, overriding
+   * Returns the {@link FilesToRunProvider} of the Header Compiler deploy jar for direct-classpath,
+   * non-annotation processing actions.
+   */
+  @Nullable
+  public FilesToRunProvider getHeaderCompilerDirect() {
+    return headerCompilerDirect;
+  }
+
+  /**
+   * Returns {@code true} if header compilation should be forcibly disabled, overriding
    * --java_header_compilation.
    */
-  public abstract boolean getForciblyDisableHeaderCompilation();
+  public boolean getForciblyDisableHeaderCompilation() {
+    return forciblyDisableHeaderCompilation;
+  }
 
   /** Returns the {@link Artifact} of the SingleJar deploy jar */
-  public abstract Artifact getSingleJar();
+  public Artifact getSingleJar() {
+    return singleJar;
+  }
 
   /**
    * Return the {@link Artifact} of the binary that enforces one-version compliance of java
    * binaries.
    */
   @Nullable
-  public abstract Artifact getOneVersionBinary();
+  public Artifact getOneVersionBinary() {
+    return oneVersion;
+  }
 
   /** Return the {@link Artifact} of the whitelist used by the one-version compliance checker. */
   @Nullable
-  public abstract Artifact getOneVersionWhitelist();
+  public Artifact getOneVersionWhitelist() {
+    return oneVersionWhitelist;
+  }
 
   /** Returns the {@link Artifact} of the GenClass deploy jar */
-  public abstract Artifact getGenClass();
+  public Artifact getGenClass() {
+    return genClass;
+  }
 
   @Nullable
-  public abstract Artifact getResourceJarBuilder();
+  public Artifact getResourceJarBuilder() {
+    return resourceJarBuilder;
+  }
 
   /**
    * Returns the {@link Artifact} of the latest timezone data resource jar that can be loaded by
    * Java 8 binaries.
    */
   @Nullable
-  public abstract Artifact getTimezoneData();
+  public Artifact getTimezoneData() {
+    return timezoneData;
+  }
 
   /** Returns the ijar executable */
-  public abstract FilesToRunProvider getIjar();
+  public FilesToRunProvider getIjar() {
+    return ijar;
+  }
 
-  abstract ImmutableListMultimap<String, String> getCompatibleJavacOptions();
+  ImmutableListMultimap<String, String> getCompatibleJavacOptions() {
+    return compatibleJavacOptions;
+  }
 
   /** @return the map of target environment-specific javacopts. */
   public ImmutableList<String> getCompatibleJavacOptions(String key) {
@@ -162,15 +307,92 @@ public abstract class JavaToolchainProvider implements TransitiveInfoProvider {
   }
 
   /** @return the list of default options for the java compiler */
-  public abstract ImmutableList<String> getJavacOptions();
+  public ImmutableList<String> getJavacOptions(RuleContext ruleContext) {
+    ImmutableList.Builder<String> result = ImmutableList.<String>builder().addAll(javacOptions);
+    if (ruleContext != null) {
+      // TODO(b/78512644): require ruleContext to be non-null after java_common.default_javac_opts
+      // is turned down
+      result.addAll(ruleContext.getFragment(JavaConfiguration.class).getDefaultJavacFlags());
+    }
+    return result.build();
+  }
 
   /**
    * @return the list of default options for the JVM running the java compiler and associated tools.
    */
-  public abstract ImmutableList<String> getJvmOptions();
+  public ImmutableList<String> getJvmOptions() {
+    return jvmOptions;
+  }
+
+  /** Returns the list of JVM options for running JavaBuilder. */
+  public ImmutableList<String> getJavabuilderJvmOptions() {
+    return javabuilderJvmOptions;
+  }
 
   /** @return whether JavaBuilders supports running as a persistent worker or not */
-  public abstract boolean getJavacSupportsWorkers();
+  public boolean getJavacSupportsWorkers() {
+    return javacSupportsWorkers;
+  }
 
-  JavaToolchainProvider() {}
+  /** Returns the global {@code java_plugin_configuration} data. */
+  public ImmutableList<JavaPackageConfigurationProvider> packageConfiguration() {
+    return packageConfiguration;
+  }
+
+  public FilesToRunProvider getJacocoRunner() {
+    return jacocoRunner;
+  }
+
+  public JavaSemantics getJavaSemantics() {
+    return javaSemantics;
+  }
+
+  /** Returns the input Java language level */
+  // TODO(cushon): remove this API; it bakes a deprecated detail of the javac API into Bazel
+  @Override
+  public String getSourceVersion() {
+    Iterator<String> it = javacOptions.iterator();
+    while (it.hasNext()) {
+      if (it.next().equals("-source") && it.hasNext()) {
+        return it.next();
+      }
+    }
+    return JAVA_SPECIFICATION_VERSION.value();
+  }
+
+  /** Returns the target Java language level */
+  // TODO(cushon): remove this API; it bakes a deprecated detail of the javac API into Bazel
+  @Override
+  public String getTargetVersion() {
+    Iterator<String> it = javacOptions.iterator();
+    while (it.hasNext()) {
+      if (it.next().equals("-target") && it.hasNext()) {
+        return it.next();
+      }
+    }
+    return JAVA_SPECIFICATION_VERSION.value();
+  }
+
+  @Override
+  @Nullable
+  public FileApi getJavacJar() {
+    return getJavac();
+  }
+
+  @Override
+  public SkylarkNestedSet getSkylarkBootclasspath() {
+    return SkylarkNestedSet.of(Artifact.class, getBootclasspath());
+  }
+
+  @Override
+  public SkylarkList<String> getSkylarkJvmOptions() {
+    return SkylarkList.createImmutable(getJvmOptions());
+  }
+
+  @Override
+  public SkylarkNestedSet getSkylarkTools() {
+    return SkylarkNestedSet.of(Artifact.class, getTools());
+  }
 }
+
+

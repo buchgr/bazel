@@ -22,7 +22,8 @@ import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
 import com.google.devtools.build.lib.runtime.WorkspaceBuilder;
 import com.google.devtools.build.lib.syntax.Callstack;
-import com.google.devtools.common.options.OptionsProvider;
+import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.common.options.OptionsParsingResult;
 import java.util.UUID;
 
 /**
@@ -33,7 +34,11 @@ import java.util.UUID;
  *
  * <ol>
  *   <li>--host_jvm_args=-javaagent:(path to Google's java agent jar)
- *   <li>--host_jvm_args=-RULE_MEMORY_TRACKER=1
+ *       <ul>
+ *         <li>For Bazel use <a
+ *             href="https://github.com/bazelbuild/bazel/tree/master/third_party/allocation_instrumenter">java-allocation-instrumenter-3.0.1.jar</a>
+ *       </ul>
+ *   <li>--host_jvm_args=-DRULE_MEMORY_TRACKER=1
  * </ol>
  *
  * <p>The memory tracking information is accessible via blaze dump --rules and blaze dump
@@ -54,9 +59,10 @@ public class AllocationTrackerModule extends BlazeModule {
 
   @Override
   public void blazeStartup(
-      OptionsProvider startupOptions,
+      OptionsParsingResult startupOptions,
       BlazeVersionInfo versionInfo,
       UUID instanceId,
+      FileSystem fileSystem,
       ServerDirectories directories,
       Clock clock) {
     String memoryTrackerPropery = System.getProperty("RULE_MEMORY_TRACKER");

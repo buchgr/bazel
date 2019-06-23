@@ -13,9 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.packages;
 
-import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
@@ -26,9 +24,9 @@ import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.Pair;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -38,70 +36,16 @@ import java.util.Set;
  * interface.
  */
 public final class TestTargetUtils {
-  /**
-   * Returns a predicate to be used for test size filtering, i.e., that only accepts tests of the
-   * given size.
-   */
-  public static Predicate<Target> testSizeFilter(final Set<TestSize> allowedSizes) {
-    return target -> {
-      if (!(target instanceof Rule)) {
-        return false;
-      }
-      return allowedSizes.contains(TestSize.getTestSize((Rule) target));
-    };
-  }
-
-  /**
-   * Returns a predicate to be used for test timeout filtering, i.e., that only accepts tests of
-   * the given timeout.
-   **/
-  public static Predicate<Target> testTimeoutFilter(final Set<TestTimeout> allowedTimeouts) {
-    return target -> {
-      if (!(target instanceof Rule)) {
-        return false;
-      }
-      return allowedTimeouts.contains(TestTimeout.getTestTimeout((Rule) target));
-    };
-  }
-
-  /**
-   * Returns a predicate to be used for test language filtering, i.e., that only accepts tests of
-   * the specified languages. The reporter and the list of rule names are only used to warn about
-   * unknown languages.
-   */
-  public static Predicate<Target> testLangFilter(
-      List<String> langFilterList, ExtendedEventHandler reporter, Set<String> allRuleNames) {
-    final Set<String> requiredLangs = new HashSet<>();
-    final Set<String> excludedLangs = new HashSet<>();
-
-    for (String lang : langFilterList) {
-      if (lang.startsWith("-")) {
-        lang = lang.substring(1);
-        excludedLangs.add(lang);
-      } else {
-        requiredLangs.add(lang);
-      }
-      if (!allRuleNames.contains(lang + "_test")) {
-        reporter.handle(
-            Event.warn("Unknown language '" + lang + "' in --test_lang_filters option"));
-      }
-    }
-
-    return rule -> {
-      String ruleLang = TargetUtils.getRuleLanguage(rule);
-      return (requiredLangs.isEmpty() || requiredLangs.contains(ruleLang))
-          && !excludedLangs.contains(ruleLang);
-    };
-  }
 
   /**
    * Returns whether a test with the specified tags matches a filter (as specified by the set
    * of its positive and its negative filters).
    */
-  public static boolean testMatchesFilters(Collection<String> testTags,
-      Collection<String> requiredTags, Collection<String> excludedTags,
+  public static boolean testMatchesFilters(
+      Collection<String> testTags,
+      Collection<String> requiredTags,
+      Collection<String> excludedTags,
       boolean mustMatchAllPositive) {
-
     for (String tag : excludedTags) {
       if (testTags.contains(tag)) {
         return false;
@@ -109,28 +53,70 @@ public final class TestTargetUtils {
     }
 
     // Check required tags, if there are any.
-    if (!requiredTags.isEmpty()) {
-      if (mustMatchAllPositive) {
-        // Require all tags to be present.
-        for (String tag : requiredTags) {
-          if (!testTags.contains(tag)) {
-            return false;
-          }
-        }
-        return true;
-      } else {
-        // Require at least one positive tag.
-        for (String tag : requiredTags) {
-          if (testTags.contains(tag)) {
-            return true;
-          }
+    if (requiredTags.isEmpty()) {
+      return true;
+    } else if (mustMatchAllPositive) {
+      // Require all tags to be present.
+      for (String tag : requiredTags) {
+        if (!testTags.contains(tag)) {
+          return false;
         }
       }
-
-      return false; // No positive tag found.
+      return true;
+    } else {
+      // Require at least one positive tag. If the two collections are not disjoint, then they have
+      // at least one element in common.
+      return !Collections.disjoint(requiredTags, testTags);
     }
+  }
 
-    return true; // No tags are required.
+  /**
+   * Decides whether to include a test in a test_suite or not.
+   * @param testTags Collection of all tags exhibited by a given test.
+   * @param requiredTags Tags declared by the suite. A Test must match ALL of these.
+   * @param excludedTags Tags declared by the suite. A Test must match NONE of these.
+   * @return false is the test is to be removed.
+   */
+  public static boolean testMatchesFilters(
+      Collection<String> testTags,
+      Collection<String> requiredTags,
+      Collection<String> excludedTags) {
+    return testMatchesFilters(
+        testTags, requiredTags, excludedTags, /* mustMatchAllPositive= */ true);
+  }
+
+  /**
+   * Decides whether to include a test in a test_suite or not.
+   * @param testTarget A given test target.
+   * @param requiredTags Tags declared by the suite. A Test must match ALL of these.
+   * @param excludedTags Tags declared by the suite. A Test must match NONE of these.
+   * @return false is the test is to be removed.
+   */
+  private static boolean testMatchesFilters(
+      Rule testTarget,
+      Collection<String> requiredTags,
+      Collection<String> excludedTags) {
+    AttributeMap nonConfigurableAttrs = NonconfigurableAttributeMapper.of(testTarget);
+    Set<String> testTags = new HashSet<>(nonConfigurableAttrs.get("tags", Type.STRING_LIST));
+    testTags.add(nonConfigurableAttrs.get("size", Type.STRING));
+    return testMatchesFilters(testTags, requiredTags, excludedTags);
+  }
+
+  /**
+   * Filters 'tests' (by mutation) according to the 'tags' attribute, specifically those that
+   * match ALL of the tags in tagsAttribute.
+   *
+   * @precondition {@code env.getAccessor().isTestSuite(testSuite)}
+   * @precondition {@code env.getAccessor().isTestRule(test)} for all test in tests
+   */
+  public static void filterTests(Rule testSuite, Set<Target> tests) {
+    List<String> tagsAttribute =
+        NonconfigurableAttributeMapper.of(testSuite).get("tags", Type.STRING_LIST);
+    // Split the tags list into positive and negative tags
+    Pair<Collection<String>, Collection<String>> tagLists = sortTagsBySense(tagsAttribute);
+    Collection<String> positiveTags = tagLists.first;
+    Collection<String> negativeTags = tagLists.second;
+    tests.removeIf((Target t) -> !testMatchesFilters((Rule) t, positiveTags, negativeTags));
   }
 
   /**
@@ -234,7 +220,7 @@ public final class TestTargetUtils {
     private Set<Target> getTestsInSuite(Rule testSuite) throws TargetParsingException {
       Set<Target> tests = testsInSuite.get(testSuite);
       if (tests == null) {
-        tests = Sets.newHashSet();
+        tests = new HashSet<>();
         testsInSuite.put(testSuite, tests); // break cycles by inserting empty set early.
         computeTestsInSuite(testSuite, tests);
       }
@@ -245,7 +231,7 @@ public final class TestTargetUtils {
      * Populates 'result' with all the tests associated with the specified
      * 'testSuite'.  Throws an exception if any target is missing.
      *
-     * CAUTION!  Keep this logic consistent with {@code TestsSuiteConfiguredTarget}!
+     * CAUTION!  Keep this logic consistent with {@code TestSuite} and {@code TestsInSuiteFunction}!
      */
     private void computeTestsInSuite(Rule testSuite, Set<Target> result)
         throws TargetParsingException {
@@ -318,58 +304,6 @@ public final class TestTargetUtils {
         Thread.currentThread().interrupt();
         throw new TargetParsingException("interrupted", e);
       }
-    }
-
-    /**
-     * Filters 'tests' (by mutation) according to the 'tags' attribute, specifically those that
-     * match ALL of the tags in tagsAttribute.
-     *
-     * @precondition {@code env.getAccessor().isTestSuite(testSuite)}
-     * @precondition {@code env.getAccessor().isTestRule(test)} for all test in tests
-     */
-    private void filterTests(Rule testSuite, Set<Target> tests) {
-      List<String> tagsAttribute =
-          NonconfigurableAttributeMapper.of(testSuite).get("tags", Type.STRING_LIST);
-      // Split the tags list into positive and negative tags
-      Pair<Collection<String>, Collection<String>> tagLists = sortTagsBySense(tagsAttribute);
-      Collection<String> positiveTags = tagLists.first;
-      Collection<String> negativeTags = tagLists.second;
-
-      Iterator<Target> it = tests.iterator();
-      while (it.hasNext()) {
-        Rule test = (Rule) it.next();
-        AttributeMap nonConfigurableAttributes = NonconfigurableAttributeMapper.of(test);
-        List<String> testTags =
-            new ArrayList<>(nonConfigurableAttributes.get("tags", Type.STRING_LIST));
-        testTags.add(nonConfigurableAttributes.get("size", Type.STRING));
-        if (!includeTest(testTags, positiveTags, negativeTags)) {
-          it.remove();
-        }
-      }
-    }
-
-    /**
-     * Decides whether to include a test in a test_suite or not.
-     * @param testTags Collection of all tags exhibited by a given test.
-     * @param positiveTags Tags declared by the suite. A Test must match ALL of these.
-     * @param negativeTags Tags declared by the suite. A Test must match NONE of these.
-     * @return false is the test is to be removed.
-     */
-    private static boolean includeTest(Collection<String> testTags,
-        Collection<String> positiveTags, Collection<String> negativeTags) {
-      // Add this test if it matches ALL of the positive tags and NONE of the
-      // negative tags in the tags attribute.
-      for (String tag : negativeTags) {
-        if (testTags.contains(tag)) {
-          return false;
-        }
-      }
-      for (String tag : positiveTags) {
-        if (!testTags.contains(tag)) {
-          return false;
-        }
-      }
-      return true;
     }
   }
 }

@@ -5,10 +5,12 @@ package(
 )
 
 SKYFRAME_OBJECT_SRCS = [
-    "SkyValue.java",
-    "SkyKey.java",
-    "LegacySkyKey.java",
+    "AbstractSkyKey.java",
+    "FunctionHermeticity.java",
+    "ShareabilityOfValue.java",
     "SkyFunctionName.java",
+    "SkyKey.java",
+    "SkyValue.java",
 ]
 
 java_library(
@@ -16,10 +18,8 @@ java_library(
     srcs = SKYFRAME_OBJECT_SRCS,
     visibility = ["//visibility:public"],
     deps = [
-        "//src/main/java/com/google/devtools/build/lib:preconditions",
-        "//src/main/java/com/google/devtools/build/lib/collect",
-        "//src/main/java/com/google/devtools/build/lib/concurrent",
         "//third_party:guava",
+        "//third_party:jsr305",
     ],
 )
 
@@ -31,16 +31,19 @@ java_library(
     ),
     deps = [
         ":skyframe-objects",
+        "//src/main/java/com/google/devtools/build/lib:bug-report",
         "//src/main/java/com/google/devtools/build/lib:events",
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib/clock",  # keep
-        "//src/main/java/com/google/devtools/build/lib/collect",
+        "//src/main/java/com/google/devtools/build/lib/collect/compacthashmap",
         "//src/main/java/com/google/devtools/build/lib/collect/compacthashset",
         "//src/main/java/com/google/devtools/build/lib/collect/nestedset",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
         "//src/main/java/com/google/devtools/build/lib/profiler",
-        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
+        "//src/main/java/com/google/devtools/build/lib/supplier",
         "//src/main/java/com/google/devtools/common/options",
+        "//third_party:flogger",
         "//third_party:guava",
         "//third_party:jsr305",
     ],

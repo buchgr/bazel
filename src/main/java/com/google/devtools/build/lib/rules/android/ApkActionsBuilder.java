@@ -13,21 +13,19 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.android;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesSupplierImpl;
 import com.google.devtools.build.lib.analysis.actions.CustomCommandLine;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.rules.android.AndroidConfiguration.ApkSigningMethod;
 import com.google.devtools.build.lib.rules.java.JavaCommon;
-import com.google.devtools.build.lib.rules.java.JavaHelper;
+import com.google.devtools.build.lib.rules.java.JavaRuntimeInfo;
 import com.google.devtools.build.lib.rules.java.JavaToolchainProvider;
 import com.google.devtools.build.lib.syntax.Type;
-import com.google.devtools.build.lib.util.Pair;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.List;
 
@@ -192,18 +190,30 @@ public class ApkActionsBuilder {
       commandLine.add("-rj").addExecPath(javaResourceZip);
     }
 
-    Pair<Artifact, Runfiles> nativeSymlinksManifestAndRunfiles =
+    NativeLibs.ManifestAndRunfiles nativeSymlinksManifestAndRunfiles =
         nativeLibs.createApkBuilderSymlinks(ruleContext);
     if (nativeSymlinksManifestAndRunfiles != null) {
-      Artifact nativeSymlinksManifest = nativeSymlinksManifestAndRunfiles.first;
-      Runfiles nativeSymlinksRunfiles = nativeSymlinksManifestAndRunfiles.second;
-      PathFragment nativeSymlinksDir = nativeSymlinksManifest.getExecPath().getParentDirectory();
+      // This following is equal to AndroidBinary.getDxArtifact(
+      //     ruleContext, "native_symlinks/MANIFEST").getExecPath().getParentDirectory();
+      // However, that causes an artifact to be registered without a generating action under
+      // --nobuild_runfile_manifests, so instead, the following directly synthesizes the required
+      // path fragment.
+      PathFragment nativeSymlinksDir =
+          ruleContext
+              .getBinOrGenfilesDirectory()
+              .getExecPath()
+              .getRelative(ruleContext.getUniqueDirectory("_dx").getRelative("native_symlinks"));
+
       actionBuilder
           .addRunfilesSupplier(
               new RunfilesSupplierImpl(
-                  nativeSymlinksDir, nativeSymlinksRunfiles, nativeSymlinksManifest))
-          .addInput(nativeSymlinksManifest)
+                  nativeSymlinksDir,
+                  nativeSymlinksManifestAndRunfiles.runfiles,
+                  nativeSymlinksManifestAndRunfiles.manifest))
           .addInputs(nativeLibs.getAllNativeLibs());
+      if (nativeSymlinksManifestAndRunfiles.manifest != null) {
+        actionBuilder.addInput(nativeSymlinksManifestAndRunfiles.manifest);
+      }
       commandLine
           .add("-nf")
           // If the native libs are "foo/bar/x86/foo.so", we need to pass "foo/bar" here
@@ -316,6 +326,7 @@ public class ApkActionsBuilder {
                       .addExecPath(javaResourceZip)
                       .addExecPath(extractedJavaResourceZip)
                       .build())
+              .useDefaultShellEnvironment()
               .build(ruleContext));
 
       if (ruleContext.getFragment(AndroidConfiguration.class).compressJavaResources()) {
@@ -340,8 +351,9 @@ public class ApkActionsBuilder {
     }
 
     List<String> noCompressExtensions;
-    if (ruleContext.getRule().isAttrDefined(
-        AndroidRuleClasses.NOCOMPRESS_EXTENSIONS_ATTR, Type.STRING_LIST)) {
+    if (ruleContext
+        .getRule()
+        .isAttrDefined(AndroidRuleClasses.NOCOMPRESS_EXTENSIONS_ATTR, Type.STRING_LIST)) {
       noCompressExtensions =
           ruleContext
               .getExpander()
@@ -419,14 +431,14 @@ public class ApkActionsBuilder {
   // Adds the appropriate SpawnAction options depending on if SingleJar is a jar or not.
   private static void setSingleJarAsExecutable(
       RuleContext ruleContext, SpawnAction.Builder builder) {
-    Artifact singleJar = JavaToolchainProvider.fromRuleContext(ruleContext).getSingleJar();
+    Artifact singleJar = JavaToolchainProvider.from(ruleContext).getSingleJar();
     if (singleJar.getFilename().endsWith(".jar")) {
       builder
           .setJarExecutable(
               JavaCommon.getHostJavaExecutable(ruleContext),
               singleJar,
-              JavaToolchainProvider.fromRuleContext(ruleContext).getJvmOptions())
-          .addTransitiveInputs(JavaHelper.getHostJavabaseInputs(ruleContext));
+              JavaToolchainProvider.from(ruleContext).getJvmOptions())
+          .addTransitiveInputs(JavaRuntimeInfo.forHost(ruleContext).javaBaseInputsMiddleman());
     } else {
       builder.setExecutable(singleJar);
     }
@@ -434,8 +446,8 @@ public class ApkActionsBuilder {
 
   private Artifact getApkArtifact(RuleContext ruleContext, String baseName) {
     if (artifactLocation != null) {
-      return ruleContext.getUniqueDirectoryArtifact(artifactLocation, baseName,
-          ruleContext.getBinOrGenfilesDirectory());
+      return ruleContext.getUniqueDirectoryArtifact(
+          artifactLocation, baseName, ruleContext.getBinOrGenfilesDirectory());
     } else {
       return AndroidBinary.getDxArtifact(ruleContext, baseName);
     }

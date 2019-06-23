@@ -21,15 +21,13 @@ import com.google.common.eventbus.Subscribe;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.AnalysisFailureEvent;
-import com.google.devtools.build.lib.analysis.BuildView.AnalysisResult;
+import com.google.devtools.build.lib.analysis.AnalysisResult;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
-import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventCollector;
 import com.google.devtools.build.lib.events.OutputFilter.RegexOutputFilter;
 import com.google.devtools.build.lib.pkgcache.LoadingFailureEvent;
-import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.DeterministicHelper;
@@ -95,9 +93,7 @@ public abstract class BuildViewTestBase extends AnalysisTestCase {
     scratch.file("okaypkg/BUILD",
         "sh_library(name = 'transitively-a-cycle',",
         "           srcs = ['//symlinkcycle:cycle'])");
-    Path badpkgBuildFile = scratch.file("badpkg/BUILD",
-        "exports_files(['okay-target'])",
-        "invalidbuildsyntax");
+    Path badpkgBuildFile = scratch.file("badpkg/BUILD", "exports_files(['okay-target'])", "fail()");
     if (incremental) {
       update(defaultFlags().with(Flag.KEEP_GOING), "//okaypkg:transitively-a-cycle");
       assertContainsEvent("circular symlinks detected");
@@ -140,7 +136,7 @@ public abstract class BuildViewTestBase extends AnalysisTestCase {
     AnalysisResult result = getAnalysisResult();
     assertThat(result.getTargetsToBuild()).hasSize(1);
     ConfiguredTarget targetA = Iterables.get(result.getTargetsToBuild(), 0);
-    assertThat(targetA.getConfiguration().getCpu()).isEqualTo(goodCpu);
+    assertThat(getConfiguration(targetA).getCpu()).isEqualTo(goodCpu);
     // Unfortunately, we get the same error twice - we can't distinguish the configurations.
     assertContainsEvent("if genrules produce executables, they are allowed only one output");
   }
@@ -163,9 +159,9 @@ public abstract class BuildViewTestBase extends AnalysisTestCase {
   public static class LoadingFailureRecorder {
     @Subscribe
     public void loadingFailure(LoadingFailureEvent event) {
-      events.add(Pair.of(event.getFailedTarget(), event.getFailureReason()));
+      events.add(event);
     }
 
-    public final List<Pair<Label, Label>> events = new ArrayList<>();
+    public final List<LoadingFailureEvent> events = new ArrayList<>();
   }
 }

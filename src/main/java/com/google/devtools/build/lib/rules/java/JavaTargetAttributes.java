@@ -13,18 +13,18 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.java;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.StrictDepsMode;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.rules.cpp.CppFileTypes;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -33,23 +33,21 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import javax.annotation.Nullable;
 
 /**
- * An object that captures the temporary state we need to pass around while
- * the initialization hook for a java rule is running.
+ * An object that captures the temporary state we need to pass around while the initialization hook
+ * for a java rule is running.
  */
 public class JavaTargetAttributes {
 
   private static void checkJar(Artifact classPathEntry) {
     if (!JavaSemantics.JAR.matches(classPathEntry.getFilename())) {
-      throw new IllegalArgumentException(
-          "not a jar file: " + classPathEntry.prettyPrint());
+      throw new IllegalArgumentException("not a jar file: " + classPathEntry.prettyPrint());
     }
   }
 
-  /**
-   * A builder class for JavaTargetAttributes.
-   */
+  /** A builder class for JavaTargetAttributes. */
   public static class Builder {
 
     // The order of source files is important, and there must not be duplicates.
@@ -59,8 +57,7 @@ public class JavaTargetAttributes {
     // stuck with Set.
     private final Set<Artifact> sourceFiles = new LinkedHashSet<>();
 
-    private final NestedSetBuilder<Artifact> runtimeClassPath =
-        NestedSetBuilder.naiveLinkOrder();
+    private final NestedSetBuilder<Artifact> runtimeClassPath = NestedSetBuilder.naiveLinkOrder();
 
     private final NestedSetBuilder<Artifact> compileTimeClassPath =
         NestedSetBuilder.naiveLinkOrder();
@@ -69,35 +66,27 @@ public class JavaTargetAttributes {
     private final List<Artifact> sourcePath = new ArrayList<>();
     private final List<Artifact> nativeLibraries = new ArrayList<>();
 
-    private final NestedSetBuilder<Artifact> processorPath = NestedSetBuilder.naiveLinkOrder();
-    // Classpath directories can't be represented as artifacts (TreeArtifact isn't appropriate
-    // here since all we need is a path string to apply to the command line).
-    private final Set<String> processorNames = new LinkedHashSet<>();
-
-    private final NestedSetBuilder<Artifact> apiGeneratingProcessorPath =
-        NestedSetBuilder.naiveLinkOrder();
-    private final Set<String> apiGeneratingProcessorNames = new LinkedHashSet<>();
+    private JavaPluginInfoProvider plugins = JavaPluginInfoProvider.empty();
 
     private final Map<PathFragment, Artifact> resources = new LinkedHashMap<>();
     private final NestedSetBuilder<Artifact> resourceJars = NestedSetBuilder.stableOrder();
     private final List<Artifact> messages = new ArrayList<>();
-    private final List<Artifact> instrumentationMetadata = new ArrayList<>();
     private final List<Artifact> sourceJars = new ArrayList<>();
 
     private final List<Artifact> classPathResources = new ArrayList<>();
 
     private final Set<Artifact> additionalOutputs = new LinkedHashSet<>();
 
-    private BuildConfiguration.StrictDepsMode strictJavaDeps =
-        BuildConfiguration.StrictDepsMode.OFF;
+    /** @see {@link #setStrictJavaDeps}. */
+    private StrictDepsMode strictJavaDeps = StrictDepsMode.ERROR;
+
     private final NestedSetBuilder<Artifact> directJars = NestedSetBuilder.naiveLinkOrder();
     private final NestedSetBuilder<Artifact> compileTimeDependencyArtifacts =
         NestedSetBuilder.stableOrder();
-    private String ruleKind;
     private Label targetLabel;
+    @Nullable private String injectingRuleKind;
 
-    private final NestedSetBuilder<Artifact> excludedArtifacts =
-        NestedSetBuilder.naiveLinkOrder();
+    private final NestedSetBuilder<Artifact> excludedArtifacts = NestedSetBuilder.naiveLinkOrder();
 
     private boolean built = false;
 
@@ -137,11 +126,10 @@ public class JavaTargetAttributes {
       return this;
     }
 
-    public Builder merge(JavaCompilationArgs context) {
+    public Builder merge(JavaCompilationArgsProvider context) {
       Preconditions.checkArgument(!built);
-      addCompileTimeClassPathEntries(context.getCompileTimeJars());
+      addCompileTimeClassPathEntries(context.getTransitiveCompileTimeJars());
       addRuntimeClassPathEntries(context.getRuntimeJars());
-      addInstrumentationMetadataEntries(context.getInstrumentationMetadata());
       return this;
     }
 
@@ -170,21 +158,27 @@ public class JavaTargetAttributes {
       return this;
     }
 
+    public Builder addCompileTimeClassPathEntry(Artifact entry) {
+      Preconditions.checkArgument(!built);
+      compileTimeClassPath.add(entry);
+      return this;
+    }
+
     public Builder addCompileTimeClassPathEntries(NestedSet<Artifact> entries) {
       Preconditions.checkArgument(!built);
       compileTimeClassPath.addTransitive(entries);
       return this;
     }
 
-    public Builder setRuleKind(String ruleKind) {
-      Preconditions.checkArgument(!built);
-      this.ruleKind = ruleKind;
-      return this;
-    }
-
     public Builder setTargetLabel(Label targetLabel) {
       Preconditions.checkArgument(!built);
       this.targetLabel = targetLabel;
+      return this;
+    }
+
+    public Builder setInjectingRuleKind(@Nullable String injectingRuleKind) {
+      Preconditions.checkArgument(!built);
+      this.injectingRuleKind = injectingRuleKind;
       return this;
     }
 
@@ -202,9 +196,7 @@ public class JavaTargetAttributes {
       return this;
     }
 
-    /**
-     * Sets the sourcepath to be passed to the Java compiler.
-     */
+    /** Sets the sourcepath to be passed to the Java compiler. */
     public Builder setSourcePath(List<Artifact> artifacts) {
       Preconditions.checkArgument(!built);
       Preconditions.checkArgument(sourcePath.isEmpty());
@@ -219,29 +211,27 @@ public class JavaTargetAttributes {
     }
 
     /**
-     * Controls how strict the javac compiler will be in checking correct use of
-     * direct dependencies.
+     * Controls how strict the javac compiler will be in checking correct use of direct
+     * dependencies.
+     *
+     * <p>Defaults to {@link StrictDepsMode#ERROR}.
      *
      * @param strictDeps one of WARN, ERROR or OFF
      */
-    public Builder setStrictJavaDeps(BuildConfiguration.StrictDepsMode strictDeps) {
+    public Builder setStrictJavaDeps(StrictDepsMode strictDeps) {
       Preconditions.checkArgument(!built);
       strictJavaDeps = strictDeps;
       return this;
     }
 
     /**
-     * In tandem with strictJavaDeps, directJars represents a subset of the compile-time, classpath
+     * In tandem with strictJavaDeps, directJars represents a subset of the compile-time classpath
      * jars that were provided by direct dependencies. When strictJavaDeps is OFF, there is no need
      * to provide directJars, and no extra information is passed to javac. When strictJavaDeps is
      * set to WARN or ERROR, the compiler command line will include extra flags to indicate the
      * warning/error policy and to map the classpath jars to direct or transitive dependencies,
-     * using the information in directJars. The extra flags are formatted like this (same for
-     * --indirect_dependency): <pre>
-     * --direct_dependency
-     * foo/bar/lib.jar
-     * //java/com/google/foo:bar
-     * </pre>
+     * using the information in directJars. The compiler command line will include an extra flag to
+     * indicate which classpath jars are direct dependencies.
      */
     public Builder addDirectJars(NestedSet<Artifact> directJars) {
       Preconditions.checkArgument(!built);
@@ -249,15 +239,15 @@ public class JavaTargetAttributes {
       return this;
     }
 
-    public Builder addCompileTimeDependencyArtifacts(NestedSet<Artifact> dependencyArtifacts) {
+    public Builder addDirectJar(Artifact directJar) {
       Preconditions.checkArgument(!built);
-      compileTimeDependencyArtifacts.addTransitive(dependencyArtifacts);
+      this.directJars.add(directJar);
       return this;
     }
 
-    public Builder addInstrumentationMetadataEntries(Iterable<Artifact> metadataEntries) {
+    public Builder addCompileTimeDependencyArtifacts(NestedSet<Artifact> dependencyArtifacts) {
       Preconditions.checkArgument(!built);
-      Iterables.addAll(instrumentationMetadata, metadataEntries);
+      compileTimeDependencyArtifacts.addTransitive(dependencyArtifacts);
       return this;
     }
 
@@ -307,27 +297,9 @@ public class JavaTargetAttributes {
       return this;
     }
 
-    public Builder addProcessorName(String processor) {
+    public Builder addPlugin(JavaPluginInfoProvider plugins) {
       Preconditions.checkArgument(!built);
-      processorNames.add(processor);
-      return this;
-    }
-
-    public Builder addProcessorPath(NestedSet<Artifact> jars) {
-      Preconditions.checkArgument(!built);
-      processorPath.addTransitive(jars);
-      return this;
-    }
-
-    public Builder addApiGeneratingProcessorName(String processor) {
-      Preconditions.checkArgument(!built);
-      apiGeneratingProcessorNames.add(processor);
-      return this;
-    }
-
-    public Builder addApiGeneratingProcessorPath(NestedSet<Artifact> jars) {
-      Preconditions.checkArgument(!built);
-      apiGeneratingProcessorPath.addTransitive(jars);
+      this.plugins = JavaPluginInfoProvider.merge(this.plugins, plugins);
       return this;
     }
 
@@ -343,9 +315,7 @@ public class JavaTargetAttributes {
       return this;
     }
 
-    /**
-     * Adds additional outputs to this target's compile action.
-     */
+    /** Adds additional outputs to this target's compile action. */
     public Builder addAdditionalOutputs(Iterable<Artifact> outputs) {
       Preconditions.checkArgument(!built);
       Iterables.addAll(additionalOutputs, outputs);
@@ -361,10 +331,7 @@ public class JavaTargetAttributes {
           bootClassPath,
           sourcePath,
           nativeLibraries,
-          processorPath.build(),
-          processorNames,
-          apiGeneratingProcessorPath.build(),
-          apiGeneratingProcessorNames,
+          plugins,
           resources,
           resourceJars.build(),
           messages,
@@ -373,8 +340,8 @@ public class JavaTargetAttributes {
           additionalOutputs,
           directJars.build(),
           compileTimeDependencyArtifacts.build(),
-          ruleKind,
           targetLabel,
+          injectingRuleKind,
           excludedArtifacts,
           strictJavaDeps);
     }
@@ -394,19 +361,19 @@ public class JavaTargetAttributes {
       return !sourceFiles.isEmpty() || !sourceJars.isEmpty();
     }
 
-    /** @deprecated prefer {@link JavaTargetAttributes#hasSourceFiles} */
+    /**
+     * @deprecated prefer to use a built {@link JavaTargetAttributes} instead of accessing mutable
+     *     state in the {@link Builder}.
+     */
     @Deprecated
     public boolean hasSourceFiles() {
       return !sourceFiles.isEmpty();
     }
 
-    /** @deprecated prefer {@link JavaTargetAttributes#getInstrumentationMetadata} */
-    @Deprecated
-    public List<Artifact> getInstrumentationMetadata() {
-      return instrumentationMetadata;
-    }
-
-    /** @deprecated prefer {@link JavaTargetAttributes#hasSourceJars} */
+    /**
+     * @deprecated prefer to use a built {@link JavaTargetAttributes} instead of accessing mutable
+     *     state in the {@link Builder}.
+     */
     @Deprecated
     public boolean hasSourceJars() {
       return !sourceJars.isEmpty();
@@ -426,11 +393,7 @@ public class JavaTargetAttributes {
   private final ImmutableList<Artifact> sourcePath;
   private final ImmutableList<Artifact> nativeLibraries;
 
-  private final NestedSet<Artifact> processorPath;
-  private final ImmutableSet<String> processorNames;
-
-  private final NestedSet<Artifact> apiGeneratingProcessorPath;
-  private final ImmutableSet<String> apiGeneratingProcessorNames;
+  private final JavaPluginInfoProvider plugins;
 
   private final ImmutableMap<PathFragment, Artifact> resources;
   private final NestedSet<Artifact> resourceJars;
@@ -444,11 +407,11 @@ public class JavaTargetAttributes {
 
   private final NestedSet<Artifact> directJars;
   private final NestedSet<Artifact> compileTimeDependencyArtifacts;
-  private final String ruleKind;
   private final Label targetLabel;
+  @Nullable private final String injectingRuleKind;
 
   private final NestedSet<Artifact> excludedArtifacts;
-  private final BuildConfiguration.StrictDepsMode strictJavaDeps;
+  private final StrictDepsMode strictJavaDeps;
 
   /** Constructor of JavaTargetAttributes. */
   private JavaTargetAttributes(
@@ -458,10 +421,7 @@ public class JavaTargetAttributes {
       List<Artifact> bootClassPath,
       List<Artifact> sourcePath,
       List<Artifact> nativeLibraries,
-      NestedSet<Artifact> processorPath,
-      Set<String> processorNames,
-      NestedSet<Artifact> apiGeneratingProcessorPath,
-      Set<String> apiGeneratingProcessorNames,
+      JavaPluginInfoProvider plugins,
       Map<PathFragment, Artifact> resources,
       NestedSet<Artifact> resourceJars,
       List<Artifact> messages,
@@ -470,10 +430,10 @@ public class JavaTargetAttributes {
       Set<Artifact> additionalOutputs,
       NestedSet<Artifact> directJars,
       NestedSet<Artifact> compileTimeDependencyArtifacts,
-      String ruleKind,
       Label targetLabel,
+      @Nullable String injectingRuleKind,
       NestedSetBuilder<Artifact> excludedArtifacts,
-      BuildConfiguration.StrictDepsMode strictJavaDeps) {
+      StrictDepsMode strictJavaDeps) {
     this.sourceFiles = ImmutableSet.copyOf(sourceFiles);
     this.runtimeClassPath = runtimeClassPath.build();
     this.directJars = directJars;
@@ -485,10 +445,7 @@ public class JavaTargetAttributes {
     this.bootClassPath = ImmutableList.copyOf(bootClassPath);
     this.sourcePath = ImmutableList.copyOf(sourcePath);
     this.nativeLibraries = ImmutableList.copyOf(nativeLibraries);
-    this.processorPath = processorPath;
-    this.processorNames = ImmutableSet.copyOf(processorNames);
-    this.apiGeneratingProcessorPath = apiGeneratingProcessorPath;
-    this.apiGeneratingProcessorNames = ImmutableSet.copyOf(apiGeneratingProcessorNames);
+    this.plugins = plugins;
     this.resources = ImmutableMap.copyOf(resources);
     this.resourceJars = resourceJars;
     this.messages = ImmutableList.copyOf(messages);
@@ -496,8 +453,8 @@ public class JavaTargetAttributes {
     this.classPathResources = ImmutableList.copyOf(classPathResources);
     this.additionalOutputs = ImmutableSet.copyOf(additionalOutputs);
     this.compileTimeDependencyArtifacts = compileTimeDependencyArtifacts;
-    this.ruleKind = ruleKind;
     this.targetLabel = targetLabel;
+    this.injectingRuleKind = injectingRuleKind;
     this.excludedArtifacts = excludedArtifacts.build();
     this.strictJavaDeps = strictJavaDeps;
   }
@@ -510,7 +467,7 @@ public class JavaTargetAttributes {
     return compileTimeDependencyArtifacts;
   }
 
-  public List<Artifact> getSourceJars() {
+  public ImmutableList<Artifact> getSourceJars() {
     return sourceJars;
   }
 
@@ -541,7 +498,7 @@ public class JavaTargetAttributes {
   /**
    * Returns the artifacts needed on the runtime classpath of this target.
    *
-   * See also {@link #getRuntimeClassPathForArchive()}.
+   * <p>See also {@link #getRuntimeClassPathForArchive()}.
    */
   public NestedSet<Artifact> getRuntimeClassPath() {
     return runtimeClassPath;
@@ -558,25 +515,8 @@ public class JavaTargetAttributes {
     if (getExcludedArtifacts().isEmpty()) {
       return runtimeClasspath;
     } else {
-      return Iterables.filter(runtimeClasspath,
-          Predicates.not(Predicates.in(getExcludedArtifacts().toSet())));
-    }
-  }
-
-  /**
-   * Adds the classpath artifacts needed in a deploy jar for this target to the passed nested set.
-   *
-   * <p>This excludes the artifacts made available by jars in the deployment environment.
-   */
-  public void addRuntimeClassPathForArchiveToNestedSet(NestedSetBuilder<Artifact> builder) {
-    NestedSet<Artifact> runtimeClasspath = getRuntimeClassPath();
-
-    if (getExcludedArtifacts().isEmpty()) {
-      builder.addTransitive(runtimeClasspath);
-    } else {
-      builder.addAll(
-          Iterables.filter(
-              runtimeClasspath, Predicates.not(Predicates.in(getExcludedArtifacts().toSet()))));
+      return Iterables.filter(
+          runtimeClasspath, Predicates.not(Predicates.in(getExcludedArtifacts().toSet())));
     }
   }
 
@@ -592,16 +532,8 @@ public class JavaTargetAttributes {
     return sourcePath;
   }
 
-  public NestedSet<Artifact> getProcessorPath() {
-    return processorPath;
-  }
-
-  public NestedSet<Artifact> getApiGeneratingProcessorPath() {
-    return apiGeneratingProcessorPath;
-  }
-
-  public ImmutableSet<String> getApiGeneratingProcessorNames() {
-    return apiGeneratingProcessorNames;
+  public JavaPluginInfoProvider plugins() {
+    return plugins;
   }
 
   public ImmutableSet<Artifact> getSourceFiles() {
@@ -610,10 +542,6 @@ public class JavaTargetAttributes {
 
   public List<Artifact> getNativeLibraries() {
     return nativeLibraries;
-  }
-
-  public Collection<String> getProcessorNames() {
-    return processorNames;
   }
 
   public boolean hasSources() {
@@ -631,15 +559,16 @@ public class JavaTargetAttributes {
     return !messages.isEmpty();
   }
 
-  public String getRuleKind() {
-    return ruleKind;
-  }
-
   public Label getTargetLabel() {
     return targetLabel;
   }
 
-  public BuildConfiguration.StrictDepsMode getStrictJavaDeps() {
+  @Nullable
+  public String getInjectingRuleKind() {
+    return injectingRuleKind;
+  }
+
+  public StrictDepsMode getStrictJavaDeps() {
     return strictJavaDeps;
   }
 }

@@ -1,17 +1,12 @@
-package(default_visibility = ["//src:__subpackages__"])
+package(default_visibility = ["//src/java_tools/buildjar:buildjar_package_group"])
 
 java_binary(
-    name = "turbine",
-    main_class = "com.google.devtools.build.java.turbine.Turbine",
-    runtime_deps = [":turbine_main"],
-)
-
-java_library(
-    name = "turbine_main",
-    srcs = ["Turbine.java"],
-    deps = [
-        "//src/java_tools/buildjar/java/com/google/devtools/build/java/turbine/javac:javac_turbine",
+    name = "turbine_direct_binary",
+    main_class = "com.google.turbine.main.Main",
+    runtime_deps = [
+        "//src/main/protobuf:deps_java_proto",
         "//third_party:guava",
+        "//third_party:jsr305",
         "//third_party:turbine",
     ],
 )

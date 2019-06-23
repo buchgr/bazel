@@ -18,8 +18,8 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
-import com.google.common.base.Splitter;
 import com.google.common.io.ByteStreams;
+import com.google.devtools.build.buildjar.jarhelper.JarCreator;
 import com.google.devtools.build.java.turbine.javac.JavacTurbine.Result;
 import com.google.turbine.options.TurbineOptions;
 import java.io.BufferedWriter;
@@ -31,16 +31,17 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.rules.TemporaryFolder;
@@ -72,16 +73,9 @@ public abstract class AbstractJavacTurbineCompilationTest {
     optionsBuilder
         .setOutput(output.toString())
         .setTempDir(tempdir.toString())
-        .addBootClassPathEntries(
-            Splitter.on(':')
-                .splitToList(System.getProperty("sun.boot.class.path"))
-                .stream()
-                .map(e -> Paths.get(e).toAbsolutePath().toString())
-                .collect(toImmutableList()))
         .setOutputDeps(outputDeps.toString())
         .addAllJavacOpts(Arrays.asList("-source", "8", "-target", "8"))
-        .setTargetLabel("//test")
-        .setRuleKind("java_library");
+        .setTargetLabel("//test");
   }
 
   protected void addSourceLines(String path, String... lines) throws IOException {
@@ -125,8 +119,11 @@ public abstract class AbstractJavacTurbineCompilationTest {
 
   protected Path createClassJar(String jarName, Class<?>... classes) throws IOException {
     Path jarPath = temp.newFile(jarName).toPath();
+    Manifest manifest = new Manifest();
+    manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
+    manifest.getMainAttributes().put(JarCreator.TARGET_LABEL, "//" + jarName);
     try (OutputStream os = Files.newOutputStream(jarPath);
-        JarOutputStream jos = new JarOutputStream(os)) {
+        JarOutputStream jos = new JarOutputStream(os, manifest)) {
       for (Class<?> clazz : classes) {
         String classFileName = clazz.getName().replace('.', '/') + ".class";
         jos.putNextEntry(new JarEntry(classFileName));

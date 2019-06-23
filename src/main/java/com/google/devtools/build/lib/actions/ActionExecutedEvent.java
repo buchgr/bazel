@@ -15,38 +15,51 @@
 package com.google.devtools.build.lib.actions;
 
 import com.google.common.base.MoreObjects;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent;
-import com.google.devtools.build.lib.buildeventstream.BuildEventConverters;
+import com.google.devtools.build.lib.buildeventstream.BuildEvent.LocalFile.LocalFileType;
+import com.google.devtools.build.lib.buildeventstream.BuildEventContext;
 import com.google.devtools.build.lib.buildeventstream.BuildEventId;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
 import com.google.devtools.build.lib.buildeventstream.BuildEventWithConfiguration;
 import com.google.devtools.build.lib.buildeventstream.GenericBuildEvent;
 import com.google.devtools.build.lib.buildeventstream.NullConfiguration;
 import com.google.devtools.build.lib.buildeventstream.PathConverter;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.events.ExtendedEventHandler.ProgressLike;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.Collection;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * This event is fired during the build, when an action is executed. It contains information about
  * the action: the Action itself, and the output file names its stdout and stderr are recorded in.
  */
-public class ActionExecutedEvent implements BuildEventWithConfiguration {
+public class ActionExecutedEvent implements BuildEventWithConfiguration, ProgressLike {
+  private static final Logger logger = Logger.getLogger(ActionExecutedEvent.class.getName());
+
+  private final PathFragment actionId;
   private final Action action;
   private final ActionExecutionException exception;
+  private final Path primaryOutput;
   private final Path stdout;
   private final Path stderr;
   private final ErrorTiming timing;
 
   public ActionExecutedEvent(
+      PathFragment actionId,
       Action action,
       ActionExecutionException exception,
+      Path primaryOutput,
       Path stdout,
       Path stderr,
       ErrorTiming timing) {
+    this.actionId = actionId;
     this.action = action;
     this.exception = exception;
+    this.primaryOutput = primaryOutput;
     this.stdout = stdout;
     this.stderr = stderr;
     this.timing = timing;
@@ -84,10 +97,10 @@ public class ActionExecutedEvent implements BuildEventWithConfiguration {
   @Override
   public BuildEventId getEventId() {
     if (action.getOwner() == null) {
-      return BuildEventId.actionCompleted(action.getPrimaryOutput().getPath());
+      return BuildEventId.actionCompleted(actionId);
     } else {
       return BuildEventId.actionCompleted(
-          action.getPrimaryOutput().getPath(),
+          actionId,
           action.getOwner().getLabel(),
           action.getOwner().getConfigurationChecksum());
     }
@@ -112,26 +125,44 @@ public class ActionExecutedEvent implements BuildEventWithConfiguration {
   }
 
   @Override
-  public BuildEventStreamProtos.BuildEvent asStreamProto(BuildEventConverters converters) {
+  public Collection<LocalFile> referencedLocalFiles() {
+    ImmutableList.Builder<LocalFile> localFiles = ImmutableList.builder();
+    if (stdout != null) {
+      localFiles.add(new LocalFile(stdout, LocalFileType.STDOUT));
+    }
+    if (stderr != null) {
+      localFiles.add(new LocalFile(stderr, LocalFileType.STDERR));
+    }
+    if (exception == null) {
+      localFiles.add(new LocalFile(primaryOutput, LocalFileType.OUTPUT));
+    }
+    return localFiles.build();
+  }
+
+  @Override
+  public BuildEventStreamProtos.BuildEvent asStreamProto(BuildEventContext converters) {
     PathConverter pathConverter = converters.pathConverter();
     BuildEventStreamProtos.ActionExecuted.Builder actionBuilder =
-        BuildEventStreamProtos.ActionExecuted.newBuilder().setSuccess(getException() == null);
+        BuildEventStreamProtos.ActionExecuted.newBuilder()
+            .setSuccess(getException() == null)
+            .setType(action.getMnemonic());
+
     if (exception != null && exception.getExitCode() != null) {
       actionBuilder.setExitCode(exception.getExitCode().getNumericExitCode());
     }
     if (stdout != null) {
-      actionBuilder.setStdout(
-          BuildEventStreamProtos.File.newBuilder()
-          .setName("stdout")
-          .setUri(pathConverter.apply(stdout))
-          .build());
+      String uri = pathConverter.apply(stdout);
+      if (uri != null) {
+        actionBuilder.setStdout(
+            BuildEventStreamProtos.File.newBuilder().setName("stdout").setUri(uri).build());
+      }
     }
     if (stderr != null) {
-      actionBuilder.setStderr(
-          BuildEventStreamProtos.File.newBuilder()
-          .setName("stderr")
-          .setUri(pathConverter.apply(stderr))
-          .build());
+      String uri = pathConverter.apply(stderr);
+      if (uri != null) {
+        actionBuilder.setStderr(
+            BuildEventStreamProtos.File.newBuilder().setName("stderr").setUri(uri).build());
+      }
     }
     if (action.getOwner() != null && action.getOwner().getLabel() != null) {
       actionBuilder.setLabel(action.getOwner().getLabel().toString());
@@ -144,10 +175,19 @@ public class ActionExecutedEvent implements BuildEventWithConfiguration {
       actionBuilder.setConfiguration(configuration.getEventId().asStreamProto().getConfiguration());
     }
     if (exception == null) {
-      actionBuilder.setPrimaryOutput(
-          BuildEventStreamProtos.File.newBuilder()
-              .setUri(pathConverter.apply(action.getPrimaryOutput().getPath()))
-              .build());
+      String uri = pathConverter.apply(primaryOutput);
+      if (uri != null) {
+        actionBuilder.setPrimaryOutput(
+            BuildEventStreamProtos.File.newBuilder().setUri(uri).build());
+      }
+    }
+    try {
+      if (action instanceof CommandAction) {
+        actionBuilder.addAllCommandLine(((CommandAction) action).getArguments());
+      }
+    } catch (CommandLineExpansionException e) {
+      // Command-line not available, so just not report it
+      logger.log(Level.INFO, "Could no compute commandline of reported action", e);
     }
     return GenericBuildEvent.protoChaining(this).setAction(actionBuilder.build()).build();
   }

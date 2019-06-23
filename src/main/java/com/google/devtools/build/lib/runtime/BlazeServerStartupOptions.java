@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.runtime;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.util.OptionsUtils;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Option;
@@ -25,14 +26,18 @@ import com.google.devtools.common.options.OptionsBase;
 import java.util.Map;
 
 /**
- * Options that will be evaluated by the blaze client startup code and passed
- * to the blaze server upon startup.
+ * Options that will be evaluated by the blaze client startup code and passed to the blaze server
+ * upon startup.
  *
- * <h4>IMPORTANT</h4> These options and their defaults must be kept in sync with those in the
- * source of the launcher.  The latter define the actual default values; this class exists only to
- * provide the help message, which displays the default values.
+ * <h4>IMPORTANT</h4>
  *
- * The same relationship holds between {@link HostJvmStartupOptions} and the launcher.
+ * These options and their defaults must be kept in sync with those in the source of the launcher.
+ * The latter define the actual default values, most startup options are passed every time,
+ * regardless of whether a value was set explicitly or if the default was used. Some options are
+ * omitted by default, though this should only be true for options where "omitted" is a distinct
+ * value.
+ *
+ * <p>The same relationship holds between {@link HostJvmStartupOptions} and the launcher.
  */
 public class BlazeServerStartupOptions extends OptionsBase {
   /**
@@ -79,7 +84,7 @@ public class BlazeServerStartupOptions extends OptionsBase {
    */
   @Option(
     name = "install_base",
-    defaultValue = "", // NOTE: purely decorative!  See class docstring.
+    defaultValue = "", // NOTE: only for documentation, value is always passed by the client.
     documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
     effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOSES_INCREMENTAL_STATE},
     metadataTags = {OptionMetadataTag.HIDDEN},
@@ -94,7 +99,7 @@ public class BlazeServerStartupOptions extends OptionsBase {
    */
   @Option(
     name = "install_md5",
-    defaultValue = "", // NOTE: purely decorative!  See class docstring.
+    defaultValue = "", // NOTE: only for documentation, value is always passed by the client.
     documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
     effectTags = {OptionEffectTag.LOSES_INCREMENTAL_STATE, OptionEffectTag.BAZEL_MONITORING},
     metadataTags = {OptionMetadataTag.HIDDEN},
@@ -108,34 +113,27 @@ public class BlazeServerStartupOptions extends OptionsBase {
    * necessary.
    */
   @Option(
-    name = "output_base",
-    defaultValue = "null", // NOTE: purely decorative!  See class docstring.
-    category = "server startup",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.LOSES_INCREMENTAL_STATE},
-    converter = OptionsUtils.PathFragmentConverter.class,
-    valueHelp = "<path>",
-    help =
-        "If set, specifies the output location to which all build output will be written. "
-            + "Otherwise, the location will be "
-            + "${OUTPUT_ROOT}/_blaze_${USER}/${MD5_OF_WORKSPACE_ROOT}. Note: If you specify a "
-            + "different option from one to the next Blaze invocation for this value, you'll "
-            + "likely start up a new, additional Blaze server. Blaze starts exactly one server per "
-            + "specified output base. Typically there is one output base per workspace - however, "
-            + "with this option you may have multiple output bases per workspace and thereby run "
-            + "multiple builds for the same client on the same machine concurrently. See "
-            + "'blaze help shutdown' on how to shutdown a Blaze server."
-  )
+      name = "output_base",
+      defaultValue = "null", // NOTE: only for documentation, value is always passed by the client.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.LOSES_INCREMENTAL_STATE},
+      converter = OptionsUtils.PathFragmentConverter.class,
+      valueHelp = "<path>",
+      help =
+          "If set, specifies the output location to which all build output will be written. "
+              + "Otherwise, the location will be "
+              + "${OUTPUT_ROOT}/_blaze_${USER}/${MD5_OF_WORKSPACE_ROOT}. Note: If you specify a "
+              + "different option from one to the next Bazel invocation for this value, you'll "
+              + "likely start up a new, additional Bazel server. Bazel starts exactly one server "
+              + "per specified output base. Typically there is one output base per workspace - "
+              + "however, with this option you may have multiple output bases per workspace and "
+              + "thereby run multiple builds for the same client on the same machine concurrently. "
+              + "See 'bazel help shutdown' on how to shutdown a Bazel server.")
   public PathFragment outputBase;
 
-  /* Note: This option is only used by the C++ client, never by the Java server.
-   * It is included here to make sure that the option is documented in the help
-   * output, which is auto-generated by Java code.
-   */
   @Option(
     name = "output_user_root",
-    defaultValue = "null", // NOTE: purely decorative!  See class docstring.
-    category = "server startup",
+    defaultValue = "null", // NOTE: only for documentation, value is always passed by the client.
     documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
     effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.LOSES_INCREMENTAL_STATE},
     converter = OptionsUtils.PathFragmentConverter.class,
@@ -147,23 +145,53 @@ public class BlazeServerStartupOptions extends OptionsBase {
   )
   public PathFragment outputUserRoot;
 
+  /**
+   * Note: This option is only used by the C++ client, never by the Java server. It is included here
+   * to make sure that the option is documented in the help output, which is auto-generated by Java
+   * code.
+   */
   @Option(
-    name = "workspace_directory",
-    defaultValue = "",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOSES_INCREMENTAL_STATE},
-    metadataTags = {OptionMetadataTag.HIDDEN},
+    name = "server_jvm_out",
+    defaultValue = "null",
+    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.LOSES_INCREMENTAL_STATE},
     converter = OptionsUtils.PathFragmentConverter.class,
+    valueHelp = "<path>",
     help =
-        "The root of the workspace, that is, the directory that Blaze uses as the root of the "
-            + "build. This flag is only to be set by the blaze client."
+        "The location to write the server's JVM's output. If unset then defaults to a location "
+            + "in output_base."
   )
+  public PathFragment serverJvmOut;
+
+  @Option(
+      name = "workspace_directory",
+      defaultValue = "", // NOTE: only for documentation, value is always passed by the client.
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOSES_INCREMENTAL_STATE},
+      metadataTags = {OptionMetadataTag.HIDDEN},
+      converter = OptionsUtils.PathFragmentConverter.class,
+      help =
+          "The root of the workspace, that is, the directory that Bazel uses as the root of the "
+              + "build. This flag is only to be set by the bazel client.")
   public PathFragment workspaceDirectory;
 
   @Option(
+      name = "default_system_javabase",
+      defaultValue = "", // NOTE: only for documentation, value is always passed by the client.
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOSES_INCREMENTAL_STATE},
+      metadataTags = {OptionMetadataTag.HIDDEN},
+      converter = OptionsUtils.PathFragmentConverter.class,
+      help =
+          "The root of the user's local JDK install, to be used as the default target javabase"
+              + " and as a fall-back host_javabase. This is not the embedded JDK.")
+  public PathFragment defaultSystemJavabase;
+
+  @Option(
     name = "max_idle_secs",
-    defaultValue = "" + (3 * 3600), // NOTE: purely decorative!  See class docstring.
-    category = "server startup",
+    // NOTE: default value only used for documentation, value is always passed by the client when
+    // not in --batch mode.
+    defaultValue = "" + (3 * 3600),
     documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
     effectTags = {OptionEffectTag.EAGERNESS_TO_EXIT, OptionEffectTag.LOSES_INCREMENTAL_STATE},
     valueHelp = "<integer>",
@@ -174,24 +202,34 @@ public class BlazeServerStartupOptions extends OptionsBase {
   public int maxIdleSeconds;
 
   @Option(
-    name = "batch",
-    defaultValue = "false", // NOTE: purely decorative!  See class docstring.
-    category = "server startup",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {
-      OptionEffectTag.LOSES_INCREMENTAL_STATE,
-      OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION
-    },
-    help =
-        "If set, Blaze will be run as just a client process without a server, instead of in "
-            + "the standard client/server mode."
-  )
+      name = "shutdown_on_low_sys_mem",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.EAGERNESS_TO_EXIT, OptionEffectTag.LOSES_INCREMENTAL_STATE},
+      help =
+          "If max_idle_secs is set and the build server has been idle for a while, shut down the "
+              + "server when the system is low on free RAM. Linux only.")
+  public boolean shutdownOnLowSysMem;
+
+  @Option(
+      name = "batch",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {
+        OptionEffectTag.LOSES_INCREMENTAL_STATE,
+        OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION
+      },
+      metadataTags = {OptionMetadataTag.DEPRECATED},
+      help =
+          "If set, Bazel will be run as just a client process without a server, instead of in "
+              + "the standard client/server mode. This is deprecated and will be removed, please "
+              + "prefer shutting down the server explicitly if you wish to avoid lingering "
+              + "servers.")
   public boolean batch;
 
   @Option(
     name = "deep_execroot",
-    defaultValue = "true", // NOTE: purely decorative!  See class docstring.
-    category = "server startup",
+    defaultValue = "true", // NOTE: only for documentation, value is always passed by the client.
     documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
     effectTags = {OptionEffectTag.LOSES_INCREMENTAL_STATE, OptionEffectTag.EXECUTION},
     help =
@@ -202,8 +240,7 @@ public class BlazeServerStartupOptions extends OptionsBase {
 
   @Option(
     name = "experimental_oom_more_eagerly",
-    defaultValue = "false", // NOTE: purely decorative!  See class docstring.
-    category = "server startup",
+    defaultValue = "false", // NOTE: only for documentation, value is always passed by the client.
     documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
     effectTags = {OptionEffectTag.LOSES_INCREMENTAL_STATE, OptionEffectTag.EAGERNESS_TO_EXIT},
     help =
@@ -215,87 +252,64 @@ public class BlazeServerStartupOptions extends OptionsBase {
   public boolean oomMoreEagerly;
 
   @Option(
-    name = "experimental_oom_more_eagerly_threshold",
-    defaultValue = "100", // NOTE: purely decorative!  See class docstring.
-    category = "server startup",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.LOSES_INCREMENTAL_STATE, OptionEffectTag.EAGERNESS_TO_EXIT},
-    help =
-        "If this flag is set, Blaze will OOM if, after two full GC's, more than this percentage of "
-            + "the (old gen) heap is still occupied. Deprecated: Use the command argument "
-            + "--experimental_oom_more_eagerly_threshold instead."
-  )
+      name = "experimental_oom_more_eagerly_threshold",
+      defaultValue = "100", // NOTE: only for documentation, value is always passed by the client.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.LOSES_INCREMENTAL_STATE, OptionEffectTag.EAGERNESS_TO_EXIT},
+      help =
+          "If this flag is set, Bazel will OOM if, after two full GC's, more than this percentage "
+              + "of the (old gen) heap is still occupied. Deprecated: Use the command argument "
+              + "--experimental_oom_more_eagerly_threshold instead.")
   public int oomMoreEagerlyThreshold;
 
   @Option(
-    name = "block_for_lock",
-    defaultValue = "true", // NOTE: purely decorative!  See class docstring.
-    category = "server startup",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.EAGERNESS_TO_EXIT},
-    help =
-        "When --noblock_for_lock is passed, Blaze does not wait for a running command to "
-            + "complete, but instead exits immediately."
-  )
+      name = "block_for_lock",
+      defaultValue = "true", // NOTE: only for documentation, value never passed to the server.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.EAGERNESS_TO_EXIT},
+      help =
+          "When --noblock_for_lock is passed, Bazel does not wait for a running command to "
+              + "complete, but instead exits immediately.")
   public boolean blockForLock;
 
   @Option(
-    name = "io_nice_level",
-    defaultValue = "-1", // NOTE: purely decorative!
-    category = "server startup",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
-    valueHelp = "{-1,0,1,2,3,4,5,6,7}",
-    help =
-        "Only on Linux; set a level from 0-7 for best-effort IO scheduling using the "
-            + "sys_ioprio_set system call. 0 is highest priority, 7 is lowest. The anticipatory "
-            + "scheduler may only honor up to priority 4. If set to a negative value, then Blaze "
-            + "does not perform a system call."
-  )
+      name = "io_nice_level",
+      defaultValue = "-1", // NOTE: only for documentation, value never passed to the server.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      valueHelp = "{-1,0,1,2,3,4,5,6,7}",
+      help =
+          "Only on Linux; set a level from 0-7 for best-effort IO scheduling using the "
+              + "sys_ioprio_set system call. 0 is highest priority, 7 is lowest. The anticipatory "
+              + "scheduler may only honor up to priority 4. If set to a negative value, then Bazel "
+              + "does not perform a system call.")
   public int ioNiceLevel;
 
   @Option(
-    name = "batch_cpu_scheduling",
-    defaultValue = "false", // NOTE: purely decorative!
-    category = "server startup",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
-    help =
-        "Only on Linux; use 'batch' CPU scheduling for Blaze. This policy is useful for "
-            + "workloads that are non-interactive, but do not want to lower their nice value. "
-            + "See 'man 2 sched_setscheduler'. If false, then Blaze does not perform a system call."
-  )
+      name = "batch_cpu_scheduling",
+      defaultValue = "false", // NOTE: only for documentation, value never passed to the server.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS},
+      help =
+          "Only on Linux; use 'batch' CPU scheduling for Blaze. This policy is useful for "
+              + "workloads that are non-interactive, but do not want to lower their nice value. "
+              + "See 'man 2 sched_setscheduler'. If false, then Bazel does not perform a system "
+              + "call.")
   public boolean batchCpuScheduling;
 
   @Option(
-    name = "blazerc",
-    defaultValue = "null", // NOTE: purely decorative!
-    category = "misc",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.CHANGES_INPUTS},
-    valueHelp = "<path>",
-    help =
-        "The location of the .%{product}rc file containing default values of "
-            + "Blaze command options. By default, Blaze first checks the current directory, then "
-            + "the user's home directory, and then looks for a file named .$(basename $0)rc "
-            + "(i.e. .%{product}rc). Use /dev/null to disable the search for a %{product}rc file, "
-            + "e.g. in release builds."
-  )
-  public String blazerc;
-
-  @Option(
-    name = "master_blazerc",
-    defaultValue = "true", // NOTE: purely decorative!
-    category = "misc",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.CHANGES_INPUTS},
-    help = "If this option is false, the master %{product}rc next to the binary is not read."
-  )
-  public boolean masterBlazerc;
+      name = "ignore_all_rc_files",
+      defaultValue = "false", // NOTE: purely decorative, rc files are read by the client.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.CHANGES_INPUTS},
+      help =
+          "Disables all rc files, regardless of the values of other rc-modifying flags, even if "
+              + "these flags come later in the list of startup options.")
+  public boolean ignoreAllRcFiles;
 
   @Option(
     name = "fatal_event_bus_exceptions",
-    defaultValue = "false", // NOTE: purely decorative!
+    defaultValue = "false", // NOTE: only for documentation, value is always passed by the client.
     documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
     effectTags = {OptionEffectTag.EAGERNESS_TO_EXIT, OptionEffectTag.LOSES_INCREMENTAL_STATE},
     help = "Whether or not to exit if an exception is thrown by an internal EventBus handler."
@@ -317,8 +331,7 @@ public class BlazeServerStartupOptions extends OptionsBase {
   // turn this into a non-startup option.
   @Option(
     name = "watchfs",
-    defaultValue = "false",
-    category = "server startup",
+    defaultValue = "false", // NOTE: only for documentation, value is always passed by the client.
     documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
     effectTags = {OptionEffectTag.UNKNOWN},
     metadataTags = OptionMetadataTag.DEPRECATED,
@@ -328,6 +341,8 @@ public class BlazeServerStartupOptions extends OptionsBase {
   )
   public boolean watchFS;
 
+  // This option is only passed in --batch mode. The value is otherwise passed as part of the
+  // server request.
   @Option(
     name = "invocation_policy",
     defaultValue = "",
@@ -354,7 +369,7 @@ public class BlazeServerStartupOptions extends OptionsBase {
 
   @Option(
     name = "product_name",
-    defaultValue = "bazel", // NOTE: purely decorative!
+    defaultValue = "bazel", // NOTE: only for documentation, value is always passed by the client.
     documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
     effectTags = {
       OptionEffectTag.LOSES_INCREMENTAL_STATE,
@@ -369,20 +384,10 @@ public class BlazeServerStartupOptions extends OptionsBase {
   )
   public String productName;
 
-  @Option(
-    name = "exoblaze",
-    defaultValue = "false",
-    category = "server startup",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.LOSES_INCREMENTAL_STATE},
-    help = "If true, Blaze runs as Exoblaze"
-  )
-  public boolean exoblaze;
-
   // TODO(ulfjack): Make this a command option.
   @Option(
     name = "write_command_log",
-    defaultValue = "true",
+    defaultValue = "true", // NOTE: only for documentation, value is always passed by the client.
     documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
     effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.LOSES_INCREMENTAL_STATE},
     help = "Whether or not to write the command.log file"
@@ -391,21 +396,105 @@ public class BlazeServerStartupOptions extends OptionsBase {
 
   @Option(
     name = "client_debug",
-    defaultValue = "false", // NOTE: purely decorative!
-    category = "server startup",
+    defaultValue = "false", // NOTE: only for documentation, value is set and used by the client.
     documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
     effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.BAZEL_MONITORING},
-    help = "If true, log debug information from the client to stderr"
+    help =
+        "If true, log debug information from the client to stderr. Changing this option will not "
+            + "cause the server to restart."
   )
   public boolean clientDebug;
 
   @Option(
-    name = "connect_timeout_secs",
-    defaultValue = "30",
-    category = "server startup",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
-    help = "The amount of time the client waits for each attempt to connect to the server"
-  )
+      name = "connect_timeout_secs",
+      defaultValue = "30", // NOTE: only for documentation, value is set and used by the client.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help = "The amount of time the client waits for each attempt to connect to the server")
   public int connectTimeoutSecs;
+
+  // TODO(b/109764197): Add OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS & remove the
+  // experimental tag once this has been tested and is ready for use.
+  @Option(
+      name = "digest_function",
+      defaultValue = "null",
+      converter = DigestHashFunction.DigestFunctionConverter.class,
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {
+        OptionEffectTag.LOSES_INCREMENTAL_STATE,
+        OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION
+      },
+      metadataTags = OptionMetadataTag.EXPERIMENTAL,
+      help = "The hash function to use when computing file digests.")
+  public DigestHashFunction digestHashFunction;
+
+  @Deprecated
+  @Option(
+      name = "expand_configs_in_place",
+      defaultValue = "true", // NOTE: only for documentation, value is always passed by the client.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.NO_OP},
+      metadataTags = {OptionMetadataTag.DEPRECATED},
+      deprecationWarning = "This option is now a no-op and will soon be deleted.",
+      help =
+          "Changed the expansion of --config flags to be done in-place, as opposed to in a fixed "
+              + "point expansion between normal rc options and command-line specified options.")
+  public boolean expandConfigsInPlace;
+
+  @Option(
+      name = "idle_server_tasks",
+      defaultValue = "true", // NOTE: only for documentation, value is set and used by the client.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {
+        OptionEffectTag.LOSES_INCREMENTAL_STATE,
+        OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS,
+      },
+      help = "Run System.gc() when the server is idle")
+  public boolean idleServerTasks;
+
+  @Option(
+      name = "unlimit_coredumps",
+      defaultValue = "false", // NOTE: purely decorative, rc files are read by the client.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {
+          OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION,
+      },
+      help = "Raises the soft coredump limit to the hard limit to make coredumps of the server"
+          + " (including the JVM) and the client possible under common conditions. Stick this"
+          + " flag in your bazelrc once and forget about it so that you get coredumps when you"
+          + " actually encounter a condition that triggers them.")
+  public boolean unlimitCoredumps;
+
+  @Option(
+      name = "incompatible_windows_style_arg_escaping",
+      defaultValue = "true", // NOTE: purely decorative, rc files are read by the client.
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {
+        OptionEffectTag.ACTION_COMMAND_LINES,
+        OptionEffectTag.EXECUTION,
+      },
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES,
+      },
+      help =
+          "On Linux/macOS/non-Windows: no-op. On Windows: if true, then subprocess arguments are"
+              + " escaped Windows-style. When false, the arguments are escaped Bash-style. The"
+              + " Bash-style is buggy, the Windows-style is correct. See"
+              + " https://github.com/bazelbuild/bazel/issues/7122")
+  public boolean windowsStyleArgEscaping;
+
+  @Option(
+      name = "macos_qos_class",
+      defaultValue = "default", // Only for documentation; value is set and used by the client.
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {
+        OptionEffectTag.HOST_MACHINE_RESOURCE_OPTIMIZATIONS,
+      },
+      help =
+          "Sets the QoS service class of the %{product} server when running on macOS. This "
+              + "flag has no effect on all other platforms but is supported to ensure rc files "
+              + "can be shared among them without changes. Possible values are: user-interactive, "
+              + "user-initiated, default, utility, and background.")
+  public String macosQosClass;
 }

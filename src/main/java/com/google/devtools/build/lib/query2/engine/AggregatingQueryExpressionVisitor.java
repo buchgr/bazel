@@ -19,51 +19,54 @@ import com.google.common.primitives.Booleans;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Argument;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.ArgumentType;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * An implementation of {@link QueryExpressionVisitor} which recursively visits all nested {@link
- * QueryExpression}s
+ * QueryExpression}s.
  */
-public abstract class AggregatingQueryExpressionVisitor<T> implements QueryExpressionVisitor<T> {
+public abstract class AggregatingQueryExpressionVisitor<T, C>
+    implements QueryExpressionVisitor<T, C> {
 
   @Override
-  public T visit(BinaryOperatorExpression binaryOperatorExpression) {
-    ImmutableMap.Builder<QueryExpression, T> builder = ImmutableMap.builder();
+  public T visit(BinaryOperatorExpression binaryOperatorExpression, C context) {
+    Map<QueryExpression, T> queryExpressionMapping = new HashMap<>();
     for (QueryExpression expr : binaryOperatorExpression.getOperands()) {
-      builder.put(expr, expr.accept(this));
+      queryExpressionMapping.put(expr, expr.accept(this, context));
     }
-
-    return aggregate(builder.build());
+    return aggregate(ImmutableMap.copyOf(queryExpressionMapping));
   }
 
   @Override
-  public T visit(FunctionExpression functionExpression) {
-    ImmutableMap.Builder<QueryExpression, T> builder = ImmutableMap.builder();
+  public T visit(FunctionExpression functionExpression, C context) {
+    Map<QueryExpression, T> queryExpressionMapping = new HashMap<>();
     for (Argument argument : functionExpression.getArgs()) {
       if (argument.getType() == ArgumentType.EXPRESSION) {
-        builder.put(argument.getExpression(), argument.getExpression().accept(this));
+        queryExpressionMapping.put(
+            argument.getExpression(), argument.getExpression().accept(this, context));
       }
     }
 
-    return aggregate(builder.build());
+    return aggregate(ImmutableMap.copyOf(queryExpressionMapping));
   }
 
   @Override
-  public T visit(LetExpression letExpression) {
+  public T visit(LetExpression letExpression, C context) {
     return aggregate(
         ImmutableMap.of(
-            letExpression.getVarExpr(), letExpression.getVarExpr().accept(this),
-            letExpression.getBodyExpr(), letExpression.getBodyExpr().accept(this)));
+            letExpression.getVarExpr(), letExpression.getVarExpr().accept(this, context),
+            letExpression.getBodyExpr(), letExpression.getBodyExpr().accept(this, context)));
   }
 
   @Override
-  public T visit(SetExpression setExpression) {
-    ImmutableMap.Builder<QueryExpression, T> builder = ImmutableMap.builder();
+  public T visit(SetExpression setExpression, C context) {
+    Map<QueryExpression, T> queryExpressionMapping = new HashMap<>();
     for (TargetLiteral targetLiteral : setExpression.getWords()) {
-      builder.put(targetLiteral, targetLiteral.accept(this));
+      queryExpressionMapping.put(targetLiteral, targetLiteral.accept(this, context));
     }
 
-    return aggregate(builder.build());
+    return aggregate(ImmutableMap.copyOf(queryExpressionMapping));
   }
 
   /**
@@ -77,8 +80,8 @@ public abstract class AggregatingQueryExpressionVisitor<T> implements QueryExpre
    * whose name is in the set of {@code functionName}.
    */
   public static class ContainsFunctionQueryExpressionVisitor
-      extends AggregatingQueryExpressionVisitor<Boolean>
-      implements QueryExpressionVisitor<Boolean> {
+      extends AggregatingQueryExpressionVisitor<Boolean, Void>
+      implements QueryExpressionVisitor<Boolean, Void> {
 
     private final ImmutableSet<String> functionNames;
 
@@ -87,22 +90,22 @@ public abstract class AggregatingQueryExpressionVisitor<T> implements QueryExpre
     }
 
     @Override
-    public Boolean visit(TargetLiteral targetLiteral) {
+    public Boolean visit(TargetLiteral targetLiteral, Void context) {
       return false;
     }
 
     @Override
-    public Boolean visit(SetExpression setExpression) {
+    public Boolean visit(SetExpression setExpression, Void context) {
       return false;
     }
 
     @Override
-    public Boolean visit(FunctionExpression functionExpression) {
+    public Boolean visit(FunctionExpression functionExpression, Void context) {
       QueryFunction function = functionExpression.getFunction();
       if (functionNames.contains(function.getName())) {
         return true;
       } else {
-        return super.visit(functionExpression);
+        return super.visit(functionExpression, context);
       }
     }
 

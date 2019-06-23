@@ -14,26 +14,28 @@
 
 package com.google.devtools.build.lib.remote;
 
-import com.google.devtools.build.lib.actions.ActionInput;
-import com.google.devtools.build.lib.actions.EnvironmentalExecException;
+import build.bazel.remote.execution.v2.Action;
+import build.bazel.remote.execution.v2.ActionResult;
+import build.bazel.remote.execution.v2.Command;
+import build.bazel.remote.execution.v2.Digest;
+import build.bazel.remote.execution.v2.Directory;
+import build.bazel.remote.execution.v2.DirectoryNode;
+import build.bazel.remote.execution.v2.FileNode;
+import com.google.common.hash.HashingOutputStream;
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
+import com.google.common.util.concurrent.SettableFuture;
 import com.google.devtools.build.lib.actions.ExecException;
-import com.google.devtools.build.lib.actions.MetadataProvider;
-import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.remote.Digests.ActionKey;
-import com.google.devtools.build.lib.remote.TreeNodeRepository.TreeNode;
 import com.google.devtools.build.lib.remote.blobstore.SimpleBlobStore;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.remote.options.RemoteOptions;
+import com.google.devtools.build.lib.remote.util.DigestUtil;
+import com.google.devtools.build.lib.remote.util.DigestUtil.ActionKey;
+import com.google.devtools.build.lib.remote.util.Utils;
 import com.google.devtools.build.lib.util.io.FileOutErr;
-import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.remoteexecution.v1test.ActionResult;
-import com.google.devtools.remoteexecution.v1test.Command;
-import com.google.devtools.remoteexecution.v1test.Digest;
-import com.google.devtools.remoteexecution.v1test.Directory;
-import com.google.devtools.remoteexecution.v1test.DirectoryNode;
-import com.google.devtools.remoteexecution.v1test.FileNode;
-import com.google.devtools.remoteexecution.v1test.OutputFile;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.ByteArrayInputStream;
@@ -42,47 +44,40 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Collection;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import javax.annotation.Nullable;
 
 /**
- * A RemoteActionCache implementation that uses a concurrent map as a distributed storage for files
- * and action output.
+ * A RemoteActionCache implementation that uses a simple blob store for files and action output.
  *
- * <p>The thread safety is guaranteed by the underlying map.
+ * <p>The thread safety is guaranteed by the underlying simple blob store.
  *
- * <p>Note that this class is used from src/tools/remote_worker.
+ * <p>Note that this class is used from src/tools/remote.
  */
 @ThreadSafe
-public final class SimpleBlobStoreActionCache implements RemoteActionCache {
-  private static final int MAX_MEMORY_KBYTES = 512 * 1024;
+public final class SimpleBlobStoreActionCache extends AbstractRemoteActionCache {
   private static final int MAX_BLOB_SIZE_FOR_INLINE = 10 * 1024;
 
   private final SimpleBlobStore blobStore;
 
-  public SimpleBlobStoreActionCache(SimpleBlobStore blobStore) {
-    this.blobStore = blobStore;
-  }
+  private final ConcurrentHashMap<String, Boolean> storedBlobs;
 
-  @Override
-  public void ensureInputsPresent(
-      TreeNodeRepository repository, Path execRoot, TreeNode root, Command command)
-          throws IOException, InterruptedException {
-    repository.computeMerkleDigests(root);
-    uploadBlob(command.toByteArray());
-    for (Directory directory : repository.treeToDirectories(root)) {
-      uploadBlob(directory.toByteArray());
-    }
-    // TODO(ulfjack): Only upload files that aren't in the CAS yet?
-    for (TreeNode leaf : repository.leaves(root)) {
-      uploadFileContents(leaf.getActionInput(), execRoot, repository.getInputFileCache());
-    }
+  public SimpleBlobStoreActionCache(
+      RemoteOptions options, SimpleBlobStore blobStore, DigestUtil digestUtil) {
+    super(options, digestUtil);
+    this.blobStore = blobStore;
+    this.storedBlobs = new ConcurrentHashMap<>();
   }
 
   public void downloadTree(Digest rootDigest, Path rootLocation)
       throws IOException, InterruptedException {
-    Directory directory = Directory.parseFrom(downloadBlob(rootDigest));
+    rootLocation.createDirectoryAndParents();
+    Directory directory = Directory.parseFrom(Utils.getFromFuture(downloadBlob(rootDigest)));
     for (FileNode file : directory.getFilesList()) {
-      downloadFileContents(
-          file.getDigest(), rootLocation.getRelative(file.getName()), file.getIsExecutable());
+      Path dst = rootLocation.getRelative(file.getName());
+      Utils.getFromFuture(downloadFile(dst, file.getDigest()));
+      dst.setExecutable(file.getIsExecutable());
     }
     for (DirectoryNode child : directory.getDirectoriesList()) {
       downloadTree(child.getDigest(), rootLocation.getRelative(child.getName()));
@@ -90,91 +85,23 @@ public final class SimpleBlobStoreActionCache implements RemoteActionCache {
   }
 
   private Digest uploadFileContents(Path file) throws IOException, InterruptedException {
-    Digest digest = Digests.computeDigest(file);
+    Digest digest = digestUtil.compute(file);
     try (InputStream in = file.getInputStream()) {
       return uploadStream(digest, in);
     }
   }
 
-  private Digest uploadFileContents(
-      ActionInput input, Path execRoot, MetadataProvider inputCache)
-          throws IOException, InterruptedException {
-    if (input instanceof VirtualActionInput) {
-      byte[] blob = ((VirtualActionInput) input).getBytes().toByteArray();
-      return uploadBlob(blob, Digests.computeDigest(blob));
-    }
-    try (InputStream in = execRoot.getRelative(input.getExecPathString()).getInputStream()) {
-      return uploadStream(Digests.getDigestFromInputCache(input, inputCache), in);
-    }
-  }
-
-  @Override
-  public void download(ActionResult result, Path execRoot, FileOutErr outErr)
-      throws ExecException, IOException, InterruptedException {
-    try {
-      for (OutputFile file : result.getOutputFilesList()) {
-        if (!file.getContent().isEmpty()) {
-          createFile(
-              file.getContent().toByteArray(),
-              execRoot.getRelative(file.getPath()),
-              file.getIsExecutable());
-        } else {
-          downloadFileContents(
-              file.getDigest(), execRoot.getRelative(file.getPath()), file.getIsExecutable());
-        }
-      }
-      if (!result.getOutputDirectoriesList().isEmpty()) {
-        throw new UnsupportedOperationException();
-      }
-      downloadOutErr(result, outErr);
-    } catch (IOException downloadException) {
-      try {
-        // Delete any (partially) downloaded output files, since any subsequent local execution
-        // of this action may expect none of the output files to exist.
-        for (OutputFile file : result.getOutputFilesList()) {
-          execRoot.getRelative(file.getPath()).delete();
-        }
-        outErr.getOutputPath().delete();
-        outErr.getErrorPath().delete();
-      } catch (IOException e) {
-        // If deleting of output files failed, we abort the build with a decent error message as
-        // any subsequent local execution failure would likely be incomprehensible.
-
-        // We don't propagate the downloadException, as this is a recoverable error and the cause
-        // of the build failure is really that we couldn't delete output files.
-        throw new EnvironmentalExecException("Failed to delete output files after incomplete "
-            + "download. Cannot continue with local execution.", e, true);
-      }
-      throw downloadException;
-    }
-  }
-
-  private void downloadOutErr(ActionResult result, FileOutErr outErr)
-          throws IOException, InterruptedException {
-    if (!result.getStdoutRaw().isEmpty()) {
-      result.getStdoutRaw().writeTo(outErr.getOutputStream());
-      outErr.getOutputStream().flush();
-    } else if (result.hasStdoutDigest()) {
-      downloadFileContents(result.getStdoutDigest(), outErr.getOutputPath(), /*executable=*/false);
-    }
-    if (!result.getStderrRaw().isEmpty()) {
-      result.getStderrRaw().writeTo(outErr.getErrorStream());
-      outErr.getErrorStream().flush();
-    } else if (result.hasStderrDigest()) {
-      downloadFileContents(result.getStderrDigest(), outErr.getErrorPath(), /*executable=*/false);
-    }
-  }
-
   @Override
   public void upload(
-      ActionKey actionKey,
+      DigestUtil.ActionKey actionKey,
+      Action action,
+      Command command,
       Path execRoot,
       Collection<Path> files,
-      FileOutErr outErr,
-      boolean uploadAction)
-      throws IOException, InterruptedException {
+      FileOutErr outErr)
+      throws ExecException, IOException, InterruptedException {
     ActionResult.Builder result = ActionResult.newBuilder();
-    upload(result, execRoot, files);
+    upload(result, actionKey, action, command, execRoot, files, /* uploadAction= */ true);
     if (outErr.getErrorPath().exists()) {
       Digest stderr = uploadFileContents(outErr.getErrorPath());
       result.setStderrDigest(stderr);
@@ -183,33 +110,38 @@ public final class SimpleBlobStoreActionCache implements RemoteActionCache {
       Digest stdout = uploadFileContents(outErr.getOutputPath());
       result.setStdoutDigest(stdout);
     }
-    if (uploadAction) {
-      blobStore.putActionResult(actionKey.getDigest().getHash(), result.build().toByteArray());
-    }
+    blobStore.putActionResult(actionKey.getDigest().getHash(), result.build().toByteArray());
   }
 
-  public void upload(ActionResult.Builder result, Path execRoot, Collection<Path> files)
-      throws IOException, InterruptedException {
-    for (Path file : files) {
-      // TODO(ulfjack): Maybe pass in a SpawnResult here, add a list of output files to that, and
-      // rely on the local spawn runner to stat the files, instead of statting here.
-      if (!file.exists()) {
-        continue;
+  public void upload(
+      ActionResult.Builder result,
+      DigestUtil.ActionKey actionKey,
+      Action action,
+      Command command,
+      Path execRoot,
+      Collection<Path> files,
+      boolean uploadAction)
+      throws ExecException, IOException, InterruptedException {
+    UploadManifest manifest =
+        new UploadManifest(
+            digestUtil,
+            result,
+            execRoot,
+            options.incompatibleRemoteSymlinks,
+            options.allowSymlinkUpload);
+    manifest.addFiles(files);
+    if (uploadAction) {
+      manifest.addAction(actionKey, action, command);
+    }
+
+    for (Map.Entry<Digest, Path> entry : manifest.getDigestToFile().entrySet()) {
+      try (InputStream in = entry.getValue().getInputStream()) {
+        uploadStream(entry.getKey(), in);
       }
-      if (file.isDirectory()) {
-        // TODO(olaola): to implement this for a directory, will need to create or pass a
-        // TreeNodeRepository to call uploadTree.
-        throw new UnsupportedOperationException("Storing a directory is not yet supported.");
-      }
-      // TODO(olaola): inline small file contents here.
-      // First put the file content to cache.
-      Digest digest = uploadFileContents(file);
-      // Add to protobuf.
-      result
-          .addOutputFilesBuilder()
-          .setPath(file.relativeTo(execRoot).getPathString())
-          .setDigest(digest)
-          .setIsExecutable(file.isExecutable());
+    }
+
+    for (Map.Entry<Digest, Chunker> entry : manifest.getDigestToChunkers().entrySet()) {
+      uploadBlob(entry.getValue().next().getData().toByteArray(), entry.getKey());
     }
   }
 
@@ -227,72 +159,34 @@ public final class SimpleBlobStoreActionCache implements RemoteActionCache {
     }
   }
 
-  private void downloadFileContents(Digest digest, Path dest, boolean executable)
-      throws IOException, InterruptedException {
-    FileSystemUtils.createDirectoryAndParents(dest.getParentDirectory());
-    try (OutputStream out = dest.getOutputStream()) {
-      downloadBlob(digest, out);
-    }
-    dest.setExecutable(executable);
-  }
-
-  private void createFile(byte[] contents, Path dest, boolean executable) throws IOException {
-    FileSystemUtils.createDirectoryAndParents(dest.getParentDirectory());
-    try (OutputStream stream = dest.getOutputStream()) {
-      stream.write(contents);
-    }
-    dest.setExecutable(executable);
-  }
-
-  private void checkBlobSize(long blobSizeKBytes, String type) {
-    Preconditions.checkArgument(
-        blobSizeKBytes < MAX_MEMORY_KBYTES,
-        type + ": maximum blob size exceeded: %sK > %sK.",
-        blobSizeKBytes,
-        MAX_MEMORY_KBYTES);
-  }
-
   public Digest uploadBlob(byte[] blob) throws IOException, InterruptedException {
-    return uploadBlob(blob, Digests.computeDigest(blob));
+    return uploadBlob(blob, digestUtil.compute(blob));
   }
 
   private Digest uploadBlob(byte[] blob, Digest digest) throws IOException, InterruptedException {
-    int blobSizeKBytes = blob.length / 1024;
-    checkBlobSize(blobSizeKBytes, "Upload");
-    return uploadStream(digest, new ByteArrayInputStream(blob));
+    try (InputStream in = new ByteArrayInputStream(blob)) {
+      return uploadStream(digest, in);
+    }
   }
 
   public Digest uploadStream(Digest digest, InputStream in)
       throws IOException, InterruptedException {
-    blobStore.put(digest.getHash(), digest.getSizeBytes(), in);
+    final String hash = digest.getHash();
+
+    if (storedBlobs.putIfAbsent(hash, true) == null) {
+      try {
+        blobStore.put(hash, digest.getSizeBytes(), in);
+      } catch (Exception e) {
+        storedBlobs.remove(hash);
+        throw e;
+      }
+    }
+
     return digest;
   }
 
-  private void downloadBlob(Digest digest, OutputStream out)
-      throws IOException, InterruptedException {
-    if (digest.getSizeBytes() == 0) {
-      return;
-    }
-    boolean success = blobStore.get(digest.getHash(), out);
-    if (!success) {
-      throw new CacheNotFoundException(digest);
-    }
-  }
-
-  public byte[] downloadBlob(Digest digest)
-      throws IOException, InterruptedException {
-    if (digest.getSizeBytes() == 0) {
-      return new byte[0];
-    }
-    // This unconditionally downloads the whole blob into memory!
-    checkBlobSize(digest.getSizeBytes() / 1024, "Download");
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    downloadBlob(digest, out);
-    return out.toByteArray();
-  }
-
   public boolean containsKey(Digest digest) throws IOException, InterruptedException {
-    return blobStore.containsKey(digest.getHash());
+    return blobStore.contains(digest.getHash());
   }
 
   @Override
@@ -311,11 +205,10 @@ public final class SimpleBlobStoreActionCache implements RemoteActionCache {
       return new byte[0];
     }
     // This unconditionally downloads the whole blob into memory!
-    checkBlobSize(digest.getSizeBytes() / 1024, "Download Action Result");
     ByteArrayOutputStream out = new ByteArrayOutputStream();
-    boolean success = blobStore.getActionResult(digest.getHash(), out);
+    boolean success = getFromFuture(blobStore.getActionResult(digest.getHash(), out));
     if (!success) {
-      throw new CacheNotFoundException(digest);
+      throw new CacheNotFoundException(digest, digestUtil);
     }
     return out.toByteArray();
   }
@@ -328,5 +221,40 @@ public final class SimpleBlobStoreActionCache implements RemoteActionCache {
   @Override
   public void close() {
     blobStore.close();
+  }
+
+  @Override
+  protected ListenableFuture<Void> downloadBlob(Digest digest, OutputStream out) {
+    SettableFuture<Void> outerF = SettableFuture.create();
+    @Nullable
+    HashingOutputStream hashOut =
+        options.remoteVerifyDownloads ? digestUtil.newHashingOutputStream(out) : null;
+    Futures.addCallback(
+        blobStore.get(digest.getHash(), hashOut != null ? hashOut : out),
+        new FutureCallback<Boolean>() {
+          @Override
+          public void onSuccess(Boolean found) {
+            if (found) {
+              try {
+                if (hashOut != null) {
+                  verifyContents(digest.getHash(), DigestUtil.hashCodeToString(hashOut.hash()));
+                }
+                out.flush();
+                outerF.set(null);
+              } catch (IOException e) {
+                outerF.setException(e);
+              }
+            } else {
+              outerF.setException(new CacheNotFoundException(digest, digestUtil));
+            }
+          }
+
+          @Override
+          public void onFailure(Throwable throwable) {
+            outerF.setException(throwable);
+          }
+        },
+        MoreExecutors.directExecutor());
+    return outerF;
   }
 }

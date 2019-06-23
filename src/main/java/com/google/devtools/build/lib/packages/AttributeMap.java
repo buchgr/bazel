@@ -13,9 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.lib.packages;
 
+import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.syntax.Type;
+import java.util.Collection;
 import javax.annotation.Nullable;
 
 /**
@@ -37,6 +40,11 @@ public interface AttributeMap {
    * Returns the label of the rule.
    */
   Label getLabel();
+
+  /**
+   * Returns the name of the rule class.
+   */
+  String getRuleClassName();
 
   /**
    * Returns true if an attribute with the given name exists.
@@ -85,36 +93,48 @@ public interface AttributeMap {
   @Nullable Attribute getAttributeDefinition(String attrName);
 
   /**
-   * Returns true iff the value of the specified attribute is explicitly set in the BUILD file (as
-   * opposed to its default value). This also returns true if the value from the BUILD file is the
-   * same as the default value.
+   * Returns true iff the specified attribute is explicitly set in the target's definition (as
+   * opposed to being omitted and taking on its default value from the rule definition).
    *
-   * <p>It is probably a good idea to avoid this method in default value and implicit outputs
-   * computation, because it is confusing that setting an attribute to an empty list (for example)
-   * is different from not setting it at all.
+   * <p>Note that this returns true in the case where the attribute is explicitly set to the same
+   * value as its default. Therefore, this method breaks encapsulation in the sense that it
+   * describes *how* a target is defined rather than just *what* its attribute values are.
+   *
+   * <p>CAUTION: It is a good idea to avoid relying on this method if possible. It's confusing to
+   * users that setting an attribute to (for example) an empty list is different from not setting it
+   * at all. It also breaks some use cases, such as programmatically copying a target definition via
+   * {@code native.existing_rules}. Specifically, the Starlark code doing the copying will observe
+   * the attribute on the existing target whether or not it was set explicitly, and then set that
+   * value explicitly on the new target. This can cause the two targets to behave differently, and
+   * can be a difficult bug to track down. (See #7071, b/122596733).
    */
   boolean isAttributeValueExplicitlySpecified(String attributeName);
 
-  /**
-   * An interface which accepts {@link Attribute}s, used by {@link #visitLabels}.
-   */
-  interface AcceptsLabelAttribute {
-    /**
-     * Accept a (Label, Attribute) pair describing a dependency edge.
-     *
-     * @param label the target node of the (Rule, Label) edge. The source node should already be
-     *     known.
-     * @param attribute the attribute.
-     */
-    void acceptLabelAttribute(Label label, Attribute attribute) throws InterruptedException;
-  }
+  /** Returns the {@link Location} at which the attribute was defined. */
+  Location getAttributeLocation(String attrName);
 
   /**
-   * For all attributes that contain labels in their values (either by *being* a label or being a
-   * collection that includes labels), visits every label and notifies the specified observer at
-   * each visit.
+   * Returns a {@link Collection} with a {@link DepEdge} for every attribute that contains labels in
+   * its value (either by *being* a label or being a collection that includes labels).
    */
-  void visitLabels(AcceptsLabelAttribute observer) throws InterruptedException;
+  Collection<DepEdge> visitLabels() throws InterruptedException;
+
+  /**
+   * {@code (Label, Attribute)} pair describing a dependency edge.
+   *
+   * <p>The {@link Label} is the target node of the {@code (Rule, Label)} edge. The source node
+   * should already be known. The {@link Attribute} is the attribute giving the edge.
+   */
+  @AutoValue
+  abstract class DepEdge {
+    public abstract Label getLabel();
+
+    public abstract Attribute getAttribute();
+
+    static DepEdge create(Label label, Attribute attribute) {
+      return new AutoValue_AttributeMap_DepEdge(label, attribute);
+    }
+  }
 
   // TODO(bazel-team): These methods are here to support computed defaults that inherit
   // package-level default values. Instead, we should auto-inherit and remove the computed

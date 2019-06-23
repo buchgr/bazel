@@ -14,10 +14,15 @@
 
 package com.google.devtools.build.buildjar.javac.plugins.errorprone;
 
-import com.google.common.annotations.VisibleForTesting;
+import static java.util.Comparator.comparing;
+
+import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.buildjar.InvalidCommandLineException;
 import com.google.devtools.build.buildjar.javac.plugins.BlazeJavaCompilerPlugin;
+import com.google.devtools.build.buildjar.javac.statistics.BlazeJavacStatistics;
+import com.google.errorprone.BaseErrorProneJavaCompiler;
 import com.google.errorprone.ErrorProneAnalyzer;
 import com.google.errorprone.ErrorProneError;
 import com.google.errorprone.ErrorProneOptions;
@@ -30,10 +35,11 @@ import com.sun.tools.javac.comp.AttrContext;
 import com.sun.tools.javac.comp.Env;
 import com.sun.tools.javac.main.JavaCompiler;
 import com.sun.tools.javac.util.Context;
-import com.sun.tools.javac.util.JavacMessages;
 import com.sun.tools.javac.util.Log;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A plugin for BlazeJavaCompiler that performs Error Prone analysis. Error Prone is a static
@@ -42,31 +48,74 @@ import java.util.List;
 public final class ErrorPronePlugin extends BlazeJavaCompilerPlugin {
 
   private final ScannerSupplier scannerSupplier;
-  private final boolean testOnly;
 
   /**
    * Constructs an {@link ErrorPronePlugin} instance with the set of checks that are enabled as
    * errors in open-source Error Prone.
    */
-  public ErrorPronePlugin(boolean testOnly) {
-    this(testOnly, BuiltInCheckerSuppliers.errorChecks());
+  public ErrorPronePlugin() {
+    this(BuiltInCheckerSuppliers.errorChecks());
   }
 
   /**
    * Constructs an {@link ErrorPronePlugin} with the set of checks that are enabled in {@code
    * scannerSupplier}.
    */
-  public ErrorPronePlugin(boolean testOnly, ScannerSupplier scannerSupplier) {
-    this.testOnly = testOnly;
+  public ErrorPronePlugin(ScannerSupplier scannerSupplier) {
     this.scannerSupplier = scannerSupplier;
   }
 
   private ErrorProneAnalyzer errorProneAnalyzer;
   private ErrorProneOptions epOptions;
+  private ErrorProneTimings timings;
+  private final Stopwatch elapsed = Stopwatch.createUnstarted();
+
+  // TODO(cushon): delete this shim after the next Error Prone update
+  static class ErrorProneTimings {
+    static Class<?> clazz;
+
+    static {
+      try {
+        clazz = Class.forName("com.google.errorprone.ErrorProneTimings");
+      } catch (ClassNotFoundException e) {
+        // ignored
+      }
+    }
+
+    private final Object instance;
+
+    public ErrorProneTimings(Object instance) {
+      this.instance = instance;
+    }
+
+    public static ErrorProneTimings instance(Context context) {
+      Object instance = null;
+      if (clazz != null) {
+        try {
+          instance = clazz.getMethod("instance", Context.class).invoke(null, context);
+        } catch (ReflectiveOperationException e) {
+          throw new LinkageError(e.getMessage(), e);
+        }
+      }
+      return new ErrorProneTimings(instance);
+    }
+
+    @SuppressWarnings("unchecked") // reflection
+    public Map<String, Duration> timings() {
+      if (clazz == null) {
+        return ImmutableMap.of();
+      }
+      try {
+        return (Map<String, Duration>) clazz.getMethod("timings").invoke(instance);
+      } catch (ReflectiveOperationException e) {
+        throw new LinkageError(e.getMessage(), e);
+      }
+    }
+  }
 
   /** Registers our message bundle. */
   public static void setupMessageBundle(Context context) {
-    JavacMessages.instance(context).add("com.google.errorprone.errors");
+    BaseErrorProneJavaCompiler.setupMessageBundle(context);
   }
 
   private static final String COMPILING_TEST_ONLY_CODE_ARG = "-XepCompilingTestOnlyCode";
@@ -76,9 +125,6 @@ public final class ErrorPronePlugin extends BlazeJavaCompilerPlugin {
     ImmutableList.Builder<String> epArgs = ImmutableList.<String>builder().addAll(args);
     // allow javacopts that reference unknown error-prone checks
     epArgs.add("-XepIgnoreUnknownCheckNames");
-    if (testOnly()) {
-      epArgs.add(COMPILING_TEST_ONLY_CODE_ARG);
-    }
     return processEpOptions(epArgs.build())
         // TODO(glorioso): This post-filtering shouldn't be needed except that the bazel dependency
         // on error prone doesn't yet know about -XepCompilingTestOnlyCode.
@@ -98,20 +144,27 @@ public final class ErrorPronePlugin extends BlazeJavaCompilerPlugin {
   }
 
   @Override
-  public void init(Context context, Log log, JavaCompiler compiler) {
-    super.init(context, log, compiler);
+  public void init(
+      Context context,
+      Log log,
+      JavaCompiler compiler,
+      BlazeJavacStatistics.Builder statisticsBuilder) {
+    super.init(context, log, compiler, statisticsBuilder);
 
     setupMessageBundle(context);
 
     if (epOptions == null) {
       epOptions = ErrorProneOptions.empty();
     }
-    errorProneAnalyzer = new ErrorProneAnalyzer(scannerSupplier, epOptions, context);
+    errorProneAnalyzer =
+        ErrorProneAnalyzer.createByScanningForPlugins(scannerSupplier, epOptions, context);
+    timings = ErrorProneTimings.instance(context);
   }
 
   /** Run Error Prone analysis after performing dataflow checks. */
   @Override
   public void postFlow(Env<AttrContext> env) {
+    elapsed.start();
     try {
       errorProneAnalyzer.finished(new TaskEvent(Kind.ANALYZE, env.toplevel, env.enclClass.sym));
     } catch (ErrorProneError e) {
@@ -119,11 +172,17 @@ public final class ErrorPronePlugin extends BlazeJavaCompilerPlugin {
       // let the exception propagate to javac's main, where it will cause the compilation to
       // terminate with Result.ABNORMAL
       throw e;
+    } finally {
+      elapsed.stop();
     }
   }
-  
-  @VisibleForTesting
-  public boolean testOnly() {
-    return testOnly;
+
+  @Override
+  public void finish() {
+    statisticsBuilder.totalErrorProneTime(elapsed.elapsed());
+    timings.timings().entrySet().stream()
+        .sorted(comparing((Map.Entry<String, Duration> e) -> e.getValue()).reversed())
+        .limit(10) // best-effort to stay under the action metric size limit
+        .forEachOrdered((e) -> statisticsBuilder.addBugpatternTiming(e.getKey(), e.getValue()));
   }
 }

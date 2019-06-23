@@ -13,21 +13,25 @@
 // limitations under the License.
 package com.google.devtools.build.lib.cmdline;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ComparisonChain;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Interner;
+import com.google.devtools.build.lib.actions.CommandLineItem;
+import com.google.devtools.build.lib.analysis.skylark.BazelStarlarkContext;
 import com.google.devtools.build.lib.cmdline.LabelValidator.BadLabelException;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skylarkinterface.Param;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.build.lib.util.StringCanonicalizer;
+import com.google.devtools.build.lib.skylarkinterface.StarlarkContext;
 import com.google.devtools.build.lib.util.StringUtilities;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunctionName;
@@ -35,6 +39,7 @@ import com.google.devtools.build.skyframe.SkyKey;
 import java.io.InvalidObjectException;
 import java.io.ObjectInputStream;
 import java.io.Serializable;
+import java.util.Arrays;
 import javax.annotation.Nullable;
 
 /**
@@ -50,38 +55,33 @@ import javax.annotation.Nullable;
   category = SkylarkModuleCategory.BUILTIN,
   doc = "A BUILD target identifier."
 )
+@AutoCodec
 @Immutable
 @ThreadSafe
-public final class Label implements Comparable<Label>, Serializable, SkylarkValue, SkyKey {
-  public static final PathFragment EXTERNAL_PACKAGE_NAME = PathFragment.create("external");
-  public static final PathFragment EXTERNAL_PACKAGE_FILE_NAME = PathFragment.create("WORKSPACE");
-  public static final String DEFAULT_REPOSITORY_DIRECTORY = "__main__";
+public final class Label
+    implements Comparable<Label>, Serializable, SkylarkValue, SkyKey, CommandLineItem {
 
   /**
    * Package names that aren't made relative to the current repository because they mean special
    * things to Bazel.
    */
-  public static final ImmutableSet<PathFragment> ABSOLUTE_PACKAGE_NAMES = ImmutableSet.of(
-      // Used for select
-      PathFragment.create("conditions"),
-      // dependencies that are a function of the configuration
-      PathFragment.create("tools/defaults"),
-      // Visibility is labels aren't actually targets
-      PathFragment.create("visibility"),
-      // There is only one //external package
-      Label.EXTERNAL_PACKAGE_NAME);
+  public static final ImmutableSet<PathFragment> ABSOLUTE_PACKAGE_NAMES =
+      ImmutableSet.of(
+          // Used for select
+          PathFragment.create("conditions"),
+          // Visibility is labels aren't actually targets
+          PathFragment.create("visibility"),
+          // There is only one //external package
+          LabelConstants.EXTERNAL_PACKAGE_NAME);
 
-  public static final PackageIdentifier EXTERNAL_PACKAGE_IDENTIFIER =
-      PackageIdentifier.createInMainRepo(EXTERNAL_PACKAGE_NAME);
-
-  public static final PathFragment EXTERNAL_PATH_PREFIX = PathFragment.create("external");
   public static final SkyFunctionName TRANSITIVE_TRAVERSAL =
-      SkyFunctionName.create("TRANSITIVE_TRAVERSAL");
+      SkyFunctionName.createHermetic("TRANSITIVE_TRAVERSAL");
 
   private static final Interner<Label> LABEL_INTERNER = BlazeInterners.newWeakInterner();
 
   /**
    * Factory for Labels from absolute string form. e.g.
+   *
    * <pre>
    * //foo/bar
    * //foo/bar:quux
@@ -91,13 +91,26 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
    * </pre>
    *
    * <p>Treats labels in the default repository as being in the main repository instead.
+   *
+   * <p>Labels that begin with a repository name may have the repository name remapped to a
+   * different name if it appears in {@code repositoryMapping}. This happens if the current
+   * repository being evaluated is external to the main repository and the main repository set the
+   * {@code repo_mapping} attribute when declaring this repository.
+   *
+   * @param absName label-like string to be parsed
+   * @param repositoryMapping map of repository names from the local name found in the current
+   *     repository to the global name declared in the main repository
    */
-  public static Label parseAbsolute(String absName) throws LabelSyntaxException {
-    return parseAbsolute(absName, true);
+  public static Label parseAbsolute(
+      String absName, ImmutableMap<RepositoryName, RepositoryName> repositoryMapping)
+      throws LabelSyntaxException {
+    return parseAbsolute(
+        absName, /* defaultToMain= */ true, repositoryMapping);
   }
 
   /**
    * Factory for Labels from absolute string form. e.g.
+   *
    * <pre>
    * //foo/bar
    * //foo/bar:quux
@@ -106,11 +119,22 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
    * {@literal @}foo//bar:baz
    * </pre>
    *
-   * @param defaultToMain Treat labels in the default repository as being in the main
-   *   one instead.
+   * <p>Labels that begin with a repository name may have the repository name remapped to a
+   * different name if it appears in {@code repositoryMapping}. This happens if the current
+   * repository being evaluated is external to the main repository and the main repository set the
+   * {@code repo_mapping} attribute when declaring this repository.
+   *
+   * @param absName label-like string to be parsed
+   * @param defaultToMain Treat labels in the default repository as being in the main one instead.
+   * @param repositoryMapping map of repository names from the local name found in the current
+   *     repository to the global name declared in the main repository
    */
-  public static Label parseAbsolute(String absName, boolean defaultToMain)
+  public static Label parseAbsolute(
+      String absName,
+      boolean defaultToMain,
+      ImmutableMap<RepositoryName, RepositoryName> repositoryMapping)
       throws LabelSyntaxException {
+    Preconditions.checkNotNull(repositoryMapping);
     String repo = defaultToMain ? "@" : RepositoryName.DEFAULT_REPOSITORY;
     int packageStartPos = absName.indexOf("//");
     if (packageStartPos > 0) {
@@ -120,18 +144,33 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
       repo = absName;
       absName = "//:" + absName.substring(1);
     }
+    String error = RepositoryName.validate(repo);
+    if (error != null) {
+      throw new LabelSyntaxException(
+          "invalid repository name '" + StringUtilities.sanitizeControlChars(repo) + "': " + error);
+    }
     try {
       LabelValidator.PackageAndTarget labelParts = LabelValidator.parseAbsoluteLabel(absName);
-      PackageIdentifier pkgIdWithoutRepo =
-          validatePackageName(labelParts.getPackageName(), labelParts.getTargetName());
-      PathFragment packageFragment = pkgIdWithoutRepo.getPackageFragment();
+      PackageIdentifier pkgId =
+          validatePackageName(
+              labelParts.getPackageName(), labelParts.getTargetName(), repo, repositoryMapping);
+      PathFragment packageFragment = pkgId.getPackageFragment();
       if (repo.isEmpty() && ABSOLUTE_PACKAGE_NAMES.contains(packageFragment)) {
-        repo = "@";
+        pkgId =
+            PackageIdentifier.create(getGlobalRepoName("@", repositoryMapping), packageFragment);
       }
-      return create(PackageIdentifier.create(repo, packageFragment), labelParts.getTargetName());
+      return create(pkgId, labelParts.getTargetName());
     } catch (BadLabelException e) {
       throw new LabelSyntaxException(e.getMessage());
     }
+  }
+
+  private static RepositoryName getGlobalRepoName(
+      String repo, ImmutableMap<RepositoryName, RepositoryName> repositoryMapping)
+      throws LabelSyntaxException {
+    Preconditions.checkNotNull(repositoryMapping);
+    RepositoryName repoName = RepositoryName.create(repo);
+    return repositoryMapping.getOrDefault(repoName, repoName);
   }
 
   /**
@@ -141,9 +180,11 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
    *
    * <p>Do not use this when the argument is not hard-wired.
    */
+  @Deprecated
+  // TODO(b/110698008): create parseAbsoluteUnchecked that passes repositoryMapping
   public static Label parseAbsoluteUnchecked(String absName, boolean defaultToMain) {
     try {
-      return parseAbsolute(absName, defaultToMain);
+      return parseAbsolute(absName, defaultToMain, /* repositoryMapping= */ ImmutableMap.of());
     } catch (LabelSyntaxException e) {
       throw new IllegalArgumentException(e);
     }
@@ -156,11 +197,10 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
   /**
    * Factory for Labels from separate components.
    *
-   * @param packageName The name of the package.  The package name does
-   *   <b>not</b> include {@code //}.  Must be valid according to
-   *   {@link LabelValidator#validatePackageName}.
-   * @param targetName The name of the target within the package.  Must be
-   *   valid according to {@link LabelValidator#validateTargetName}.
+   * @param packageName The name of the package. The package name does <b>not</b> include {@code
+   *     //}. Must be valid according to {@link LabelValidator#validatePackageName}.
+   * @param targetName The name of the target within the package. Must be valid according to {@link
+   *     LabelValidator#validateTargetName}.
    * @throws LabelSyntaxException if either of the arguments was invalid.
    */
   public static Label create(String packageName, String targetName) throws LabelSyntaxException {
@@ -168,8 +208,8 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
   }
 
   /**
-   * Similar factory to above, but takes a package identifier to allow external repository labels
-   * to be created.
+   * Similar factory to above, but takes a package identifier to allow external repository labels to
+   * be created.
    */
   public static Label create(PackageIdentifier packageId, String targetName)
       throws LabelSyntaxException {
@@ -180,16 +220,17 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
    * Similar factory to above, but does not perform target name validation.
    *
    * <p>Only call this method if you know what you're doing; in particular, don't call it on
-   * arbitrary {@code targetName} inputs
+   * arbitrary {@code name} inputs
    */
-
-  public static Label createUnvalidated(PackageIdentifier packageId, String targetName) {
-    return LABEL_INTERNER.intern(new Label(packageId, StringCanonicalizer.intern(targetName)));
+  @AutoCodec.Instantiator
+  public static Label createUnvalidated(PackageIdentifier packageIdentifier, String name) {
+    return LABEL_INTERNER.intern(new Label(packageIdentifier, name));
   }
 
   /**
    * Resolves a relative label using a workspace-relative path to the current working directory. The
    * method handles these cases:
+   *
    * <ul>
    *   <li>The label is absolute.
    *   <li>The label starts with a colon.
@@ -202,7 +243,7 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
    *
    * <p>It would be cleaner to use the TargetPatternEvaluator for this resolution, but that is not
    * possible, because it is sometimes necessary to resolve a relative label before the package path
-   * is setup; in particular, before the tools/defaults package is created.
+   * is setup (maybe not anymore...)
    *
    * @throws LabelSyntaxException if the resulting label is not valid
    */
@@ -210,7 +251,7 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
       throws LabelSyntaxException {
     Preconditions.checkArgument(!workspaceRelativePath.isAbsolute());
     if (LabelValidator.isAbsolute(label)) {
-      return parseAbsolute(label);
+      return parseAbsolute(label, ImmutableMap.of());
     }
     int index = label.indexOf(':');
     if (index < 0) {
@@ -245,15 +286,25 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
     return name;
   }
 
-  /**
-   * Validates the given package name and returns a canonical {@link PackageIdentifier} instance
-   * if it is valid. Otherwise it throws a SyntaxException.
-   */
   private static PackageIdentifier validatePackageName(String packageIdentifier, String name)
+      throws LabelSyntaxException {
+    return validatePackageName(
+        packageIdentifier, name, /* repo= */ null, /* repositoryMapping= */ null);
+  }
+
+  /**
+   * Validates the given package name and returns a canonical {@link PackageIdentifier} instance if
+   * it is valid. Otherwise it throws a SyntaxException.
+   */
+  private static PackageIdentifier validatePackageName(
+      String packageIdentifier,
+      String name,
+      String repo,
+      ImmutableMap<RepositoryName, RepositoryName> repositoryMapping)
       throws LabelSyntaxException {
     String error = null;
     try {
-      return PackageIdentifier.parse(packageIdentifier);
+      return PackageIdentifier.parse(packageIdentifier, repo, repositoryMapping);
     } catch (LabelSyntaxException e) {
       error = e.getMessage();
       error = "invalid package name '" + packageIdentifier + "': " + error;
@@ -273,31 +324,19 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
   /** The name of the target within the package. Canonical. */
   private final String name;
 
-  /** Precomputed hash code. */
-  private final int hashCode;
-
   private Label(PackageIdentifier packageIdentifier, String name) {
     Preconditions.checkNotNull(packageIdentifier);
     Preconditions.checkNotNull(name);
 
     this.packageIdentifier = packageIdentifier;
     this.name = name;
-    this.hashCode = hashCode(this.name, this.packageIdentifier);
-  }
-
-  /**
-   * A specialization of Arrays.HashCode() that does not require constructing a 2-element array.
-   */
-  private static final int hashCode(Object obj1, Object obj2) {
-    int result = 31 + (obj1 == null ? 0 : obj1.hashCode());
-    return 31 * result + (obj2 == null ? 0 : obj2.hashCode());
   }
 
   private Object writeReplace() {
     return new LabelSerializationProxy(getUnambiguousCanonicalForm());
   }
 
-  private void readObject(ObjectInputStream stream) throws InvalidObjectException {
+  private void readObject(ObjectInputStream unusedStream) throws InvalidObjectException {
     throw new InvalidObjectException("Serialization is allowed only by proxy");
   }
 
@@ -309,10 +348,14 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
    * Returns the name of the package in which this rule was declared (e.g. {@code
    * //file/base:fileutils_test} returns {@code file/base}).
    */
-  @SkylarkCallable(name = "package", structField = true,
-      doc = "The package part of this label. "
-      + "For instance:<br>"
-      + "<pre class=language-python>Label(\"//pkg/foo:abc\").package == \"pkg/foo\"</pre>")
+  @SkylarkCallable(
+    name = "package",
+    structField = true,
+    doc =
+        "The package part of this label. "
+            + "For instance:<br>"
+            + "<pre class=language-python>Label(\"//pkg/foo:abc\").package == \"pkg/foo\"</pre>"
+  )
   public String getPackageName() {
     return packageIdentifier.getPackageFragment().getPathString();
   }
@@ -322,11 +365,15 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
    * {@code @repo//pkg:b}, it will returns {@code external/repo/pkg} and for label {@code //pkg:a},
    * it will returns an empty string.
    */
-  @SkylarkCallable(name = "workspace_root", structField = true,
-      doc = "Returns the execution root for the workspace of this label, relative to the execroot. "
-      + "For instance:<br>"
-      + "<pre class=language-python>Label(\"@repo//pkg/foo:abc\").workspace_root =="
-      + " \"external/repo\"</pre>")
+  @SkylarkCallable(
+    name = "workspace_root",
+    structField = true,
+    doc =
+        "Returns the execution root for the workspace of this label, relative to the execroot. "
+            + "For instance:<br>"
+            + "<pre class=language-python>Label(\"@repo//pkg/foo:abc\").workspace_root =="
+            + " \"external/repo\"</pre>"
+  )
   public String getWorkspaceRoot() {
     return packageIdentifier.getRepository().getSourceRoot().toString();
   }
@@ -345,19 +392,30 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
 
   /**
    * Returns the label as a path fragment, using the package and the label name.
+   *
+   * <p>Make sure that the label refers to a file. Non-file labels do not necessarily have
+   * PathFragment representations.
    */
   public PathFragment toPathFragment() {
+    // PathFragments are normalized, so if we do this on a non-file target named '.'
+    // then the package would be returned. Detect this and throw.
+    // A target named '.' can never refer to a file.
+    Preconditions.checkArgument(!name.equals("."));
     return packageIdentifier.getPackageFragment().getRelative(name);
   }
 
   /**
-   * Returns the name by which this rule was declared (e.g. {@code //foo/bar:baz}
-   * returns {@code baz}).
+   * Returns the name by which this rule was declared (e.g. {@code //foo/bar:baz} returns {@code
+   * baz}).
    */
-  @SkylarkCallable(name = "name", structField = true,
-      doc = "The name of this label within the package. "
-      + "For instance:<br>"
-      + "<pre class=language-python>Label(\"//pkg/foo:abc\").name == \"abc\"</pre>")
+  @SkylarkCallable(
+    name = "name",
+    structField = true,
+    doc =
+        "The name of this label within the package. "
+            + "For instance:<br>"
+            + "<pre class=language-python>Label(\"//pkg/foo:abc\").name == \"abc\"</pre>"
+  )
   public String getName() {
     return name;
   }
@@ -382,23 +440,32 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
   }
 
   public String getUnambiguousCanonicalForm() {
-    return packageIdentifier.getRepository() + "//" + packageIdentifier.getPackageFragment()
-        + ":" + name;
+    return packageIdentifier.getRepository()
+        + "//"
+        + packageIdentifier.getPackageFragment()
+        + ":"
+        + name;
+  }
+
+  /** Return the name of the repository label refers to without the leading `at` symbol. */
+  @SkylarkCallable(
+      name = "workspace_name",
+      structField = true,
+      doc =
+          "The repository part of this label. For instance, "
+              + "<pre class=language-python>Label(\"@foo//bar:baz\").workspace_name"
+              + " == \"foo\"</pre>")
+  public String getWorkspaceName() {
+    return packageIdentifier.getRepository().strippedName();
   }
 
   /**
-   * Renders this label in canonical form, except with labels in the main and default
-   * repositories conflated.
+   * Renders this label in canonical form, except with labels in the main and default repositories
+   * conflated.
    */
   public String getDefaultCanonicalForm() {
-    String repository;
-    if (packageIdentifier.getRepository().isMain()) {
-      repository = "";
-    } else {
-      repository = packageIdentifier.getRepository().getName();
-    }
-    return repository + "//" + packageIdentifier.getPackageFragment()
-        + ":" + name;
+    String repository = packageIdentifier.getRepository().getDefaultCanonicalForm();
+    return repository + "//" + packageIdentifier.getPackageFragment() + ":" + name;
   }
 
   /**
@@ -439,38 +506,67 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
    * @param relName the relative label name; must be non-empty.
    */
   @SkylarkCallable(
-    name = "relative",
-    doc =
-        "Resolves a label that is either absolute (starts with <code>//</code>) or relative to the"
-            + " current package. If this label is in a remote repository, the argument will be "
-            + " resolved relative to that repository. If the argument contains a repository, it"
-            + " will be returned as-is. Reserved labels will also be returned as-is.<br>"
-            + "For example:<br>"
-            + "<pre class=language-python>\n"
-            + "Label(\"//foo/bar:baz\").relative(\":quux\") == Label(\"//foo/bar:quux\")\n"
-            + "Label(\"//foo/bar:baz\").relative(\"//wiz:quux\") == Label(\"//wiz:quux\")\n"
-            + "Label(\"@repo//foo/bar:baz\").relative(\"//wiz:quux\") == "
-            + "Label(\"@repo//wiz:quux\")\n"
-            + "Label(\"@repo//foo/bar:baz\").relative(\"//visibility:public\") == "
-            + "Label(\"//visibility:public\")\n"
-            + "Label(\"@repo//foo/bar:baz\").relative(\"@other//wiz:quux\") == "
-            + "Label(\"@other//wiz:quux\")\n"
-            + "</pre>",
-    parameters = {
-      @Param(
-        name = "relName",
-        type = String.class,
-        doc = "The label that will be resolved relative to this one."
-      )
-    }
-  )
-  public Label getRelative(String relName) throws LabelSyntaxException {
+      name = "relative",
+      doc =
+          "Resolves a label that is either absolute (starts with <code>//</code>) or relative to "
+              + "the current package. If this label is in a remote repository, the argument will "
+              + "be resolved relative to that repository. If the argument contains a repository "
+              + "name, the current label is ignored and the argument is returned as-is, except "
+              + "that the repository name is rewritten if it is in the current repository mapping. "
+              + "Reserved labels will also be returned as-is.<br>"
+              + "For example:<br>"
+              + "<pre class=language-python>\n"
+              + "Label(\"//foo/bar:baz\").relative(\":quux\") == Label(\"//foo/bar:quux\")\n"
+              + "Label(\"//foo/bar:baz\").relative(\"//wiz:quux\") == Label(\"//wiz:quux\")\n"
+              + "Label(\"@repo//foo/bar:baz\").relative(\"//wiz:quux\") == "
+              + "Label(\"@repo//wiz:quux\")\n"
+              + "Label(\"@repo//foo/bar:baz\").relative(\"//visibility:public\") == "
+              + "Label(\"//visibility:public\")\n"
+              + "Label(\"@repo//foo/bar:baz\").relative(\"@other//wiz:quux\") == "
+              + "Label(\"@other//wiz:quux\")\n"
+              + "</pre>"
+              + "<p>If the repository mapping passed in is <code>{'@other' : '@remapped'}</code>, "
+              + "then the following remapping will take place:<br>"
+              + "<pre class=language-python>\n"
+              + "Label(\"@repo//foo/bar:baz\").relative(\"@other//wiz:quux\") == "
+              + "Label(\"@remapped//wiz:quux\")\n"
+              + "</pre>",
+      parameters = {
+        @Param(
+            name = "relName",
+            type = String.class,
+            doc = "The label that will be resolved relative to this one.")
+      },
+      useContext = true)
+  public Label getRelative(String relName, StarlarkContext context) throws LabelSyntaxException {
+    BazelStarlarkContext bazelStarlarkContext = (BazelStarlarkContext) context;
+    return getRelativeWithRemapping(relName, bazelStarlarkContext.getRepoMapping());
+  }
+
+  /**
+   * Resolves a relative or absolute label name. If given name is absolute, then this method calls
+   * {@link #parseAbsolute}. Otherwise, it calls {@link #getLocalTargetLabel}.
+   *
+   * <p>For example: {@code :quux} relative to {@code //foo/bar:baz} is {@code //foo/bar:quux};
+   * {@code //wiz:quux} relative to {@code //foo/bar:baz} is {@code //wiz:quux};
+   * {@code @repo//foo:bar} relative to anything will be {@code @repo//foo:bar} if {@code @repo} is
+   * not in {@code repositoryMapping} but will be {@code @other_repo//foo:bar} if there is an entry
+   * {@code @repo -> @other_repo} in {@code repositoryMapping}
+   *
+   * @param relName the relative label name; must be non-empty
+   * @param repositoryMapping the map of local repository names in external repository to global
+   *     repository names in main repo; can be empty, but not null
+   */
+  public Label getRelativeWithRemapping(
+      String relName, ImmutableMap<RepositoryName, RepositoryName> repositoryMapping)
+      throws LabelSyntaxException {
+    Preconditions.checkNotNull(repositoryMapping);
     if (relName.length() == 0) {
       throw new LabelSyntaxException("empty package-relative label");
     }
 
     if (LabelValidator.isAbsolute(relName)) {
-      return resolveRepositoryRelative(parseAbsolute(relName, false));
+      return resolveRepositoryRelative(parseAbsolute(relName, false, repositoryMapping));
     } else if (relName.equals(":")) {
       throw new LabelSyntaxException("':' is not a valid package-relative label");
     } else if (relName.charAt(0) == ':') {
@@ -514,21 +610,18 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
 
   @Override
   public int hashCode() {
-    return hashCode;
+    return hashCode(name, packageIdentifier);
   }
 
-  /**
-   * Two labels are equal iff both their name and their package name are equal.
-   */
+  /** Two labels are equal iff both their name and their package name are equal. */
   @Override
   public boolean equals(Object other) {
     if (!(other instanceof Label)) {
       return false;
     }
     Label otherLabel = (Label) other;
-    // Perform the equality comparisons in order from least likely to most likely.
-    return hashCode == otherLabel.hashCode && name.equals(otherLabel.name)
-        && packageIdentifier.equals(otherLabel.packageIdentifier);
+    // Package identifiers are interned so we compare them first.
+    return packageIdentifier.equals(otherLabel.packageIdentifier) && name.equals(otherLabel.name);
   }
 
   /**
@@ -554,6 +647,23 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
     return label == null ? "(unknown)" : label.toString();
   }
 
+  /**
+   * Returns a {@link PathFragment} corresponding to the directory in which {@code label} would
+   * reside, if it were interpreted to be a path.
+   */
+  public static PathFragment getContainingDirectory(Label label) {
+    PathFragment pkg = label.getPackageFragment();
+    String name = label.getName();
+    if (name.equals(".")) {
+      return pkg;
+    }
+    if (PathFragment.isNormalizedRelativePath(name) && !PathFragment.containsSeparator(name)) {
+      // Optimize for the common case of a label like '//pkg:target'.
+      return pkg;
+    }
+    return pkg.getRelative(name).getParentDirectory();
+  }
+
   @Override
   public boolean isImmutable() {
     return true;
@@ -569,5 +679,19 @@ public final class Label implements Comparable<Label>, Serializable, SkylarkValu
   @Override
   public void str(SkylarkPrinter printer) {
     printer.append(getCanonicalForm());
+  }
+
+  @Override
+  public String expandToCommandLine() {
+    return getCanonicalForm();
+  }
+
+  /**
+   * Specialization of {@link Arrays#hashCode()} that does not require constructing a 2-element
+   * array.
+   */
+  private static final int hashCode(Object obj1, Object obj2) {
+    int result = 31 + (obj1 == null ? 0 : obj1.hashCode());
+    return 31 * result + (obj2 == null ? 0 : obj2.hashCode());
   }
 }

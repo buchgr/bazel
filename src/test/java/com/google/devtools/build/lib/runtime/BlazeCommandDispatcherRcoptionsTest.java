@@ -17,18 +17,15 @@ import static com.google.common.truth.Truth.assertWithMessage;
 
 import com.google.common.collect.Collections2;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ServerDirectories;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildOptions;
+import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
-import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.runtime.BlazeCommandDispatcher.LockingMode;
-import com.google.devtools.build.lib.runtime.BlazeCommandDispatcher.ShutdownBlazeServerException;
+import com.google.devtools.build.lib.bazel.rules.DefaultBuildOptionsForDiffing;
 import com.google.devtools.build.lib.testutil.Scratch;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.util.ExitCode;
@@ -38,10 +35,8 @@ import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
-import com.google.devtools.common.options.OptionsProvider;
+import com.google.devtools.common.options.OptionsParsingResult;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -81,11 +76,10 @@ public class BlazeCommandDispatcherRcoptionsTest {
   private static class ReportNumCommand implements BlazeCommand {
 
     @Override
-    public ExitCode exec(CommandEnvironment env, OptionsProvider options)
-        throws ShutdownBlazeServerException {
+    public BlazeCommandResult exec(CommandEnvironment env, OptionsParsingResult options) {
       FooOptions fooOptions = options.getOptions(FooOptions.class);
       env.getReporter().getOutErr().printOut("" + fooOptions.numOption);
-      return ExitCode.SUCCESS;
+      return BlazeCommandResult.exitCode(ExitCode.SUCCESS);
     }
 
     @Override
@@ -101,13 +95,12 @@ public class BlazeCommandDispatcherRcoptionsTest {
   private static class ReportAllCommand implements BlazeCommand {
 
     @Override
-    public ExitCode exec(CommandEnvironment env, OptionsProvider options)
-        throws ShutdownBlazeServerException {
+    public BlazeCommandResult exec(CommandEnvironment env, OptionsParsingResult options) {
       FooOptions fooOptions = options.getOptions(FooOptions.class);
       env.getReporter()
           .getOutErr()
           .printOut("" + fooOptions.numOption + " " + fooOptions.stringOption);
-      return ExitCode.SUCCESS;
+      return BlazeCommandResult.exitCode(ExitCode.SUCCESS);
     }
 
     @Override
@@ -136,29 +129,42 @@ public class BlazeCommandDispatcherRcoptionsTest {
   public final void initializeRuntime() throws Exception {
     String productName = TestConstants.PRODUCT_NAME;
     ServerDirectories serverDirectories =
-        new ServerDirectories(scratch.dir("install_base"), scratch.dir("output_base"));
+        new ServerDirectories(
+            scratch.dir("install_base"),
+            scratch.dir("output_base"),
+            scratch.dir("user_output_root"));
     this.runtime =
         new BlazeRuntime.Builder()
+            .setFileSystem(scratch.getFileSystem())
             .setProductName(productName)
             .setServerDirectories(serverDirectories)
             .setStartupOptionsProvider(
-                OptionsParser.newOptionsParser(BlazeServerStartupOptions.class))
+                OptionsParser.builder().optionsClasses(BlazeServerStartupOptions.class).build())
             .addBlazeModule(
                 new BlazeModule() {
                   @Override
                   public void initializeRuleClasses(ConfiguredRuleClassProvider.Builder builder) {
                     // We must add these options so that the defaults package can be created.
-                    builder.addConfigurationOptions(BuildConfiguration.Options.class);
+                    builder.addConfigurationOptions(CoreOptions.class);
                     // The defaults package asserts that it is not empty, so we provide options.
                     builder.addConfigurationOptions(MockFragmentOptions.class);
                     // The tools repository is needed for createGlobals
                     builder.setToolsRepository(TestConstants.TOOLS_REPOSITORY);
                   }
                 })
+            .addBlazeModule(
+                new BlazeModule() {
+                  @Override
+                  public BuildOptions getDefaultBuildOptions(BlazeRuntime runtime) {
+                    return DefaultBuildOptionsForDiffing.getDefaultBuildOptionsForFragments(
+                        runtime.getRuleClassProvider().getConfigurationOptions());
+                  }
+                })
             .build();
 
     BlazeDirectories directories =
-        new BlazeDirectories(serverDirectories, scratch.dir("pkg"), productName);
+        new BlazeDirectories(
+            serverDirectories, scratch.dir("pkg"), /* defaultSystemJavabase= */ null, productName);
     this.runtime.initWorkspace(directories, /*binTools=*/null);
   }
 
@@ -172,7 +178,7 @@ public class BlazeCommandDispatcherRcoptionsTest {
     List<String> cmdLine = Lists.newArrayList("reportnum");
     cmdLine.addAll(blazercOpts);
 
-    dispatch.exec(cmdLine, LockingMode.ERROR_OUT, "test", outErr);
+    dispatch.exec(cmdLine, "test", outErr);
     String out = outErr.outAsLatin1();
     assertWithMessage("Common options should be used").that(out).isEqualTo("99");
   }
@@ -189,7 +195,7 @@ public class BlazeCommandDispatcherRcoptionsTest {
     List<String> cmdLine = Lists.newArrayList("reportnum");
     cmdLine.addAll(blazercOpts);
 
-    dispatch.exec(cmdLine, LockingMode.ERROR_OUT, "test", outErr);
+    dispatch.exec(cmdLine, "test", outErr);
     String out = outErr.outAsLatin1();
     assertWithMessage("Specific options should dominate common options").that(out).isEqualTo("42");
   }
@@ -206,7 +212,7 @@ public class BlazeCommandDispatcherRcoptionsTest {
     List<String> cmdLine = Lists.newArrayList("reportnum");
     cmdLine.addAll(blazercOpts);
 
-    dispatch.exec(cmdLine, LockingMode.ERROR_OUT, "test", outErr);
+    dispatch.exec(cmdLine, "test", outErr);
     String out = outErr.outAsLatin1();
     assertWithMessage("Specific options should dominate common options").that(out).isEqualTo("42");
   }
@@ -224,7 +230,7 @@ public class BlazeCommandDispatcherRcoptionsTest {
     List<String> cmdLine = Lists.newArrayList("reportall");
     cmdLine.addAll(blazercOpts);
 
-    dispatch.exec(cmdLine, LockingMode.ERROR_OUT, "test", outErr);
+    dispatch.exec(cmdLine, "test", outErr);
     String out = outErr.outAsLatin1();
     assertWithMessage("Options should get accumulated over different rc files")
         .that(out)
@@ -245,7 +251,7 @@ public class BlazeCommandDispatcherRcoptionsTest {
     List<String> cmdLine = Lists.newArrayList("reportall");
     cmdLine.addAll(blazercOpts);
 
-    dispatch.exec(cmdLine, LockingMode.ERROR_OUT, "test", outErr);
+    dispatch.exec(cmdLine, "test", outErr);
     String out = outErr.outAsLatin1();
     assertWithMessage("The more specific rc-file should override").that(out).isEqualTo("99 foo");
   }
@@ -264,7 +270,7 @@ public class BlazeCommandDispatcherRcoptionsTest {
     List<String> cmdLine = Lists.newArrayList("reportall");
     cmdLine.addAll(blazercOpts);
 
-    dispatch.exec(cmdLine, LockingMode.ERROR_OUT, "test", outErr);
+    dispatch.exec(cmdLine, "test", outErr);
     String out = outErr.outAsLatin1();
     assertWithMessage("The more specific rc-file should override irrespective of name")
         .that(out)
@@ -294,7 +300,7 @@ public class BlazeCommandDispatcherRcoptionsTest {
       List<String> orderedOpts = ImmutableList.copyOf(Iterables.concat(e));
       cmdLine.addAll(orderedOpts);
 
-      dispatch.exec(cmdLine, LockingMode.ERROR_OUT, "test", outErr);
+      dispatch.exec(cmdLine, "test", outErr);
       String out = outErr.outAsLatin1();
       assertWithMessage(String.format(
               "The more specific option should override, irrespective of source file or order. %s",
@@ -315,11 +321,5 @@ public class BlazeCommandDispatcherRcoptionsTest {
       defaultValue = "false"
     )
     public boolean fakeOpt;
-
-    @Override
-    public Map<String, Set<Label>> getDefaultsLabels(BuildConfiguration.Options commonOptions) {
-      return ImmutableMap.<String, Set<Label>>of(
-          "mock_target", ImmutableSet.of(Label.parseAbsoluteUnchecked("//mock:target")));
-    }
   }
 }

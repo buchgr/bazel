@@ -13,33 +13,43 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
+import static com.google.common.collect.ImmutableSetMultimap.flatteningToImmutableSetMultimap;
+
+import com.google.auto.value.AutoValue;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSetMultimap;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
+import com.google.devtools.build.lib.packages.NonconfigurableAttributeMapper;
+import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.packages.TargetUtils;
+import com.google.devtools.build.lib.pkgcache.AbstractRecursivePackageProvider.MissingDepException;
 import com.google.devtools.build.lib.pkgcache.CompileOneDependencyTransformer;
 import com.google.devtools.build.lib.pkgcache.FilteringPolicies;
-import com.google.devtools.build.lib.pkgcache.LoadingPhaseRunner;
+import com.google.devtools.build.lib.pkgcache.LoadingPhaseCompleteEvent;
 import com.google.devtools.build.lib.pkgcache.ParsingFailedEvent;
 import com.google.devtools.build.lib.pkgcache.TargetParsingCompleteEvent;
-import com.google.devtools.build.lib.pkgcache.TargetProvider;
 import com.google.devtools.build.lib.pkgcache.TestFilter;
-import com.google.devtools.build.lib.skyframe.EnvironmentBackedRecursivePackageProvider.MissingDepException;
 import com.google.devtools.build.lib.skyframe.TargetPatternPhaseValue.TargetPatternPhaseKey;
 import com.google.devtools.build.lib.skyframe.TargetPatternValue.TargetPatternKey;
 import com.google.devtools.build.lib.skyframe.TargetPatternValue.TargetPatternSkyKeyOrException;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.ValueOrException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,14 +63,20 @@ import javax.annotation.Nullable;
  */
 final class TargetPatternPhaseFunction implements SkyFunction {
 
+  public TargetPatternPhaseFunction() {
+  }
+
   @Override
   public TargetPatternPhaseValue compute(SkyKey key, Environment env) throws InterruptedException {
     TargetPatternPhaseKey options = (TargetPatternPhaseKey) key.argument();
     PackageValue packageValue = null;
     boolean workspaceError = false;
     try {
-      packageValue = (PackageValue) env.getValueOrThrow(
-          PackageValue.key(Label.EXTERNAL_PACKAGE_IDENTIFIER), NoSuchPackageException.class);
+      packageValue =
+          (PackageValue)
+              env.getValueOrThrow(
+                  PackageValue.key(LabelConstants.EXTERNAL_PACKAGE_IDENTIFIER),
+                  NoSuchPackageException.class);
     } catch (NoSuchPackageException e) {
       env.getListener().handle(Event.error(e.getMessage()));
       workspaceError = true;
@@ -74,7 +90,12 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     }
 
     // Determine targets to build:
-    ResolvedTargets<Target> targets = getTargetsToBuild(env, options);
+    List<String> failedPatterns = new ArrayList<String>();
+    List<ExpandedPattern> expandedPatterns = getTargetsToBuild(env, options, failedPatterns);
+    ResolvedTargets<Target> targets =
+        env.valuesMissing()
+            ? null
+            : mergeAll(expandedPatterns, !failedPatterns.isEmpty(), env, options);
 
     // If the --build_tests_only option was specified or we want to run tests, we need to determine
     // the list of targets to test. For that, we remove manual tests and apply the command-line
@@ -90,7 +111,7 @@ final class TargetPatternPhaseFunction implements SkyFunction {
     Map<Label, SkyKey> testExpansionKeys = new LinkedHashMap<>();
     if (targets != null) {
       for (Target target : targets.getTargets()) {
-        if (TargetUtils.isTestSuiteRule(target)) {
+        if (TargetUtils.isTestSuiteRule(target) && options.isExpandTestSuites()) {
           Label label = target.getLabel();
           SkyKey testExpansionKey = TestSuiteExpansionValue.key(ImmutableSet.of(label));
           testExpansionKeys.put(label, testExpansionKey);
@@ -159,46 +180,87 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       env.getListener().handle(Event.warn("Target pattern parsing failed."));
     }
 
-    LoadingPhaseRunner.maybeReportDeprecation(env.getListener(), targets.getTargets());
+    maybeReportDeprecation(env.getListener(), targets.getTargets());
 
-    boolean preExpansionError = targets.hasError();
-    ResolvedTargets.Builder<Target> expandedTargetsBuilder = ResolvedTargets.builder();
+    ResolvedTargets.Builder<Label> expandedLabelsBuilder = ResolvedTargets.builder();
     for (Target target : targets.getTargets()) {
-      if (TargetUtils.isTestSuiteRule(target)) {
+      if (TargetUtils.isTestSuiteRule(target) && options.isExpandTestSuites()) {
         SkyKey expansionKey =
             Preconditions.checkNotNull(testExpansionKeys.get(target.getLabel()));
         TestSuiteExpansionValue testExpansion =
             (TestSuiteExpansionValue) expandedTests.get(expansionKey);
-        expandedTargetsBuilder.merge(testExpansion.getTargets());
+        expandedLabelsBuilder.merge(testExpansion.getLabels());
       } else {
-        expandedTargetsBuilder.add(target);
+        expandedLabelsBuilder.add(target.getLabel());
       }
     }
-    ResolvedTargets<Target> expandedTargets = expandedTargetsBuilder.build();
+    ResolvedTargets<Label> targetLabels = expandedLabelsBuilder.build();
+    ResolvedTargets<Target> expandedTargets =
+        TestSuiteExpansionFunction.labelsToTargets(
+            env, targetLabels.getTargets(), targetLabels.hasError());
     Set<Target> testSuiteTargets =
         Sets.difference(targets.getTargets(), expandedTargets.getTargets());
-    TargetPatternPhaseValue result = new TargetPatternPhaseValue(
-        expandedTargets.getTargets(), testsToRun, preExpansionError,
-        expandedTargets.hasError() || workspaceError, filteredTargets, testFilteredTargets,
-        ImmutableSet.copyOf(testSuiteTargets), workspaceName);
-    env.getListener().post(
-        new TargetParsingCompleteEvent(
-            targets.getTargets(),
-            result.getFilteredTargets(),
-            result.getTestFilteredTargets(),
-            options.getTargetPatterns(),
-            result.getTargets()));
+    ImmutableSet<Label> testsToRunLabels = null;
+    if (testsToRun != null) {
+      testsToRunLabels =
+          testsToRun.stream().map(Target::getLabel).collect(ImmutableSet.toImmutableSet());
+    }
+    ImmutableSet<Label> removedTargetLabels =
+        testSuiteTargets.stream().map(Target::getLabel).collect(ImmutableSet.toImmutableSet());
+
+    TargetPatternPhaseValue result =
+        new TargetPatternPhaseValue(
+            targetLabels.getTargets(),
+            testsToRunLabels,
+            targets.hasError(),
+            expandedTargets.hasError() || workspaceError,
+            workspaceName);
+
+    env.getListener()
+        .post(
+            new TargetParsingCompleteEvent(
+                targets.getTargets(),
+                filteredTargets,
+                testFilteredTargets,
+                options.getTargetPatterns(),
+                expandedTargets.getTargets(),
+                failedPatterns,
+                mapOriginalPatternsToLabels(expandedPatterns, targets.getTargets())));
+    env.getListener()
+        .post(new LoadingPhaseCompleteEvent(result.getTargetLabels(), removedTargetLabels));
     return result;
   }
 
   /**
-   * Interpret the command-line arguments.
+   * Emit a warning when a deprecated target is mentioned on the command line.
    *
-   * @param options the command-line arguments in structured form
+   * <p>Note that this does not stop us from emitting "target X depends on deprecated target Y"
+   * style warnings for the same target and it is a good thing; <i>depending</i> on a target and
+   * <i>wanting</i> to build it are different things.
    */
-  private static ResolvedTargets<Target> getTargetsToBuild(
-      Environment env, TargetPatternPhaseKey options) throws InterruptedException {
-    List<TargetPatternKey> patternSkyKeys = new ArrayList<>();
+  private static void maybeReportDeprecation(
+      ExtendedEventHandler eventHandler, Collection<Target> targets) {
+    for (Rule rule : Iterables.filter(targets, Rule.class)) {
+      if (rule.isAttributeValueExplicitlySpecified("deprecation")) {
+        eventHandler.handle(Event.warn(rule.getLocation(), String.format(
+            "target '%s' is deprecated: %s", rule.getLabel(),
+            NonconfigurableAttributeMapper.of(rule).get("deprecation", Type.STRING))));
+      }
+    }
+  }
+
+  /**
+   * Interprets the command-line arguments by expanding each pattern to targets and populating the
+   * list of {@code failedPatterns}.
+   *
+   * @param env the Skylark environment
+   * @param options the command-line arguments in structured form
+   * @param failedPatterns a list into which failed patterns are added
+   */
+  private static List<ExpandedPattern> getTargetsToBuild(
+      Environment env, TargetPatternPhaseKey options, List<String> failedPatterns)
+      throws InterruptedException {
+    List<TargetPatternKey> patternSkyKeys = new ArrayList<>(options.getTargetPatterns().size());
     for (TargetPatternSkyKeyOrException keyOrException :
         TargetPatternValue.keys(
             options.getTargetPatterns(),
@@ -209,21 +271,33 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       try {
         patternSkyKeys.add(keyOrException.getSkyKey());
       } catch (TargetParsingException e) {
+        failedPatterns.add(keyOrException.getOriginalPattern());
+        // We post a PatternExpandingError here - the pattern could not be parsed, so we don't even
+        // get to run TargetPatternFunction.
+        env.getListener().post(
+            PatternExpandingError.failed(keyOrException.getOriginalPattern(), e.getMessage()));
         // We generally skip patterns that don't parse. We report a parsing failed exception to the
         // event bus here, but not in determineTests below, which goes through the same list. Note
         // that the TargetPatternFunction otherwise reports these events (but only if the target
         // pattern could be parsed successfully).
         env.getListener().post(
-            new ParsingFailedEvent(keyOrException.getOriginalPattern(),  e.getMessage()));
+            new ParsingFailedEvent(keyOrException.getOriginalPattern(), e.getMessage()));
+        try {
+          env.getValueOrThrow(
+              TargetPatternErrorFunction.key(e.getMessage()), TargetParsingException.class);
+        } catch (TargetParsingException ignore) {
+          // We ignore this. Keep going is active.
+        }
+        env.getListener().handle(
+            Event.error(
+                "Skipping '" + keyOrException.getOriginalPattern() + "': " + e.getMessage()));
       }
     }
+
     Map<SkyKey, ValueOrException<TargetParsingException>> resolvedPatterns =
         env.getValuesOrThrow(patternSkyKeys, TargetParsingException.class);
-    if (env.valuesMissing()) {
-      return null;
-    }
+    List<ExpandedPattern> expandedPatterns = new ArrayList<>(patternSkyKeys.size());
 
-    ResolvedTargets.Builder<Target> builder = ResolvedTargets.builder();
     for (TargetPatternKey pattern : patternSkyKeys) {
       TargetPatternValue value;
       try {
@@ -231,17 +305,41 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       } catch (TargetParsingException e) {
         String rawPattern = pattern.getPattern();
         String errorMessage = e.getMessage();
+        failedPatterns.add(rawPattern);
+        env.getListener().post(PatternExpandingError.failed(rawPattern, errorMessage));
         env.getListener().handle(Event.error("Skipping '" + rawPattern + "': " + errorMessage));
-        builder.setError();
+        continue;
+      }
+      if (value == null) {
         continue;
       }
       // TODO(ulfjack): This is terribly inefficient.
       ResolvedTargets<Target> asTargets = TestSuiteExpansionFunction.labelsToTargets(
           env, value.getTargets().getTargets(), value.getTargets().hasError());
-      if (pattern.isNegative()) {
-        builder.filter(Predicates.not(Predicates.in(asTargets.getTargets())));
+      if (asTargets == null) {
+        continue;
+      }
+      expandedPatterns.add(ExpandedPattern.of(pattern, asTargets));
+    }
+
+    return expandedPatterns;
+  }
+
+  /** Merges expansions from all patterns into a single {@link ResolvedTargets} instance. */
+  private static ResolvedTargets<Target> mergeAll(
+      List<ExpandedPattern> expandedPatterns,
+      boolean hasError,
+      Environment env,
+      TargetPatternPhaseKey options)
+      throws InterruptedException {
+    ResolvedTargets.Builder<Target> builder = ResolvedTargets.builder();
+    builder.mergeError(hasError);
+
+    for (ExpandedPattern expansion : expandedPatterns) {
+      if (expansion.pattern().isNegative()) {
+        builder.filter(Predicates.not(Predicates.in(expansion.resolvedTargets().getTargets())));
       } else {
-        builder.merge(asTargets);
+        builder.merge(expansion.resolvedTargets());
       }
     }
 
@@ -249,15 +347,26 @@ final class TargetPatternPhaseFunction implements SkyFunction {
         .filter(TargetUtils.tagFilter(options.getBuildTargetFilter()))
         .build();
     if (options.getCompileOneDependency()) {
-      TargetProvider targetProvider = new EnvironmentBackedRecursivePackageProvider(env);
+      EnvironmentBackedRecursivePackageProvider environmentBackedRecursivePackageProvider =
+          new EnvironmentBackedRecursivePackageProvider(env);
       try {
-        return new CompileOneDependencyTransformer(targetProvider)
-            .transformCompileOneDependency(env.getListener(), result);
+        result =
+            new CompileOneDependencyTransformer(environmentBackedRecursivePackageProvider)
+                .transformCompileOneDependency(env.getListener(), result);
       } catch (MissingDepException e) {
         return null;
       } catch (TargetParsingException e) {
+        try {
+          env.getValueOrThrow(
+              TargetPatternErrorFunction.key(e.getMessage()), TargetParsingException.class);
+        } catch (TargetParsingException ignore) {
+          // We ignore this. Keep going is active.
+        }
         env.getListener().handle(Event.error(e.getMessage()));
         return ResolvedTargets.failed();
+      }
+      if (environmentBackedRecursivePackageProvider.encounteredPackageErrors()) {
+        result = ResolvedTargets.<Target>builder().merge(result).setError().build();
       }
     }
     return result;
@@ -317,22 +426,60 @@ final class TargetPatternPhaseFunction implements SkyFunction {
       TestSuiteExpansionValue expandedSuitesValue = (TestSuiteExpansionValue) expandedSuites.get(
           TestSuiteExpansionValue.key(value.getTargets().getTargets()));
       if (pattern.isNegative()) {
-        ResolvedTargets<Target> negativeTargets = expandedSuitesValue.getTargets();
+        ResolvedTargets<Target> negativeTargets =
+            TestSuiteExpansionFunction.labelsToTargets(
+                env,
+                expandedSuitesValue.getLabels().getTargets(),
+                expandedSuitesValue.getLabels().hasError());
         testTargetsBuilder.filter(Predicates.not(Predicates.in(negativeTargets.getTargets())));
         testTargetsBuilder.mergeError(negativeTargets.hasError());
       } else {
-        ResolvedTargets<Target> positiveTargets = expandedSuitesValue.getTargets();
+        ResolvedTargets<Target> positiveTargets =
+            TestSuiteExpansionFunction.labelsToTargets(
+                env,
+                expandedSuitesValue.getLabels().getTargets(),
+                expandedSuitesValue.getLabels().hasError());
         testTargetsBuilder.addAll(positiveTargets.getTargets());
         testTargetsBuilder.mergeError(positiveTargets.hasError());
       }
     }
+
     testTargetsBuilder.filter(testFilter);
     return testTargetsBuilder.build();
+  }
+
+  private static ImmutableSetMultimap<String, Label> mapOriginalPatternsToLabels(
+      List<ExpandedPattern> expandedPatterns, Set<Target> includedTargets) {
+    return expandedPatterns
+        .stream()
+        .filter(expansion -> !expansion.pattern().isNegative())
+        .collect(
+            flatteningToImmutableSetMultimap(
+                expansion -> expansion.pattern().getPattern(),
+                expansion ->
+                    expansion
+                        .resolvedTargets()
+                        .getTargets()
+                        .stream()
+                        .filter(includedTargets::contains)
+                        .map(Target::getLabel)));
   }
 
   @Nullable
   @Override
   public String extractTag(SkyKey skyKey) {
     return null;
+  }
+
+  /** Represents the expansion of a single target pattern. */
+  @AutoValue
+  abstract static class ExpandedPattern {
+
+    static ExpandedPattern of(TargetPatternKey pattern, ResolvedTargets<Target> resolvedTargets) {
+      return new AutoValue_TargetPatternPhaseFunction_ExpandedPattern(pattern, resolvedTargets);
+    }
+
+    abstract TargetPatternKey pattern();
+    abstract ResolvedTargets<Target> resolvedTargets();
   }
 }

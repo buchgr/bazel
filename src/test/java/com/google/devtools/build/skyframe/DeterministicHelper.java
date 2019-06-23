@@ -27,7 +27,7 @@ import javax.annotation.Nullable;
  * batch requests ordered alphabetically by sky key string representation.
  */
 public class DeterministicHelper extends NotifyingHelper {
-  static final MemoizingEvaluator.GraphTransformerForTesting MAKE_DETERMINISTIC =
+  public static final MemoizingEvaluator.GraphTransformerForTesting MAKE_DETERMINISTIC =
       makeTransformer(Listener.NULL_LISTENER, /*deterministic=*/ true);
 
   public static MemoizingEvaluator.GraphTransformerForTesting makeTransformer(
@@ -54,13 +54,10 @@ public class DeterministicHelper extends NotifyingHelper {
     }
   }
 
+  /** Compare using SkyKey argument first, so that tests can easily order keys. */
   private static final Comparator<SkyKey> ALPHABETICAL_SKYKEY_COMPARATOR =
-      new Comparator<SkyKey>() {
-        @Override
-        public int compare(SkyKey o1, SkyKey o2) {
-          return o1.toString().compareTo(o2.toString());
-        }
-      };
+      Comparator.<SkyKey, String>comparing(key -> key.argument().toString())
+          .thenComparing(key -> key.functionName().toString());
 
   DeterministicHelper(Listener listener) {
     super(listener);
@@ -72,8 +69,8 @@ public class DeterministicHelper extends NotifyingHelper {
 
   @Nullable
   @Override
-  protected DeterministicValueEntry wrapEntry(SkyKey key, @Nullable ThinNodeEntry entry) {
-    return entry == null ? null : new DeterministicValueEntry(key, entry);
+  protected DeterministicNodeEntry wrapEntry(SkyKey key, @Nullable ThinNodeEntry entry) {
+    return entry == null ? null : new DeterministicNodeEntry(key, entry);
   }
 
   private static Map<SkyKey, ? extends NodeEntry> makeDeterministic(
@@ -129,8 +126,8 @@ public class DeterministicHelper extends NotifyingHelper {
    * This class uses TreeSet to store reverse dependencies of NodeEntry. As a result all values are
    * lexicographically sorted.
    */
-  private class DeterministicValueEntry extends NotifyingNodeEntry {
-    private DeterministicValueEntry(SkyKey myKey, ThinNodeEntry delegate) {
+  private class DeterministicNodeEntry extends NotifyingNodeEntry {
+    private DeterministicNodeEntry(SkyKey myKey, ThinNodeEntry delegate) {
       super(myKey, delegate);
     }
 
@@ -146,6 +143,22 @@ public class DeterministicHelper extends NotifyingHelper {
     public synchronized Set<SkyKey> getInProgressReverseDeps() {
       TreeSet<SkyKey> result = new TreeSet<>(ALPHABETICAL_SKYKEY_COMPARATOR);
       result.addAll(super.getInProgressReverseDeps());
+      return result;
+    }
+
+    @Override
+    public Set<SkyKey> setValue(
+        SkyValue value, Version version, DepFingerprintList depFingerprintList)
+        throws InterruptedException {
+      TreeSet<SkyKey> result = new TreeSet<>(ALPHABETICAL_SKYKEY_COMPARATOR);
+      result.addAll(super.setValue(value, version, depFingerprintList));
+      return result;
+    }
+
+    @Override
+    public Set<SkyKey> markClean() throws InterruptedException {
+      TreeSet<SkyKey> result = new TreeSet<>(ALPHABETICAL_SKYKEY_COMPARATOR);
+      result.addAll(super.markClean());
       return result;
     }
   }

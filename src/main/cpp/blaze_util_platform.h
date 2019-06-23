@@ -16,32 +16,84 @@
 #define BAZEL_SRC_MAIN_CPP_BLAZE_UTIL_PLATFORM_H_
 
 #include <cinttypes>
+#include <map>
 #include <string>
 #include <vector>
 
 #include "src/main/cpp/util/port.h"
+#include "src/main/cpp/blaze_util.h"
 
 namespace blaze {
 
+namespace embedded_binaries {
+
+// Dumps embedded binaries that were extracted from the Bazel zip to disk.
+// The platform-specific implementations may use multi-threaded I/O.
+class Dumper {
+ public:
+  // Requests to write the `data` of `size` bytes to disk under `path`.
+  // The actual writing may happen asynchronously.
+  // `path` must be an absolute path. All of its parent directories will be
+  // created.
+  // The caller retains ownership of `data` and may release it immediately after
+  // this method returns.
+  // Callers may call this method repeatedly, but only from the same thread
+  // (this method is not thread-safe).
+  // If writing fails, this method sets a flag in the `Dumper`, and `Finish`
+  // will return false. Subsequent `Dump` calls will have no effect.
+  virtual void Dump(const void* data, const size_t size,
+                    const std::string& path) = 0;
+
+  // Finishes dumping data.
+  //
+  // This method may block in case the Dumper is asynchronous and some async
+  // writes are still in progress.
+  // Subsequent `Dump` calls after this method have no effect.
+  //
+  // Returns true if there were no errors in any of the `Dump` calls.
+  // Returns false if any of the `Dump` calls failed, and if `error` is not
+  // null then puts an error message in `error`.
+  virtual bool Finish(std::string* error) = 0;
+
+  // Destructor. Subclasses should make sure it calls `Finish(nullptr)`.
+  virtual ~Dumper() {}
+
+ protected:
+  Dumper() {}
+};
+
+// Creates a new Dumper. The caller takes ownership of the returned object.
+// Returns nullptr upon failure and puts an error message in `error` (if `error`
+// is not nullptr).
+Dumper* Create(std::string* error = nullptr);
+
+}  // namespace embedded_binaries
+
 struct GlobalVariables;
+class StartupOptions;
 
 class SignalHandler {
  public:
   typedef void (* Callback)();
 
   static SignalHandler& Get() { return INSTANCE; }
-  GlobalVariables* GetGlobals() { return _globals; }
-  void CancelServer() { _cancel_server(); }
-  void Install(GlobalVariables* globals, Callback cancel_server);
+  GlobalVariables* GetGlobals() const { return globals_; }
+  const std::string& GetProductName() const { return product_name_; }
+  const std::string& GetOutputBase() const { return output_base_; }
+  void CancelServer() { cancel_server_(); }
+  void Install(const std::string &product_name, const std::string &output_base,
+               GlobalVariables* globals, Callback cancel_server);
   ATTRIBUTE_NORETURN void PropagateSignalOrExit(int exit_code);
 
  private:
   static SignalHandler INSTANCE;
 
-  GlobalVariables* _globals;
-  Callback _cancel_server;
+  std::string product_name_;
+  std::string output_base_;
+  GlobalVariables* globals_;
+  Callback cancel_server_;
 
-  SignalHandler() : _globals(nullptr), _cancel_server(nullptr) {}
+  SignalHandler() : globals_(nullptr), cancel_server_(nullptr) {}
 };
 
 // A signal-safe version of fprintf(stderr, ...).
@@ -49,7 +101,8 @@ void SigPrintf(const char *format, ...);
 
 std::string GetProcessIdAsString();
 
-// Get the absolute path to the binary being executed.
+// Get an absolute path to the binary being executed that is guaranteed to be
+// readable.
 std::string GetSelfPath();
 
 // Returns the directory Bazel can use to store output.
@@ -59,9 +112,6 @@ std::string GetOutputRoot();
 // On Linux/macOS, this is $HOME. On Windows this is %USERPROFILE%.
 std::string GetHomeDir();
 
-// Returns the location of the global bazelrc file if it exists, otherwise "".
-std::string FindSystemWideBlazerc();
-
 // Warn about dubious filesystem types, such as NFS, case-insensitive (?).
 void WarnFilesystemType(const std::string& output_base);
 
@@ -69,9 +119,6 @@ void WarnFilesystemType(const std::string& output_base);
 // The results are monotonic, i.e. subsequent calls to this method never return
 // a value less than a previous result.
 uint64_t GetMillisecondsMonotonic();
-
-// Returns elapsed milliseconds since the process started.
-uint64_t GetMillisecondsSinceProcessStart();
 
 // Set cpu and IO scheduling properties. Note that this can take ~50ms
 // on Linux, so it should only be called when necessary.
@@ -82,9 +129,10 @@ std::string GetProcessCWD(int pid);
 
 bool IsSharedLibrary(const std::string& filename);
 
-// Return the default path to the JDK used to run Blaze itself
-// (must be an absolute directory).
-std::string GetDefaultHostJavabase();
+// Returns the absolute path to the user's local JDK install, to be used as
+// the default target javabase and as a fall-back host_javabase. This is not
+// the embedded JDK.
+std::string GetSystemJavabase();
 
 // Return the path to the JVM binary relative to a javabase, e.g. "bin/java".
 std::string GetJavaBinaryUnderJavabase();
@@ -101,38 +149,22 @@ class BlazeServerStartup {
   virtual bool IsStillAlive() = 0;
 };
 
+
 // Starts a daemon process with its standard output and standard error
-// redirected to the file "daemon_output". Sets server_startup to an object
-// that can be used to query if the server is still alive. The PID of the
-// daemon started is written into server_dir, both as a symlink (for legacy
-// reasons) and as a file.
-void ExecuteDaemon(const std::string& exe,
-                   const std::vector<std::string>& args_vector,
-                   const std::string& daemon_output,
-                   const std::string& server_dir,
-                   BlazeServerStartup** server_startup);
-
-// Get the version string from the given java executable. The java executable
-// is supposed to output a string in the form '.*version ".*".*'. This method
-// will return the part in between the two quote or the empty string on failure
-// to match the good string.
-std::string GetJvmVersion(const std::string& java_exe);
-
-// Convert a path from Bazel internal form to underlying OS form.
-// On Unixes this is an identity operation.
-// On Windows, Bazel internal form is cygwin path, and underlying OS form
-// is Windows path.
-std::string ConvertPath(const std::string& path);
-
-// Convert a path list from Bazel internal form to underlying OS form.
-// On Unixes this is an identity operation.
-// On Windows, Bazel internal form is cygwin path list, and underlying OS form
-// is Windows path list.
-std::string ConvertPathList(const std::string& path_list);
-
-// Converts `path` to a string that's safe to pass as path in a JVM flag.
-// See https://github.com/bazelbuild/bazel/issues/2576
-std::string PathAsJvmFlag(const std::string& path);
+// redirected (and conditionally appended) to the file "daemon_output". Sets
+// server_startup to an object that can be used to query if the server is
+// still alive. The PID of the daemon started is written into server_dir,
+// both as a symlink (for legacy reasons) and as a file, and returned to the
+// caller.
+int ExecuteDaemon(const std::string& exe,
+                  const std::vector<std::string>& args_vector,
+                  const std::map<std::string, EnvVarValue>& env,
+                  const std::string& daemon_output,
+                  const bool daemon_output_append,
+                  const std::string& binaries_dir,
+                  const std::string& server_dir,
+                  const StartupOptions &options,
+                  BlazeServerStartup** server_startup);
 
 // A character used to separate paths in a list.
 extern const char kListSeparator;
@@ -142,14 +174,8 @@ extern const char kListSeparator;
 // Implemented via junctions on Windows.
 bool SymlinkDirectories(const std::string& target, const std::string& link);
 
-// Compares two absolute paths. Necessary because the same path can have
-// multiple different names under msys2: "C:\foo\bar" or "C:/foo/bar"
-// (Windows-style) and "/c/foo/bar" (msys2 style). Returns if the paths are
-// equal.
-bool CompareAbsolutePaths(const std::string& a, const std::string& b);
-
 struct BlazeLock {
-#if defined(COMPILER_MSVC) || defined(__CYGWIN__)
+#if defined(_WIN32) || defined(__CYGWIN__)
   /* HANDLE */ void* handle;
 #else
   int lockfd;
@@ -194,6 +220,10 @@ void CreateSecureOutputRoot(const std::string& path);
 
 std::string GetEnv(const std::string& name);
 
+std::string GetPathEnv(const std::string& name);
+
+bool ExistsEnv(const std::string& name);
+
 void SetEnv(const std::string& name, const std::string& value);
 
 void UnsetEnv(const std::string& name);
@@ -211,12 +241,13 @@ std::string GetUserName();
 // Returns true iff the current terminal is running inside an Emacs.
 bool IsEmacsTerminal();
 
-// Returns true iff the current terminal can support color and cursor movement.
-bool IsStandardTerminal();
+// Returns true if stderr is connected to a terminal that can support color
+// and cursor movement.
+bool IsStderrStandardTerminal();
 
-// Returns the number of columns of the terminal to which stdout is
+// Returns the number of columns of the terminal to which stderr is
 // connected, or 80 if there is no such terminal.
-int GetTerminalColumns();
+int GetStderrTerminalColumns();
 
 // Gets the system-wide explicit limit for the given resource.
 //
@@ -234,7 +265,15 @@ int32_t GetExplicitSystemLimit(const int resource);
 // raised; false otherwise.
 bool UnlimitResources();
 
-void DetectBashOrDie();
+// Raises the soft coredump limit to the hard limit in an attempt to let
+// coredumps work. This is a best-effort operation and may or may not be
+// implemented for a given platform. Returns true if all limits were properly
+// raised; false otherwise.
+bool UnlimitCoredumps();
+
+#if defined(_WIN32) || defined(__CYGWIN__)
+std::string DetectBashAndExportBazelSh();
+#endif  // if defined(_WIN32) || defined(__CYGWIN__)
 
 // This function has no effect on Unix platforms.
 // On Windows, this function looks into PATH to find python.exe, if python

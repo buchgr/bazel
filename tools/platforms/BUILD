@@ -1,3 +1,7 @@
+# Deprecated. Do not use. Use targets in @platforms//cpu and @platforms//os.
+# This package will be removed by
+# --incompatible_use_platforms_repo_for_constraints. See
+# https://github.com/bazelbuild/bazel/issues/8622 for details.
 package(
     default_visibility = ["//visibility:public"],
 )
@@ -5,7 +9,7 @@ package(
 filegroup(
     name = "package-srcs",
     srcs = [
-        "platforms.BUILD",
+        "BUILD.tools",
     ],
 )
 
@@ -14,55 +18,74 @@ filegroup(
     srcs = glob(["**"]),
 )
 
-# These match values in //src/main/java/com/google/build/lib/util:CPU.java
-constraint_setting(name = "cpu")
+alias(
+    name = "cpu",
+    actual = "@platforms//cpu:cpu",
+)
 
-constraint_value(
+alias(
     name = "x86_32",
-    constraint_setting = ":cpu",
+    actual = "@platforms//cpu:x86_32",
 )
 
-constraint_value(
+alias(
     name = "x86_64",
-    constraint_setting = ":cpu",
+    actual = "@platforms//cpu:x86_64",
 )
 
-constraint_value(
+alias(
     name = "ppc",
-    constraint_setting = ":cpu",
+    actual = "@platforms//cpu:ppc",
 )
 
-constraint_value(
+alias(
     name = "arm",
-    constraint_setting = ":cpu",
+    actual = "@platforms//cpu:arm",
 )
 
-constraint_value(
+alias(
+    name = "aarch64",
+    actual = "@platforms//cpu:aarch64",
+)
+
+alias(
     name = "s390x",
-    constraint_setting = ":cpu",
+    actual = "@platforms//cpu:s390x",
 )
 
-# These match values in //src/main/java/com/google/build/lib/util:OS.java
-constraint_setting(name = "os")
+alias(
+    name = "os",
+    actual = "@platforms//os:os",
+)
 
-constraint_value(
+alias(
     name = "osx",
-    constraint_setting = ":os",
+    actual = "@platforms//os:osx",
 )
 
-constraint_value(
+alias(
+    name = "ios",
+    actual = "@platforms//os:ios",
+)
+
+alias(
     name = "freebsd",
-    constraint_setting = ":os",
+    actual = "@platforms//os:freebsd",
 )
 
-constraint_value(
+alias(
+    name = "android",
+    actual = "@platforms//os:android",
+)
+
+alias(
     name = "linux",
-    constraint_setting = ":os",
+    actual = "@platforms//os:linux",
 )
 
-constraint_value(
+alias(
     name = "windows",
-    constraint_setting = ":os",
+    actual = "@platforms//os:windows",
 )
 
 # A default platform with nothing defined.
@@ -72,36 +95,42 @@ platform(name = "default_platform")
 # internal build configurations, and so shouldn't be accessed by other packages.
 platform(
     name = "host_platform",
+    constraint_values = [
+    ],
     cpu_constraints = [
-        ":x86_32",
-        ":x86_64",
-        ":ppc",
-        ":arm",
-        ":s390x",
+        "@platforms//cpu:x86_32",
+        "@platforms//cpu:x86_64",
+        "@platforms//cpu:ppc",
+        "@platforms//cpu:arm",
+        "@platforms//cpu:aarch64",
+        "@platforms//cpu:s390x",
     ],
     host_platform = True,
     os_constraints = [
-        ":osx",
-        ":freebsd",
-        ":linux",
-        ":windows",
+        "@platforms//os:osx",
+        "@platforms//os:freebsd",
+        "@platforms//os:linux",
+        "@platforms//os:windows",
     ],
 )
 
 platform(
     name = "target_platform",
+    constraint_values = [
+    ],
     cpu_constraints = [
-        ":x86_32",
-        ":x86_64",
-        ":ppc",
-        ":arm",
-        ":s390x",
+        "@platforms//cpu:x86_32",
+        "@platforms//cpu:x86_64",
+        "@platforms//cpu:ppc",
+        "@platforms//cpu:arm",
+        "@platforms//cpu:aarch64",
+        "@platforms//cpu:s390x",
     ],
     os_constraints = [
-        ":osx",
-        ":freebsd",
-        ":linux",
-        ":windows",
+        "@platforms//os:osx",
+        "@platforms//os:freebsd",
+        "@platforms//os:linux",
+        "@platforms//os:windows",
     ],
     target_platform = True,
 )

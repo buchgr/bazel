@@ -18,7 +18,8 @@ import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionsBase;
-import java.util.regex.Pattern;
+import com.google.devtools.common.options.RegexPatternOption;
+import java.time.Duration;
 
 /**
  * Local execution options.
@@ -28,7 +29,6 @@ public class LocalExecutionOptions extends OptionsBase {
   @Option(
     name = "local_termination_grace_seconds",
     oldName = "local_sigkill_grace_seconds",
-    category = "remote execution",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     defaultValue = "15",
@@ -39,14 +39,29 @@ public class LocalExecutionOptions extends OptionsBase {
   public int localSigkillGraceSeconds;
 
   @Option(
-    name = "allowed_local_actions_regex",
+      name = "allowed_local_actions_regex",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      converter = Converters.RegexPatternConverter.class,
+      defaultValue = "null",
+      help =
+          "A regex whitelist for action types which may be run locally. If unset, "
+              + "all actions are allowed to execute locally")
+  public RegexPatternOption allowedLocalAction;
+
+  @Option(
+    name = "experimental_collect_local_action_metrics",
+    defaultValue = "false",
     documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.UNKNOWN},
-    converter = Converters.RegexPatternConverter.class,
-    defaultValue = "null",
+    effectTags = {OptionEffectTag.EXECUTION},
     help =
-        "A regex whitelist for action types which may be run locally. If unset, "
-            + "all actions are allowed to execute locally"
+        "When enabled, execution statistics (such as user and system time) are recorded for "
+            + "locally executed actions which don't use sandboxing"
   )
-  public Pattern allowedLocalAction;
+  public boolean collectLocalExecutionStatistics;
+
+  public Duration getLocalSigkillGraceSeconds() {
+    // TODO(ulfjack): Change localSigkillGraceSeconds type to Duration.
+    return Duration.ofSeconds(localSigkillGraceSeconds);
+  }
 }

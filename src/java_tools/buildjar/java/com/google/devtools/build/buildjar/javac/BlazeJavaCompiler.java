@@ -15,6 +15,7 @@
 package com.google.devtools.build.buildjar.javac;
 
 import com.google.devtools.build.buildjar.javac.plugins.BlazeJavaCompilerPlugin;
+import com.google.devtools.build.buildjar.javac.statistics.BlazeJavacStatistics;
 import com.sun.tools.javac.comp.AttrContext;
 import com.sun.tools.javac.comp.CompileStates.CompileState;
 import com.sun.tools.javac.comp.Env;
@@ -40,9 +41,11 @@ public class BlazeJavaCompiler extends JavaCompiler {
   private BlazeJavaCompiler(Context context, Iterable<BlazeJavaCompilerPlugin> plugins) {
     super(context);
 
+    BlazeJavacStatistics.Builder statisticsBuilder =
+        context.get(BlazeJavacStatistics.Builder.class);
     // initialize all plugins
     for (BlazeJavaCompilerPlugin plugin : plugins) {
-      plugin.init(context, log, this);
+      plugin.init(context, log, this, statisticsBuilder);
       this.plugins.add(plugin);
     }
   }
@@ -82,12 +85,12 @@ public class BlazeJavaCompiler extends JavaCompiler {
   public Env<AttrContext> attribute(Env<AttrContext> env) {
     Env<AttrContext> result = super.attribute(env);
     // don't run plugins if there were compilation errors
-    if (errorCount() > 0) {
-      return result;
-    }
+    boolean errors = errorCount() > 0;
     // Iterate over all plugins, calling their postAttribute methods
     for (BlazeJavaCompilerPlugin plugin : plugins) {
-      plugin.postAttribute(result);
+      if (!errors || plugin.runOnAttributionErrors()) {
+        plugin.postAttribute(result);
+      }
     }
 
     return result;

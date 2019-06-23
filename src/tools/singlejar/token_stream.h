@@ -20,6 +20,7 @@
 #include <string.h>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "src/tools/singlejar/diag.h"
@@ -56,6 +57,13 @@ class ArgTokenStream {
   class FileTokenStream {
    public:
     FileTokenStream(const char *filename) {
+      // TODO(laszlocsomor): use the fopen and related file handling API
+      // implementations from ProtoBuf, in order to support long paths:
+      // https://github.com/google/protobuf/blob/
+      //   47b7d2c7cadf74ceec90fc5042232819cd0dd557/
+      //   src/google/protobuf/stubs/io_win32.cc
+      // Best would be to extract that library to a common location and use
+      // here, in ProtoBuf, and in Bazel itself.
       if (!(fp_ = fopen(filename, "r"))) {
         diag_err(1, "%s", filename);
       }
@@ -218,6 +226,31 @@ class ArgTokenStream {
     next();
     while (!AtEnd() && '-' != token_.at(0)) {
       optargs->push_back(token_);
+      next();
+    }
+    return true;
+  }
+
+  // Process --OPTION OPTARG1,OPTSUFF1 OPTARG2,OPTSUFF2 ...
+  // If a current token is --OPTION, push_back all subsequent tokens up to the
+  // next option to the OPTARGS array, splitting the OPTARG,OPTSUFF by a comma,
+  // proceed to the next option and return true.
+  bool MatchAndSet(const char *option,
+                   std::vector<std::pair<std::string, std::string> > *optargs) {
+    if (token_.compare(option) != 0) {
+      return false;
+    }
+    next();
+    while (!AtEnd() && '-' != token_.at(0)) {
+      size_t commapos = token_.find(',');
+      if (commapos == std::string::npos) {
+        optargs->push_back(std::pair<std::string, std::string>(token_, ""));
+      } else {
+        std::string first = token_.substr(0, commapos);
+        token_.erase(0, commapos + 1);
+        optargs->push_back(std::pair<std::string, std::string>(first, token_));
+      }
+
       next();
     }
     return true;

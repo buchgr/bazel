@@ -17,6 +17,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static com.google.devtools.build.lib.actions.util.ActionsTestUtil.getFirstArtifactEndingWith;
 
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FileProvider;
@@ -24,6 +25,7 @@ import com.google.devtools.build.lib.analysis.FilesToRunProvider;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
 import com.google.devtools.build.lib.analysis.actions.TemplateExpansionAction;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -34,15 +36,16 @@ import org.junit.runners.JUnit4;
 public class AndroidInstrumentationTestTest extends AndroidBuildViewTestCase {
 
   @Before
+  public void setupCcToolchain() throws Exception {
+    getAnalysisMock().ccSupport().setupCcToolchainConfigForCpu(mockToolsConfig, "armeabi-v7a");
+  }
+
+  @Before
   public void setup() throws Exception {
     scratch.file(
         "java/com/app/BUILD",
         "android_binary(",
-        "  name = 'app1',",
-        "  manifest = 'AndroidManifest.xml',",
-        ")",
-        "android_binary(",
-        "  name = 'app2',",
+        "  name = 'app',",
         "  manifest = 'AndroidManifest.xml',",
         ")",
         "android_binary(",
@@ -52,22 +55,9 @@ public class AndroidInstrumentationTestTest extends AndroidBuildViewTestCase {
     scratch.file(
         "javatests/com/app/BUILD",
         "android_binary(",
-        "  name = 'instrumentation_app1',",
+        "  name = 'instrumentation_app',",
+        "  instruments = '//java/com/app',",
         "  manifest = 'AndroidManifest.xml',",
-        ")",
-        "android_instrumentation(",
-        "  name = 'instrumentation1',",
-        "  target = '//java/com/app:app1',",
-        "  instrumentation = ':instrumentation_app1',",
-        ")",
-        "android_binary(",
-        "  name = 'instrumentation_app2',",
-        "  manifest = 'AndroidManifest.xml',",
-        ")",
-        "android_instrumentation(",
-        "  name = 'instrumentation2',",
-        "  target = '//java/com/app:app2',",
-        "  instrumentation = ':instrumentation_app2',",
         ")",
         "android_device_script_fixture(",
         "  name = 'device_fixture',",
@@ -89,10 +79,7 @@ public class AndroidInstrumentationTestTest extends AndroidBuildViewTestCase {
         "javatests/com/app/ait/BUILD",
         "android_instrumentation_test(",
         "  name = 'ait',",
-        "  instrumentations = [",
-        "    '//javatests/com/app:instrumentation1',",
-        "    '//javatests/com/app:instrumentation2',",
-        "  ],",
+        "  test_app = '//javatests/com/app:instrumentation_app',",
         "  target_device = '//tools/android/emulated_device:nexus_6',",
         "  fixtures = [",
         "    '//javatests/com/app:device_fixture',",
@@ -106,6 +93,7 @@ public class AndroidInstrumentationTestTest extends AndroidBuildViewTestCase {
         "  ],",
         ")");
     setupTargetDevice();
+    setSkylarkSemanticsOptions("--experimental_google_legacy_api");
   }
 
   // TODO(ajmichael): Share this with AndroidDeviceTest.java
@@ -136,26 +124,28 @@ public class AndroidInstrumentationTestTest extends AndroidBuildViewTestCase {
 
   @Test
   public void testTestExecutableRunfiles() throws Exception {
-    ConfiguredTarget androidInstrumentationTest = getConfiguredTarget("//javatests/com/app/ait");
+    ConfiguredTargetAndData androidInstrumentationTest =
+        getConfiguredTargetAndData("//javatests/com/app/ait");
     NestedSet<Artifact> runfiles =
         androidInstrumentationTest
+            .getConfiguredTarget()
             .getProvider(RunfilesProvider.class)
             .getDefaultRunfiles()
             .getAllArtifacts();
     assertThat(runfiles)
-        .containsAllIn(
+        .containsAtLeastElementsIn(
             getHostConfiguredTarget("//tools/android/emulated_device:nexus_6")
                 .getProvider(RunfilesProvider.class)
                 .getDefaultRunfiles()
                 .getAllArtifacts());
     assertThat(runfiles)
-        .containsAllIn(
+        .containsAtLeastElementsIn(
             getHostConfiguredTarget("//java/com/server")
                 .getProvider(RunfilesProvider.class)
                 .getDefaultRunfiles()
                 .getAllArtifacts());
     assertThat(runfiles)
-        .containsAllIn(
+        .containsAtLeastElementsIn(
             getHostConfiguredTarget(
                     androidInstrumentationTest
                         .getTarget()
@@ -166,12 +156,10 @@ public class AndroidInstrumentationTestTest extends AndroidBuildViewTestCase {
                 .getDefaultRunfiles()
                 .getAllArtifacts());
     assertThat(runfiles)
-        .containsAllOf(
+        .containsAtLeast(
             getDeviceFixtureScript(getConfiguredTarget("//javatests/com/app:device_fixture")),
-            getInstrumentationApk(getConfiguredTarget("//javatests/com/app:instrumentation1")),
-            getTargetApk(getConfiguredTarget("//javatests/com/app:instrumentation1")),
-            getInstrumentationApk(getConfiguredTarget("//javatests/com/app:instrumentation2")),
-            getTargetApk(getConfiguredTarget("//javatests/com/app:instrumentation2")),
+            getInstrumentationApk(getConfiguredTarget("//javatests/com/app:instrumentation_app")),
+            getTargetApk(getConfiguredTarget("//javatests/com/app:instrumentation_app")),
             Iterables.getOnlyElement(
                 getConfiguredTarget("//javatests/com/app/ait:foo.txt")
                     .getProvider(FileProvider.class)
@@ -183,22 +171,11 @@ public class AndroidInstrumentationTestTest extends AndroidBuildViewTestCase {
     ConfiguredTarget androidInstrumentationTest = getConfiguredTarget("//javatests/com/app/ait");
     assertThat(androidInstrumentationTest).isNotNull();
 
-    String testExecutableScript =
-        ((TemplateExpansionAction)
-                getGeneratingAction(
-                    androidInstrumentationTest
-                        .getProvider(FilesToRunProvider.class)
-                        .getExecutable()))
-            .getFileContents();
+    String testExecutableScript = getTestStubContents(androidInstrumentationTest);
 
     assertThat(testExecutableScript)
-        .contains(
-            "instrumentation_apks=\"javatests/com/app/instrumentation1-instrumentation.apk "
-                + "javatests/com/app/instrumentation2-instrumentation.apk\"");
-    assertThat(testExecutableScript)
-        .contains(
-            "target_apks=\"javatests/com/app/instrumentation1-target.apk "
-                + "javatests/com/app/instrumentation2-target.apk\"");
+        .contains("instrumentation_apk=\"javatests/com/app/instrumentation_app.apk\"");
+    assertThat(testExecutableScript).contains("target_apk=\"java/com/app/app.apk\"");
     assertThat(testExecutableScript).contains("support_apks=\"java/com/app/support.apk\"");
     assertThat(testExecutableScript)
         .contains(
@@ -224,7 +201,7 @@ public class AndroidInstrumentationTestTest extends AndroidBuildViewTestCase {
         ")",
         "android_instrumentation_test(",
         "  name = 'ait',",
-        "  instrumentations = ['//javatests/com/app:instrumentation1'],",
+        "  test_app = '//javatests/com/app:instrumentation_app',",
         "  target_device = '//tools/android/emulated_device:nexus_6',",
         "  fixtures = [",
         "    ':host_fixture',",
@@ -233,16 +210,65 @@ public class AndroidInstrumentationTestTest extends AndroidBuildViewTestCase {
         ")");
   }
 
+  @Test
+  public void testInstrumentationBinaryIsInstrumenting() throws Exception {
+    checkError(
+        "javatests/com/app/instr",
+        "ait",
+        "The android_binary target //javatests/com/app/instr:app "
+            + "is missing an 'instruments' attribute",
+        "android_binary(",
+        "  name = 'app',",
+        "  srcs = ['a.java'],",
+        "  manifest = 'AndroidManifest.xml',",
+        ")",
+        "android_instrumentation_test(",
+        "  name = 'ait',",
+        "  test_app = ':app',",
+        "  target_device = '//tools/android/emulated_device:nexus_6',",
+        ")");
+  }
+
+  @Test
+  public void testAndroidInstrumentationTestWithSkylarkDevice()
+      throws Exception {
+    scratch.file(
+        "javatests/com/app/skylarkdevice/local_adb_device.bzl",
+        "def _impl(ctx):",
+        "  ctx.actions.write(output=ctx.outputs.executable, content='', is_executable=True)",
+        "  return [android_common.create_device_broker_info('LOCAL_ADB_SERVER')]",
+        "local_adb_device = rule(implementation=_impl, executable=True)");
+    scratch.file(
+        "javatests/com/app/skylarkdevice/BUILD",
+        "load(':local_adb_device.bzl', 'local_adb_device')",
+        "local_adb_device(name = 'local_adb_device')",
+        "android_instrumentation_test(",
+        "  name = 'ait',",
+        "  test_app = '//javatests/com/app:instrumentation_app',",
+        "  target_device = ':local_adb_device',",
+        ")");
+    String testExecutableScript =
+        getTestStubContents(getConfiguredTarget("//javatests/com/app/skylarkdevice:ait"));
+    assertThat(testExecutableScript).contains("device_broker_type=\"LOCAL_ADB_SERVER\"");
+  }
+
   private static Artifact getDeviceFixtureScript(ConfiguredTarget deviceScriptFixture) {
     return getFirstArtifactEndingWith(
         deviceScriptFixture.getProvider(FileProvider.class).getFilesToBuild(), ".sh");
   }
 
   private static Artifact getInstrumentationApk(ConfiguredTarget instrumentation) {
-    return instrumentation.get(AndroidInstrumentationInfo.PROVIDER).getInstrumentationApk();
+    return instrumentation.get(AndroidInstrumentationInfo.PROVIDER).getTarget().getApk();
   }
 
   private static Artifact getTargetApk(ConfiguredTarget instrumentation) {
-    return instrumentation.get(AndroidInstrumentationInfo.PROVIDER).getTargetApk();
+    return instrumentation.get(ApkInfo.PROVIDER).getApk();
+  }
+
+  private String getTestStubContents(ConfiguredTarget androidInstrumentationTest) throws Exception {
+    Action templateAction =
+        getGeneratingAction(
+            androidInstrumentationTest.getProvider(FilesToRunProvider.class).getExecutable());
+    return ((TemplateExpansionAction) templateAction).getFileContents();
   }
 }

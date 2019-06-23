@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -20,18 +21,20 @@ import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.ConfigMatchingProvider;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.Location;
-import com.google.devtools.build.lib.packages.Info;
+import com.google.devtools.build.lib.packages.InfoInterface;
 import com.google.devtools.build.lib.packages.Provider;
-import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.skyframe.BuildConfigurationValue;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
+import com.google.devtools.build.lib.skylarkinterface.StarlarkContext;
 import com.google.devtools.build.lib.syntax.ClassObject;
 import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
-import com.google.devtools.build.lib.util.Preconditions;
 import javax.annotation.Nullable;
 
 /**
@@ -40,22 +43,45 @@ import javax.annotation.Nullable;
  *
  * <p>Transitive info providers can also be overridden.
  */
+@AutoCodec
 @Immutable
 public final class AliasConfiguredTarget implements ConfiguredTarget, ClassObject {
   private final Label label;
-  private final BuildConfiguration configuration;
+  private final BuildConfigurationValue.Key configurationKey;
   private final ConfiguredTarget actual;
   private final ImmutableMap<Class<? extends TransitiveInfoProvider>, TransitiveInfoProvider>
       overrides;
+  private final ImmutableMap<Label, ConfigMatchingProvider> configConditions;
 
   public AliasConfiguredTarget(
       RuleContext ruleContext,
       ConfiguredTarget actual,
       ImmutableMap<Class<? extends TransitiveInfoProvider>, TransitiveInfoProvider> overrides) {
-    this.label = ruleContext.getLabel();
-    this.configuration = Preconditions.checkNotNull(ruleContext.getConfiguration());
-    this.actual = Preconditions.checkNotNull(actual);
-    this.overrides = Preconditions.checkNotNull(overrides);
+    this(
+        ruleContext.getLabel(),
+        Preconditions.checkNotNull(ruleContext.getConfigurationKey()),
+        Preconditions.checkNotNull(actual),
+        Preconditions.checkNotNull(overrides),
+        ruleContext.getConfigConditions());
+  }
+
+  @AutoCodec.Instantiator
+  @VisibleForSerialization
+  AliasConfiguredTarget(
+      Label label,
+      BuildConfigurationValue.Key configurationKey,
+      ConfiguredTarget actual,
+      ImmutableMap<Class<? extends TransitiveInfoProvider>, TransitiveInfoProvider> overrides,
+      ImmutableMap<Label, ConfigMatchingProvider> configConditions) {
+    this.label = label;
+    this.configurationKey = configurationKey;
+    this.actual = actual;
+    this.overrides = overrides;
+    this.configConditions = configConditions;
+  }
+
+  public ImmutableMap<Label, ConfigMatchingProvider> getConfigConditions() {
+    return configConditions;
   }
 
   @Override
@@ -79,31 +105,27 @@ public final class AliasConfiguredTarget implements ConfiguredTarget, ClassObjec
 
   @Nullable
   @Override
-  public Info get(Provider.Key providerKey) {
+  public InfoInterface get(Provider.Key providerKey) {
     return actual.get(providerKey);
   }
 
   @Override
-  public Object getIndex(Object key, Location loc) throws EvalException {
-    return actual.getIndex(key, loc);
+  public Object getIndex(Object key, Location loc, StarlarkContext context) throws EvalException {
+    return actual.getIndex(key, loc, context);
   }
 
   @Override
-  public boolean containsKey(Object key, Location loc) throws EvalException {
-    return actual.containsKey(key, loc);
+  public boolean containsKey(Object key, Location loc, StarlarkContext context)
+      throws EvalException {
+    return actual.containsKey(key, loc, context);
   }
 
   @Override
-  public Target getTarget() {
-    return actual.getTarget();
-  }
-
-  @Override
-  public BuildConfiguration getConfiguration() {
-    // This does not return actual.getConfiguration() because actual might be an input file, in
-    // which case its configuration is null and we don't want to have rules that have a null
-    // configuration.
-    return configuration;
+  public BuildConfigurationValue.Key getConfigurationKey() {
+    // This does not return actual.getConfigurationKey() because actual might be an input file, in
+    // which case its configurationKey is null and we don't want to have rules that have a null
+    // configurationKey.
+    return configurationKey;
   }
 
   /* ClassObject methods */
@@ -122,12 +144,12 @@ public final class AliasConfiguredTarget implements ConfiguredTarget, ClassObjec
   }
 
   @Override
-  public ImmutableCollection<String> getKeys() {
-    return actual.getKeys();
+  public ImmutableCollection<String> getFieldNames() {
+    return actual.getFieldNames();
   }
 
   @Override
-  public String errorMessage(String name) {
+  public String getErrorMessageForUnknownField(String name) {
     // Use the default error message.
     return null;
   }

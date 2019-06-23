@@ -13,44 +13,49 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
+import static com.google.common.truth.Fact.simpleFact;
+
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
-import com.google.common.truth.FailureStrategy;
+import com.google.common.truth.FailureMetadata;
 import com.google.common.truth.Subject;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map.Entry;
+import java.util.Map;
 
 /** Testing Subject for comparing ParsedAndroidData instances. */
-class ParsedAndroidDataSubject extends Subject<ParsedAndroidDataSubject, ParsedAndroidData> {
+class ParsedAndroidDataSubject extends Subject {
 
-  public ParsedAndroidDataSubject(FailureStrategy failureStrategy, ParsedAndroidData actual) {
-    super(failureStrategy, actual);
+  private final ParsedAndroidData actual;
+
+  public ParsedAndroidDataSubject(FailureMetadata failureMetadata, ParsedAndroidData actual) {
+    super(failureMetadata, actual);
+    this.actual = actual;
   }
 
   public void isEqualTo(ParsedAndroidData expectation) {
     List<String> errors = new ArrayList<>();
     this.<DataAsset>compareDataValues(
-        actual().iterateAssetEntries(), expectation.iterateAssetEntries(), errors, "assets");
+        actual.iterateAssetEntries(), expectation.iterateAssetEntries(), errors, "assets");
     this.<DataResource>compareDataValues(
-        actual().iterateCombiningEntries(),
+        actual.iterateCombiningEntries(),
         expectation.iterateCombiningEntries(),
         errors,
         "combining");
     this.<DataResource>compareDataValues(
-        actual().iterateOverwritableEntries(),
+        actual.iterateOverwritableEntries(),
         expectation.iterateOverwritableEntries(),
         errors,
         "overwritable");
     if (!errors.isEmpty()) {
-      failWithRawMessage(Joiner.on("\n").join(errors));
+      failWithoutActual(simpleFact(Joiner.on("\n").join(errors)));
     }
   }
 
   private <T extends DataValue> void compareDataValues(
-      Iterable<Entry<DataKey, T>> actual,
-      Iterable<Entry<DataKey, T>> expected,
+      Iterable<Map.Entry<DataKey, T>> actual,
+      Iterable<Map.Entry<DataKey, T>> expected,
       List<String> out,
       String valueType) {
     List<String> errors = new ArrayList<>();

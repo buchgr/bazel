@@ -1,17 +1,7 @@
 # Description:
 #   SingleJar combines multiple zip files and additional files
 #   into a single zip file.
-package(default_visibility = ["//src:__subpackages__"])
-
-package_group(
-    name = "packages",
-    packages = [
-        "//java/com/google/devtools/build/singlejar",
-        "//javatests/com/google/devtools/build/singlejar",
-        "//src/java_tools/singlejar/java/com/google/devtools/build/singlejar",
-        "//src/java_tools/singlejar/javatests/com/google/devtools/build/singlejar",
-    ],
-)
+package(default_visibility = ["//src/java_tools/singlejar:singlejar_package_group"])
 
 filegroup(
     name = "srcs",
@@ -29,6 +19,13 @@ java_library(
         "ZipCombiner.java",
         "ZipEntryFilter.java",
     ],
+    visibility = [
+        "//src/java_tools/singlejar:__pkg__",
+        "//src/java_tools/singlejar:singlejar_package_group",
+        "//src/java_tools/singlejar/javatests/com/google/devtools/build/singlejar:__pkg__",
+        "//src/test/java/com/google/devtools/build/android:__pkg__",
+        "//src/tools/android/java/com/google/devtools/build/android:__pkg__",
+    ],
     deps = [
         "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
         "//third_party:jsr305",
@@ -43,8 +40,10 @@ java_library(
     deps = [
         "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
         "//src/main/java/com/google/devtools/build/lib/shell",
+        "//src/main/protobuf:desugar_deps_java_proto",
         "//src/main/protobuf:worker_protocol_java_proto",
         "//third_party:jsr305",
+        "//third_party/protobuf:protobuf_java",
     ],
 )
 
@@ -52,11 +51,17 @@ java_binary(
     name = "bazel-singlejar",
     srcs = glob(["*.java"]),
     main_class = "com.google.devtools.build.singlejar.SingleJar",
+    visibility = [
+        "//:__subpackages__",
+        "//src/java_tools/singlejar:singlejar_package_group",
+    ],
     deps = [
         "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
         "//src/main/java/com/google/devtools/build/lib/shell",
+        "//src/main/protobuf:desugar_deps_java_proto",
         "//src/main/protobuf:worker_protocol_java_proto",
         "//third_party:jsr305",
+        "//third_party/protobuf:protobuf_java",
     ],
 )
 
@@ -78,12 +83,16 @@ bootstrap_java_binary(
     name = "bootstrap",
     srcs = glob(
         ["**/*.java"],
-        exclude = ["**/SingleJarWorker.java"],
+        exclude = [
+            "Java8DesugarDepsJarEntryFilter.java",
+            "SingleJarWorker.java",
+        ],
     ) + [
         "//src/java_tools/singlejar/java/com/google/devtools/build/zip:java-srcs",
     ],
     main_class = "com.google.devtools.build.singlejar.SingleJar",
     tags = ["manual"],
+    visibility = ["//visibility:public"],
     deps = [
         ":skylark-deps",
         "//src/main/java/com/google/devtools/build/lib/shell:shell-skylark",

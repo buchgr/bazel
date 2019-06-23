@@ -16,6 +16,7 @@ package com.google.devtools.build.skyframe;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.fail;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
@@ -23,10 +24,10 @@ import com.google.devtools.build.lib.concurrent.ExecutorUtil;
 import com.google.devtools.build.lib.testutil.TestRunnableWrapper;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.GroupedList.GroupedListHelper;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.skyframe.GraphTester.StringValue;
 import com.google.devtools.build.skyframe.NodeEntry.DependencyState;
 import com.google.devtools.build.skyframe.QueryableGraph.Reason;
+import com.google.devtools.build.skyframe.ThinNodeEntry.DirtyType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -41,8 +42,6 @@ import org.junit.Test;
 
 /** Base class for sanity tests on {@link EvaluableGraph} implementations. */
 public abstract class GraphTest {
-
-  private static final SkyFunctionName SKY_FUNCTION_NAME = SkyFunctionName.FOR_TESTING;
   protected ProcessableGraph graph;
   protected TestRunnableWrapper wrapper;
   private final Version startingVersion = getStartingVersion();
@@ -58,6 +57,10 @@ public abstract class GraphTest {
 
   protected abstract Version getNextVersion(Version version);
 
+  protected boolean checkRdeps() {
+    return true;
+  }
+
   @Before
   public void init() throws Exception {
     makeGraph();
@@ -67,7 +70,7 @@ public abstract class GraphTest {
   }
 
   protected SkyKey key(String name) {
-    return LegacySkyKey.create(SKY_FUNCTION_NAME, name);
+    return GraphTester.toSkyKey(name);
   }
 
   @Test
@@ -194,7 +197,9 @@ public abstract class GraphTest {
                 for (int k = chunkSize; k <= numIterations; k++) {
                   entry.removeReverseDep(key("rdep" + j));
                   entry.addReverseDepAndCheckIfDone(key("rdep" + j));
-                  entry.getReverseDepsForDoneEntry();
+                  if (checkRdeps()) {
+                    entry.getReverseDepsForDoneEntry();
+                  }
                 }
               } catch (InterruptedException e) {
                 fail("Test failed: " + e.toString());
@@ -205,24 +210,29 @@ public abstract class GraphTest {
     }
     waitForStart.countDown();
     waitForAddedRdep.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    entry.setValue(new StringValue("foo1"), startingVersion);
+    entry.markRebuilding();
+    entry.setValue(new StringValue("foo1"), startingVersion, null);
     waitForSetValue.countDown();
     wrapper.waitForTasksAndMaybeThrow();
     assertThat(ExecutorUtil.interruptibleShutdown(pool)).isFalse();
     assertThat(graph.get(null, Reason.OTHER, key).getValue()).isEqualTo(new StringValue("foo1"));
-    assertThat(graph.get(null, Reason.OTHER, key).getReverseDepsForDoneEntry())
-        .hasSize(numKeys + 1);
+    if (checkRdeps()) {
+      assertThat(graph.get(null, Reason.OTHER, key).getReverseDepsForDoneEntry())
+          .hasSize(numKeys + 1);
+    }
 
     graph = getGraph(getNextVersion(startingVersion));
     NodeEntry sameEntry = Preconditions.checkNotNull(graph.get(null, Reason.OTHER, key));
     // Mark the node as dirty again and check that the reverse deps have been preserved.
-    sameEntry.markDirty(true);
+    sameEntry.markDirty(DirtyType.CHANGE);
     startEvaluation(sameEntry);
     sameEntry.markRebuilding();
-    sameEntry.setValue(new StringValue("foo2"), getNextVersion(startingVersion));
+    sameEntry.setValue(new StringValue("foo2"), getNextVersion(startingVersion), null);
     assertThat(graph.get(null, Reason.OTHER, key).getValue()).isEqualTo(new StringValue("foo2"));
-    assertThat(graph.get(null, Reason.OTHER, key).getReverseDepsForDoneEntry())
-        .hasSize(numKeys + 1);
+    if (checkRdeps()) {
+      assertThat(graph.get(null, Reason.OTHER, key).getReverseDepsForDoneEntry())
+          .hasSize(numKeys + 1);
+    }
   }
 
   // Tests adding inflight nodes with a given key while an existing node with the same key
@@ -271,9 +281,10 @@ public abstract class GraphTest {
                     // NEEDS_SCHEDULING at most once.
                     try {
                       if (startEvaluation(entry).equals(DependencyState.NEEDS_SCHEDULING)) {
+                        entry.markRebuilding();
                         assertThat(valuesSet.add(key)).isTrue();
                         // Set to done.
-                        entry.setValue(new StringValue("bar" + keyNum), startingVersion);
+                        entry.setValue(new StringValue("bar" + keyNum), startingVersion, null);
                         assertThat(entry.isDone()).isTrue();
                       }
                     } catch (InterruptedException e) {
@@ -323,7 +334,8 @@ public abstract class GraphTest {
     for (int i = 0; i < numKeys; i++) {
       NodeEntry entry = entries.get(key("foo" + i));
       startEvaluation(entry);
-      entry.setValue(new StringValue("bar"), startingVersion);
+      entry.markRebuilding();
+      entry.setValue(new StringValue("bar"), startingVersion, null);
     }
 
     assertThat(graph.get(null, Reason.OTHER, key("foo" + 0))).isNotNull();
@@ -339,39 +351,38 @@ public abstract class GraphTest {
     final CountDownLatch getBatchCountDownLatch = new CountDownLatch(5);
     final CountDownLatch getCountDownLatch = new CountDownLatch(5);
 
+    final SkyKey dep = key("dep");
     for (int i = 0; i < numKeys; i++) {
       final int keyNum = i;
       // Transition the nodes from done to dirty and then back to done.
       Runnable r1 =
-          new Runnable() {
-            @Override
-            public void run() {
-              try {
-                makeBatchCountDownLatch.await();
-                getBatchCountDownLatch.await();
-                getCountDownLatch.await();
-              } catch (InterruptedException e) {
-                throw new AssertionError(e);
-              }
-              NodeEntry entry = null;
-              try {
-                entry = graph.get(null, Reason.OTHER, key("foo" + keyNum));
-              } catch (InterruptedException e) {
-                throw new IllegalStateException(e);
-              }
-              try {
-                entry.markDirty(true);
+          () -> {
+            try {
+              makeBatchCountDownLatch.await();
+              getBatchCountDownLatch.await();
+              getCountDownLatch.await();
+            } catch (InterruptedException e) {
+              throw new AssertionError(e);
+            }
+            NodeEntry entry = null;
+            try {
+              entry = graph.get(null, Reason.OTHER, key("foo" + keyNum));
+            } catch (InterruptedException e) {
+              throw new IllegalStateException(e);
+            }
+            try {
+              entry.markDirty(DirtyType.CHANGE);
 
-                // Make some changes, like adding a dep and rdep.
-                entry.addReverseDepAndCheckIfDone(key("rdep"));
-                entry.markRebuilding();
-                addTemporaryDirectDep(entry, key("dep"));
-                entry.signalDep();
+              // Make some changes, like adding a dep and rdep.
+              entry.addReverseDepAndCheckIfDone(key("rdep"));
+              entry.markRebuilding();
+              addTemporaryDirectDep(entry, dep);
+              Version nextVersion = getNextVersion(startingVersion);
+              entry.signalDep(nextVersion, dep);
 
-                entry.setValue(new StringValue("bar" + keyNum), getNextVersion(startingVersion));
-              } catch (InterruptedException e) {
-                throw new IllegalStateException(keyNum + ", " + entry, e);
-              }
+              entry.setValue(new StringValue("bar" + keyNum), nextVersion, null);
+            } catch (InterruptedException e) {
+              throw new IllegalStateException(keyNum + ", " + entry, e);
             }
           };
 
@@ -450,26 +461,15 @@ public abstract class GraphTest {
       NodeEntry entry = graph.get(null, Reason.OTHER, key("foo" + i));
       assertThat(entry.getValue()).isEqualTo(new StringValue("bar" + i));
       assertThat(entry.getVersion()).isEqualTo(getNextVersion(startingVersion));
-      for (SkyKey key : entry.getReverseDepsForDoneEntry()) {
-        assertThat(key).isEqualTo(key("rdep"));
+      if (checkRdeps()) {
+        for (SkyKey key : entry.getReverseDepsForDoneEntry()) {
+          assertThat(key).isEqualTo(key("rdep"));
+        }
       }
       for (SkyKey key : entry.getDirectDeps()) {
-        assertThat(key).isEqualTo(key("dep"));
+        assertThat(key).isEqualTo(dep);
       }
     }
-  }
-
-  @Test
-  public void testGetCurrentlyAvailableNodes() throws Exception {
-    SkyKey foo = key("foo");
-    SkyKey bar = key("bar");
-    SkyKey foobar = key("foobar");
-    graph.createIfAbsentBatch(null, Reason.OTHER, ImmutableList.of(foo, bar));
-
-    Iterable<SkyKey> currentlyAvailable =
-        graph.getCurrentlyAvailableNodes(ImmutableList.of(foo, bar, foobar), Reason.OTHER);
-
-    assertThat(currentlyAvailable).containsExactly(foo, bar);
   }
 
   private static DependencyState startEvaluation(NodeEntry entry) throws InterruptedException {

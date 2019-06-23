@@ -14,7 +14,6 @@
 
 package com.google.devtools.build.lib.bazel.rules.java;
 
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
 import static com.google.devtools.build.lib.syntax.Type.BOOLEAN;
@@ -22,15 +21,15 @@ import static com.google.devtools.build.lib.syntax.Type.STRING_LIST;
 
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
+import com.google.devtools.build.lib.analysis.config.ConfigAwareRuleClassBuilder;
+import com.google.devtools.build.lib.analysis.config.HostTransition;
 import com.google.devtools.build.lib.bazel.rules.java.BazelJavaRuleClasses.JavaRule;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.packages.SkylarkProviderIdentifier;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
+import com.google.devtools.build.lib.rules.cpp.CppRuleClasses;
 import com.google.devtools.build.lib.rules.java.JavaConfiguration;
 import com.google.devtools.build.lib.rules.java.JavaInfo;
-import com.google.devtools.build.lib.rules.java.JavaSourceInfoProvider;
-import com.google.devtools.build.lib.rules.java.Jvm;
 import com.google.devtools.build.lib.rules.java.ProguardLibraryRule;
 
 /**
@@ -38,11 +37,13 @@ import com.google.devtools.build.lib.rules.java.ProguardLibraryRule;
  */
 public final class BazelJavaLibraryRule implements RuleDefinition {
   @Override
-  public RuleClass build(Builder builder, final RuleDefinitionEnvironment env) {
+  public RuleClass build(RuleClass.Builder builder, final RuleDefinitionEnvironment env) {
 
-    return builder
+    return ConfigAwareRuleClassBuilder.of(builder)
+        // For getting the host Java executable.
+        .requiresHostConfigurationFragments(JavaConfiguration.class)
+        .originalBuilder()
         .requiresConfigurationFragments(JavaConfiguration.class, CppConfiguration.class)
-        .requiresHostConfigurationFragments(Jvm.class) // For BaseJavaCompilationHelper
         /* <!-- #BLAZE_RULE(java_library).IMPLICIT_OUTPUTS -->
         <ul>
           <li><code>lib<var>name</var>.jar</code>: A Java archive containing the class files.</li>
@@ -149,11 +150,11 @@ public final class BazelJavaLibraryRule implements RuleDefinition {
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("exported_plugins", LABEL_LIST)
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .allowedRuleClasses("java_plugin")
                 .allowedFileTypes())
-        .advertiseProvider(JavaSourceInfoProvider.class)
         .advertiseSkylarkProvider(SkylarkProviderIdentifier.forKey(JavaInfo.PROVIDER.getKey()))
+        .addRequiredToolchains(CppRuleClasses.ccToolchainTypeAttribute(env))
         .build();
   }
 

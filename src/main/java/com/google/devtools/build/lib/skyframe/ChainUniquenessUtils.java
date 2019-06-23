@@ -14,10 +14,6 @@
 package com.google.devtools.build.lib.skyframe;
 
 import com.google.common.collect.ImmutableList;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.build.skyframe.LegacySkyKey;
-import com.google.devtools.build.skyframe.SkyFunctionName;
-import com.google.devtools.build.skyframe.SkyKey;
 
 /**
  * A value for ensuring that an error for a cycle/chain is reported exactly once. This is achieved
@@ -29,26 +25,21 @@ class ChainUniquenessUtils {
   private ChainUniquenessUtils() {}
 
   /**
-   * Create a SkyKey for {@code functionName} with a canonicalized representation of the cycle
-   * specified by {@code chain} as the argument. {@code chain} must be non-empty.
+   * Create a canonicalized representation of the cycle specified by {@code chain}. {@code chain}
+   * must be non-empty.
    */
-  static SkyKey key(SkyFunctionName functionName, ImmutableList<? extends Object> chain) {
-    Preconditions.checkState(!chain.isEmpty());
-    return LegacySkyKey.create(functionName, canonicalize(chain));
-  }
-
-  private static ImmutableList<Object> canonicalize(ImmutableList<? extends Object> cycle) {
+  static <T> ImmutableList<T> canonicalize(ImmutableList<T> cycle) {
     int minPos = 0;
     String minString = cycle.get(0).toString();
     for (int i = 1; i < cycle.size(); i++) {
-      // TOOD(bazel-team): Is the toString representation stable enough?
+      // TODO(bazel-team): Is the toString representation stable enough?
       String candidateString = cycle.get(i).toString();
       if (candidateString.compareTo(minString) < 0) {
         minPos = i;
         minString = candidateString;
       }
     }
-    ImmutableList.Builder<Object> builder = ImmutableList.builder();
+    ImmutableList.Builder<T> builder = ImmutableList.builder();
     for (int i = 0; i < cycle.size(); i++) {
       int pos = (minPos + i) % cycle.size();
       builder.add(cycle.get(pos));

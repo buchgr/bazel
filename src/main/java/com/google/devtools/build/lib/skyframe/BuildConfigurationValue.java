@@ -13,25 +13,30 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Interner;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
+import com.google.devtools.build.lib.analysis.config.FragmentClassSet;
+import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.build.skyframe.LegacySkyKey;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
+import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import com.google.devtools.common.options.OptionsParsingException;
 import java.io.Serializable;
 import java.util.Objects;
 import java.util.Set;
 
-/**
- * A Skyframe value representing a {@link BuildConfiguration}.
- */
+/** A Skyframe value representing a {@link BuildConfiguration}. */
 // TODO(bazel-team): mark this immutable when BuildConfiguration is immutable.
 // @Immutable
+@AutoCodec
 @ThreadSafe
 public class BuildConfigurationValue implements SkyValue {
-
   private final BuildConfiguration configuration;
 
   BuildConfigurationValue(BuildConfiguration configuration) {
@@ -43,55 +48,149 @@ public class BuildConfigurationValue implements SkyValue {
   }
 
   /**
-   * Returns the key for a requested configuration.
+   * Creates a new configuration key based on the given diff, after applying a platform mapping
+   * transformation.
    *
-   * @param fragments the fragments the configuration should contain
-   * @param buildOptions the build options the fragments should be built from
+   * @param platformMappingValue sky value that can transform a configuration key based on a
+   *     platform mapping
+   * @param defaultBuildOptions set of native build options without modifications based on parsing
+   *     flags
+   * @param fragments set of options fragments this configuration should cover
+   * @param optionsDiff diff between the default options and the desired configuration
+   * @throws OptionsParsingException if the platform mapping cannot be parsed
    */
-  @ThreadSafe
-  public static SkyKey key(Set<Class<? extends BuildConfiguration.Fragment>> fragments,
-      BuildOptions buildOptions) {
-    return LegacySkyKey.create(
-        SkyFunctions.BUILD_CONFIGURATION, new Key(fragments, buildOptions));
+  public static Key keyWithPlatformMapping(
+      PlatformMappingValue platformMappingValue,
+      BuildOptions defaultBuildOptions,
+      FragmentClassSet fragments,
+      BuildOptions.OptionsDiffForReconstruction optionsDiff)
+      throws OptionsParsingException {
+    return platformMappingValue.map(
+        keyWithoutPlatformMapping(fragments, optionsDiff), defaultBuildOptions);
   }
 
-  static final class Key implements Serializable {
-    private final Set<Class<? extends BuildConfiguration.Fragment>> fragments;
-    private final BuildOptions buildOptions;
-    private final boolean enableActions;
+  /**
+   * Creates a new configuration key based on the given diff, after applying a platform mapping
+   * transformation.
+   *
+   * @param platformMappingValue sky value that can transform a configuration key based on a
+   *     platform mapping
+   * @param defaultBuildOptions set of native build options without modifications based on parsing
+   *     flags
+   * @param fragments set of options fragments this configuration should cover
+   * @param optionsDiff diff between the default options and the desired configuration
+   * @throws OptionsParsingException if the platform mapping cannot be parsed
+   */
+  public static Key keyWithPlatformMapping(
+      PlatformMappingValue platformMappingValue,
+      BuildOptions defaultBuildOptions,
+      Set<Class<? extends BuildConfiguration.Fragment>> fragments,
+      BuildOptions.OptionsDiffForReconstruction optionsDiff)
+      throws OptionsParsingException {
+    return platformMappingValue.map(
+        keyWithoutPlatformMapping(fragments, optionsDiff), defaultBuildOptions);
+  }
 
-    Key(Set<Class<? extends BuildConfiguration.Fragment>> fragments,
-        BuildOptions buildOptions) {
+  /**
+   * Returns the key for a requested configuration.
+   *
+   * <p>Callers are responsible for applying the platform mapping or ascertaining that a platform
+   * mapping is not required.
+   *
+   * @param fragments the fragments the configuration should contain
+   * @param optionsDiff the {@link BuildOptions.OptionsDiffForReconstruction} object the {@link
+   *     BuildOptions} should be rebuilt from
+   */
+  @ThreadSafe
+  static Key keyWithoutPlatformMapping(
+      Set<Class<? extends BuildConfiguration.Fragment>> fragments,
+      BuildOptions.OptionsDiffForReconstruction optionsDiff) {
+    return Key.create(
+        FragmentClassSet.of(
+            ImmutableSortedSet.copyOf(BuildConfiguration.lexicalFragmentSorter, fragments)),
+        optionsDiff);
+  }
+
+  private static Key keyWithoutPlatformMapping(
+      FragmentClassSet fragmentClassSet, BuildOptions.OptionsDiffForReconstruction optionsDiff) {
+    return Key.create(fragmentClassSet, optionsDiff);
+  }
+
+  /**
+   * Returns a configuration key for the given configuration.
+   *
+   * <p>Note that this key creation method does not apply a platform mapping, it is assumed that the
+   * passed configuration was created with one such and thus its key does not need to be mapped
+   * again.
+   *
+   * @param buildConfiguration configuration whose key is requested
+   */
+  public static Key key(BuildConfiguration buildConfiguration) {
+    return keyWithoutPlatformMapping(
+        buildConfiguration.fragmentClasses(), buildConfiguration.getBuildOptionsDiff());
+  }
+
+  /** {@link SkyKey} for {@link BuildConfigurationValue}. */
+  @AutoCodec
+  public static final class Key implements SkyKey, Serializable {
+    private static final Interner<Key> keyInterner = BlazeInterners.newWeakInterner();
+
+    private final FragmentClassSet fragments;
+    final BuildOptions.OptionsDiffForReconstruction optionsDiff;
+    // If hashCode really is -1, we'll recompute it from scratch each time. Oh well.
+    private volatile int hashCode = -1;
+
+    @AutoCodec.Instantiator
+    @VisibleForSerialization
+    static Key create(
+        FragmentClassSet fragments, BuildOptions.OptionsDiffForReconstruction optionsDiff) {
+      return keyInterner.intern(new Key(fragments, optionsDiff));
+    }
+
+    private Key(FragmentClassSet fragments, BuildOptions.OptionsDiffForReconstruction optionsDiff) {
       this.fragments = fragments;
-      this.buildOptions = Preconditions.checkNotNull(buildOptions);
-      // Cache this value for quicker access on .equals() / .hashCode(). We don't cache it inside
-      // BuildOptions because BuildOptions is mutable, so a cached value there could fall out of
-      // date while the BuildOptions is being prepared for this key.
-      this.enableActions = buildOptions.enableActions();
+      this.optionsDiff = optionsDiff;
     }
 
-    Set<Class<? extends BuildConfiguration.Fragment>> getFragments() {
-      return fragments;
+    @VisibleForTesting
+    public ImmutableSortedSet<Class<? extends BuildConfiguration.Fragment>> getFragments() {
+      return fragments.fragmentClasses();
     }
 
-    BuildOptions getBuildOptions() {
-      return buildOptions;
+    public BuildOptions.OptionsDiffForReconstruction getOptionsDiff() {
+      return optionsDiff;
+    }
+
+    @Override
+    public SkyFunctionName functionName() {
+      return SkyFunctions.BUILD_CONFIGURATION;
     }
 
     @Override
     public boolean equals(Object o) {
+      if (this == o) {
+        return true;
+      }
       if (!(o instanceof Key)) {
         return false;
       }
       Key otherConfig = (Key) o;
-      return Objects.equals(fragments, otherConfig.fragments)
-          && Objects.equals(buildOptions, otherConfig.buildOptions)
-          && enableActions == otherConfig.enableActions;
+      return optionsDiff.equals(otherConfig.optionsDiff)
+          && Objects.equals(fragments, otherConfig.fragments);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(fragments, buildOptions, enableActions);
+      if (hashCode == -1) {
+        hashCode = Objects.hash(fragments, optionsDiff);
+      }
+      return hashCode;
+    }
+
+    @Override
+    public String toString() {
+      // This format is depended on by integration tests.
+      return "BuildConfigurationValue.Key[" + optionsDiff.getChecksum() + "]";
     }
   }
 }

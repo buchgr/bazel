@@ -15,30 +15,33 @@
 package com.google.devtools.build.lib.exec;
 
 import com.google.auto.value.AutoValue;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.SpawnResult;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
+import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
-import java.util.Set;
+import java.util.List;
 
 /** Contains information about the results of test execution. */
 @AutoValue
-public abstract class StandaloneTestResult {
+public abstract class StandaloneTestResult implements TestStrategy.TestAttemptResult {
+  @Override
+  public boolean hasPassed() {
+    return testResultDataBuilder().getStatus() == BlazeTestStatus.PASSED;
+  }
 
   /** Returns the SpawnResults created by the test, if any. */
-  public abstract Set<SpawnResult> spawnResults();
+  @Override
+  public abstract List<SpawnResult> spawnResults();
 
   /** Returns the TestResultData for the test. */
-  public abstract TestResultData testResultData();
+  public abstract TestResultData.Builder testResultDataBuilder();
+
+  public abstract BuildEventStreamProtos.TestResult.ExecutionInfo executionInfo();
 
   /** Returns a builder that can be used to construct a {@link StandaloneTestResult} object. */
   public static Builder builder() {
     return new AutoValue_StandaloneTestResult.Builder();
-  }
-
-  /** Creates a StandaloneTestResult, given spawnResults and testResultData. */
-  public static StandaloneTestResult create(
-      Set<SpawnResult> spawnResults, TestResultData testResultData) {
-    return builder().setSpawnResults(spawnResults).setTestResultData(testResultData).build();
   }
 
   /** Builder for a {@link StandaloneTestResult} instance, which is immutable once built. */
@@ -46,23 +49,26 @@ public abstract class StandaloneTestResult {
   public abstract static class Builder {
 
     /** Returns the SpawnResults for the test, if any. */
-    abstract Set<SpawnResult> spawnResults();
+    abstract List<SpawnResult> spawnResults();
 
     /** Sets the SpawnResults for the test. */
-    public abstract Builder setSpawnResults(Set<SpawnResult> spawnResults);
+    public abstract Builder setSpawnResults(List<SpawnResult> spawnResults);
 
     /** Sets the TestResultData for the test. */
-    public abstract Builder setTestResultData(TestResultData testResultData);
+    public abstract Builder setTestResultDataBuilder(TestResultData.Builder testResultDataBuilder);
+
+    public abstract Builder setExecutionInfo(
+        BuildEventStreamProtos.TestResult.ExecutionInfo executionInfo);
 
     abstract StandaloneTestResult realBuild();
 
     /**
      * Returns an immutable StandaloneTestResult object.
      *
-     * <p>The set of SpawnResults is also made immutable here.
+     * <p>The list of SpawnResults is also made immutable here.
      */
     public StandaloneTestResult build() {
-      return this.setSpawnResults(ImmutableSet.copyOf(spawnResults())).realBuild();
+      return this.setSpawnResults(ImmutableList.copyOf(spawnResults())).realBuild();
     }
   }
 }

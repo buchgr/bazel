@@ -14,27 +14,23 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration.LabelConverter;
+import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.LabelConverter;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.rules.apple.DottedVersion;
 import com.google.devtools.build.lib.rules.apple.DottedVersionConverter;
 import com.google.devtools.common.options.Converters.CommaSeparatedOptionListConverter;
-import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionMetadataTag;
 import java.util.List;
 
-/**
- * Command-line options for building Objective-C targets.
- */
+/** Command-line options for building Objective-C targets. */
 public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "ios_simulator_version",
     defaultValue = "9.3",
-    category = "run",
     converter = DottedVersionConverter.class,
     documentationCategory = OptionDocumentationCategory.TESTING,
     effectTags = {OptionEffectTag.TEST_RUNNER},
@@ -42,12 +38,11 @@ public class ObjcCommandLineOptions extends FragmentOptions {
         "The version of iOS to run on the simulator when running or testing. This is ignored "
             + "for ios_test rules if a target device is specified in the rule."
   )
-  public DottedVersion iosSimulatorVersion;
+  public DottedVersion.Option iosSimulatorVersion;
 
   @Option(
     name = "ios_simulator_device",
     defaultValue = "iPhone 5s",
-    category = "run",
     documentationCategory = OptionDocumentationCategory.TESTING,
     effectTags = {OptionEffectTag.TEST_RUNNER},
     help =
@@ -60,18 +55,16 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "watchos_simulator_version",
     defaultValue = "2.0",
-    category = "run",
     converter = DottedVersionConverter.class,
     documentationCategory = OptionDocumentationCategory.TESTING,
     effectTags = {OptionEffectTag.TEST_RUNNER},
     help = "The version of watchOS to run on the simulator when running or testing."
   )
-  public DottedVersion watchosSimulatorVersion;
+  public DottedVersion.Option watchosSimulatorVersion;
 
   @Option(
     name = "watchos_simulator_device",
     defaultValue = "Apple Watch - 38mm",
-    category = "run",
     documentationCategory = OptionDocumentationCategory.TESTING,
     effectTags = {OptionEffectTag.TEST_RUNNER},
     help =
@@ -84,18 +77,16 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "tvos_simulator_version",
     defaultValue = "9.0",
-    category = "run",
     converter = DottedVersionConverter.class,
     documentationCategory = OptionDocumentationCategory.TESTING,
     effectTags = {OptionEffectTag.TEST_RUNNER},
     help = "The version of tvOS to run on the simulator when running or testing."
   )
-  public DottedVersion tvosSimulatorVersion;
+  public DottedVersion.Option tvosSimulatorVersion;
 
   @Option(
     name = "tvos_simulator_device",
     defaultValue = "Apple TV 1080p",
-    category = "run",
     documentationCategory = OptionDocumentationCategory.TESTING,
     effectTags = {OptionEffectTag.TEST_RUNNER},
     help =
@@ -108,7 +99,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "objc_generate_linkmap",
     defaultValue = "false",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
     effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
     help = "Specifies whether to generate a linkmap file."
@@ -119,7 +109,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
     name = "objccopt",
     allowMultiple = true,
     defaultValue = "",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
     effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
     help = "Additional options to pass to Objective C compilation."
@@ -129,7 +118,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "ios_memleaks",
     defaultValue = "false",
-    category = "misc",
     documentationCategory = OptionDocumentationCategory.TESTING,
     effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
     help = "Enable checking for memory leaks in ios_test targets."
@@ -170,7 +158,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "objc_enable_binary_stripping",
     defaultValue = "false",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
     effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
     help =
@@ -183,7 +170,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "apple_generate_dsym",
     defaultValue = "false",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
     effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.ACTION_COMMAND_LINES},
     help = "Whether to generate debug symbol(.dSYM) file(s)."
@@ -191,9 +177,16 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   public boolean appleGenerateDsym;
 
   @Option(
+      name = "apple_enable_auto_dsym_dbg",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.ACTION_COMMAND_LINES},
+      help = "Whether to force enable generating debug symbol(.dSYM) file(s) for dbg builds.")
+  public boolean appleEnableAutoDsymDbg;
+
+  @Option(
     name = "ios_signing_cert_name",
     defaultValue = "null",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.SIGNING,
     effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
     help =
@@ -205,7 +198,7 @@ public class ObjcCommandLineOptions extends FragmentOptions {
 
   @Option(
     name = "objc_debug_with_GLIBCXX",
-    defaultValue = "true",
+    defaultValue = "false",
     documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
     effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
     help =
@@ -217,7 +210,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "extra_entitlements",
     defaultValue = "null",
-    category = "flags",
     converter = LabelConverter.class,
     documentationCategory = OptionDocumentationCategory.SIGNING,
     effectTags = {OptionEffectTag.CHANGES_INPUTS},
@@ -230,7 +222,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "device_debug_entitlements",
     defaultValue = "true",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.SIGNING,
     effectTags = {OptionEffectTag.CHANGES_INPUTS},
     help =
@@ -239,54 +230,19 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   )
   public boolean deviceDebugEntitlements;
 
-  /** Specifies the circumstances under which a CROSSTOOL is used for objc in this configuration. */
-  public enum ObjcCrosstoolMode {
-    /** The CROSSTOOL is used for all objc compile, archive, and link actions. */
-    ALL,
-
-    /**
-     * The CROSSTOOL is used for all objc compile and archive actions originating from an
-     * objc_library target.
-     */
-    LIBRARY,
-
-    /** The CROSSTOOL is not used for any objc action. */
-    OFF
-  }
-
-  /** Converter for {@link ObjcCrosstoolMode}. */
-  public static class ObjcCrosstoolUsageConverter extends EnumConverter<ObjcCrosstoolMode> {
-    public ObjcCrosstoolUsageConverter() {
-      super(ObjcCrosstoolMode.class, "objc crosstool mode");
-    }
-  }
-
   @Option(
-    name = "experimental_objc_crosstool",
-    defaultValue = "all",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.CHANGES_INPUTS},
-    metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
-    converter = ObjcCrosstoolUsageConverter.class
-  )
-  public ObjcCrosstoolMode objcCrosstoolMode;
-
-  @Option(
-    name = "objc_use_dotd_pruning",
-    defaultValue = "true",
-    category = "flags",
-    documentationCategory = OptionDocumentationCategory.BUILD_TIME_OPTIMIZATION,
-    effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOADING_AND_ANALYSIS},
-    help =
-        "If set, .d files emited by clang will be used to prune the set of inputs passed into objc "
-            + "compiles."
-  )
+      name = "objc_use_dotd_pruning",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.BUILD_TIME_OPTIMIZATION,
+      effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOADING_AND_ANALYSIS},
+      help =
+          "If set, .d files emitted by clang will be used to prune the set of inputs passed into "
+              + "objc compiles.")
   public boolean useDotdPruning;
 
   @Option(
     name = "enable_apple_binary_native_protos",
     defaultValue = "true",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
     effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
     metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
@@ -297,7 +253,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   @Option(
     name = "experimental_objc_header_thinning",
     defaultValue = "false",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.BUILD_TIME_OPTIMIZATION,
     effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOADING_AND_ANALYSIS},
     metadataTags = {OptionMetadataTag.EXPERIMENTAL},
@@ -333,12 +288,27 @@ public class ObjcCommandLineOptions extends FragmentOptions {
     defaultValue = "null",
     converter = LabelConverter.class,
     documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
-    effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOADING_AND_ANALYSIS},
+    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.LOADING_AND_ANALYSIS},
     help =
         "Location of target that will provide the appropriate Apple SDK for the current build "
             + "configuration."
   )
   public Label appleSdk;
+
+  @Option(
+    name = "incompatible_strict_objc_module_maps",
+    defaultValue = "false",
+    documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
+    metadataTags = {
+      OptionMetadataTag.INCOMPATIBLE_CHANGE,
+      OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+    },
+    effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOADING_AND_ANALYSIS},
+    help =
+        "Propagates Objective-C module maps only to direct dependencies in the 'objc' provider, "
+            + "not to all transitive dependencies."
+  )
+  public boolean strictObjcModuleMaps;
 
   @Override
   public FragmentOptions getHost() {

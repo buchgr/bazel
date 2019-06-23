@@ -26,6 +26,10 @@ source "${CURRENT_DIR}/../integration_test_setup.sh" \
 source "${CURRENT_DIR}/remote_helpers.sh" \
   || { echo "remote_helpers.sh not found!" >&2; exit 1; }
 
+function tear_down() {
+  shutdown_server
+}
+
 function setup_zoo() {
   mkdir -p zoo
   cat > zoo/BUILD <<EOF
@@ -33,7 +37,7 @@ java_binary(
     name = "ball-pit",
     srcs = ["BallPit.java"],
     main_class = "BallPit",
-    deps = ["//external:mongoose"],
+    deps = ["@endangered//jar"],
 )
 EOF
 
@@ -48,10 +52,6 @@ public class BallPit {
 EOF
 }
 
-function tear_down() {
-  shutdown_server
-}
-
 function test_maven_jar() {
   setup_zoo
   serve_artifact com.example.carnivore carnivore 1.23
@@ -62,8 +62,25 @@ maven_jar(
     artifact = "com.example.carnivore:carnivore:1.23",
     repository = 'http://127.0.0.1:$fileserver_port/',
     sha1 = '$sha1',
+    sha1_src = '$sha1_src',
 )
-bind(name = 'mongoose', actual = '@endangered//jar')
+EOF
+
+  bazel run //zoo:ball-pit >& $TEST_log || fail "Expected run to succeed"
+  expect_log "Tra-la!"
+}
+
+function test_maven_jar_no_sha1_src() {
+  setup_zoo
+  serve_artifact com.example.carnivore carnivore 1.23
+
+  cat > WORKSPACE <<EOF
+maven_jar(
+    name = 'endangered',
+    artifact = "com.example.carnivore:carnivore:1.23",
+    repository = 'http://127.0.0.1:$fileserver_port/',
+    sha1 = '$sha1',
+)
 EOF
 
   bazel run //zoo:ball-pit >& $TEST_log || fail "Expected run to succeed"
@@ -72,6 +89,7 @@ EOF
 
 # Same as test_maven_jar, except omit sha1 implying "we don't care".
 function test_maven_jar_no_sha1() {
+  setup_zoo
   serve_artifact com.example.carnivore carnivore 1.23
 
   cat > WORKSPACE <<EOF
@@ -80,7 +98,6 @@ maven_jar(
     artifact = "com.example.carnivore:carnivore:1.23",
     repository = 'http://127.0.0.1:$fileserver_port/',
 )
-bind(name = 'mongoose', actual = '@endangered//jar')
 EOF
 
   bazel run //zoo:ball-pit >& $TEST_log || fail "Expected run to succeed"
@@ -89,6 +106,7 @@ EOF
 
 # makes sure both jar and srcjar are downloaded
 function test_maven_jar_downloads() {
+  setup_zoo
   serve_artifact com.example.carnivore carnivore 1.23
 
   cat > WORKSPACE <<EOF
@@ -97,7 +115,6 @@ maven_jar(
     artifact = "com.example.carnivore:carnivore:1.23",
     repository = 'http://127.0.0.1:$fileserver_port/',
 )
-bind(name = 'mongoose', actual = '@endangered//jar')
 EOF
 
   bazel run //zoo:ball-pit >& $TEST_log || fail "Expected run to succeed"
@@ -118,7 +135,6 @@ maven_jar(
     artifact = "com.example.carnivore:carnivore:1.23",
     repository = 'http://127.0.0.1:$nc_port/',
 )
-bind(name = 'mongoose', actual = '@endangered//jar')
 EOF
 
   bazel clean --expunge
@@ -139,7 +155,6 @@ maven_jar(
     repository = 'http://127.0.0.1:$fileserver_port/',
     sha1 = '$wrong_sha1',
 )
-bind(name = 'mongoose', actual = '@endangered//jar')
 EOF
 
   bazel fetch //zoo:ball-pit >& $TEST_log && echo "Expected fetch to fail"

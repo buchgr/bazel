@@ -17,12 +17,15 @@ package com.google.devtools.build.lib.actions;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Functions;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.actions.ActionLookupValue.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
+import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -72,6 +75,7 @@ public final class ActionInputHelper {
 
     public BasicActionInput(String path) {
       this.path = Preconditions.checkNotNull(path);
+      Preconditions.checkArgument(!path.isEmpty());
     }
 
     @Override
@@ -137,37 +141,36 @@ public final class ActionInputHelper {
   }
 
   /**
-   * Instantiates a concrete TreeFileArtifact with the given parent Artifact and path
-   * relative to that Artifact.
+   * Instantiates a concrete TreeFileArtifact with the given parent Artifact and path relative to
+   * that Artifact.
    */
   public static TreeFileArtifact treeFileArtifact(
-      Artifact parent, PathFragment relativePath) {
-    Preconditions.checkState(parent.isTreeArtifact(),
-        "Given parent %s must be a TreeArtifact", parent);
-    return new TreeFileArtifact(parent, relativePath);
-  }
-
-  public static TreeFileArtifact treeFileArtifact(
-      Artifact parent, PathFragment relativePath, ArtifactOwner artifactOwner) {
-    Preconditions.checkState(parent.isTreeArtifact(),
-        "Given parent %s must be a TreeArtifact", parent);
-    return new TreeFileArtifact(
-        parent,
-        relativePath,
-        artifactOwner);
+      Artifact.SpecialArtifact parent, PathFragment relativePath) {
+    TreeFileArtifact result =
+        treeFileArtifactWithNoGeneratingActionSet(parent, relativePath, parent.getArtifactOwner());
+    result.setGeneratingActionKey(parent.getGeneratingActionKey());
+    return result;
   }
 
   /**
-   * Instantiates a concrete TreeFileArtifact with the given parent Artifact and path
-   * relative to that Artifact.
+   * Instantiates a concrete TreeFileArtifact with the given parent Artifact and path relative to
+   * that Artifact.
    */
-  public static TreeFileArtifact treeFileArtifact(Artifact parent, String relativePath) {
+  public static TreeFileArtifact treeFileArtifact(
+      Artifact.SpecialArtifact parent, String relativePath) {
     return treeFileArtifact(parent, PathFragment.create(relativePath));
+  }
+
+  public static TreeFileArtifact treeFileArtifactWithNoGeneratingActionSet(
+      SpecialArtifact parent, PathFragment relativePath, ActionLookupKey artifactOwner) {
+    Preconditions.checkState(
+        parent.isTreeArtifact(), "Given parent %s must be a TreeArtifact", parent);
+    return new TreeFileArtifact(parent, relativePath, artifactOwner);
   }
 
   /** Returns an Iterable of TreeFileArtifacts with the given parent and parent relative paths. */
   public static Iterable<TreeFileArtifact> asTreeFileArtifacts(
-      final Artifact parent, Iterable<? extends PathFragment> parentRelativePaths) {
+      final Artifact.SpecialArtifact parent, Iterable<? extends PathFragment> parentRelativePaths) {
     Preconditions.checkState(parent.isTreeArtifact(),
         "Given parent %s must be a TreeArtifact", parent);
     return Iterables.transform(
@@ -176,7 +179,7 @@ public final class ActionInputHelper {
 
   /** Returns a Set of TreeFileArtifacts with the given parent and parent-relative paths. */
   public static Set<TreeFileArtifact> asTreeFileArtifacts(
-      final Artifact parent, Set<? extends PathFragment> parentRelativePaths) {
+      final Artifact.SpecialArtifact parent, Set<? extends PathFragment> parentRelativePaths) {
     Preconditions.checkState(parent.isTreeArtifact(),
         "Given parent %s must be a TreeArtifact", parent);
 
@@ -215,5 +218,15 @@ public final class ActionInputHelper {
 
   public static Iterable<String> toExecPaths(Iterable<? extends ActionInput> artifacts) {
     return Iterables.transform(artifacts, EXEC_PATH_STRING_FORMATTER);
+  }
+
+  /** Returns the {@link Path} for an {@link ActionInput}. */
+  public static Path toInputPath(ActionInput input, Path execRoot) {
+    Preconditions.checkNotNull(input, "input");
+    Preconditions.checkNotNull(execRoot, "execRoot");
+
+    return (input instanceof Artifact)
+        ? ((Artifact) input).getPath()
+        : execRoot.getRelative(input.getExecPath());
   }
 }

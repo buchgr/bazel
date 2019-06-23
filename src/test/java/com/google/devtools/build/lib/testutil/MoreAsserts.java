@@ -15,7 +15,6 @@ package com.google.devtools.build.lib.testutil;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
-import static com.google.common.truth.Truth.assert_;
 import static org.junit.Assert.fail;
 
 import com.google.common.base.Function;
@@ -68,8 +67,7 @@ public class MoreAsserts {
       Object start, final Class<?> clazz) {
     Predicate<Object> p = obj -> clazz.isAssignableFrom(obj.getClass());
     if (isRetained(p, start)) {
-      assert_().fail(
-          "Found an instance of " + clazz.getCanonicalName() + " reachable from " + start);
+      fail("Found an instance of " + clazz.getCanonicalName() + " reachable from " + start);
     }
   }
 
@@ -117,7 +115,15 @@ public class MoreAsserts {
               continue;
             }
 
-            f.setAccessible(true);
+            try {
+              f.setAccessible(true);
+            } catch (RuntimeException e) {
+              // JDK9 can throw InaccessibleObjectException when internal modules are accessed.
+              // This isn't available in JDK8, so catch RuntimeException
+              // We can use a JVM arg --add_opens to suppress that, but that involves every
+              // test adding every JVM module to the target.
+              continue;
+            }
             try {
               Object ref = f.get(current);
               if (ref != null) {
@@ -295,6 +301,32 @@ public class MoreAsserts {
   }
 
   /**
+   * If {@code eventCollector} does not contain an event which matches {@code expectedEventRegex},
+   * fails with an informative assertion.
+   */
+  public static void assertContainsEventRegex(
+      Iterable<Event> eventCollector, String expectedEventRegex) {
+    for (Event event : eventCollector) {
+      if (event.toString().matches(expectedEventRegex)) {
+        return;
+      }
+    }
+    String eventsString = eventsToString(eventCollector);
+    String failureMessage = "Event matching '" + expectedEventRegex + "' not found";
+    if (!eventsString.isEmpty()) {
+      failureMessage += "; found these though: " + eventsString;
+    }
+    fail(failureMessage);
+  }
+
+  public static void assertNotContainsEventRegex(
+      Iterable<Event> eventCollector, String unexpectedEventRegex) {
+    for (Event event : eventCollector) {
+      assertThat(event.toString()).doesNotMatch(unexpectedEventRegex);
+    }
+  }
+
+  /**
    * If the specified EventCollector contains an event which has
    * 'expectedEvent' as a substring, an informative assertion fails.
    */
@@ -441,18 +473,24 @@ public class MoreAsserts {
   }
 
   /*
-   * These methods will be in JUnit 4.13. Instead of patching Bazel's JUnit jar to contain the
+   * This method will be in JUnit 4.13. Instead of patching Bazel's JUnit jar to contain the
    * <a href="https://github.com/junit-team/junit4/commit/bdb1799">patch</a>, we define it here.
    * Once JUnit 4.13 is released, we will switcher callers to use org.junit.Assert#assertThrows
    * instead. See https://github.com/bazelbuild/bazel/issues/3729.
    */
-  public static void assertThrows(
-      Class<? extends Throwable> expectedThrowable, ThrowingRunnable runnable) {
-    expectThrows(expectedThrowable, runnable);
+  public static <T extends Throwable> T assertThrows(
+      Class<T> expectedThrowable, ThrowingRunnable runnable) {
+    return assertThrows("", expectedThrowable, runnable);
   }
 
-  public static <T extends Throwable> T expectThrows(
-      Class<T> expectedThrowable, ThrowingRunnable runnable) {
+  /*
+   * This method will be in JUnit 4.13. Instead of patching Bazel's JUnit jar to contain the
+   * <a href="https://github.com/junit-team/junit4/commit/bdb1799">patch</a>, we define it here.
+   * Once JUnit 4.13 is released, we will switcher callers to use org.junit.Assert#assertThrows
+   * instead. See https://github.com/bazelbuild/bazel/issues/3729.
+   */
+  public static <T extends Throwable> T assertThrows(
+      String message, Class<T> expectedThrowable, ThrowingRunnable runnable) {
     try {
       runnable.run();
     } catch (Throwable actualThrown) {
@@ -462,16 +500,23 @@ public class MoreAsserts {
         return retVal;
       } else {
         throw new AssertionError(
-            String.format(
-                "expected %s to be thrown, but %s was thrown",
-                expectedThrowable.getSimpleName(), actualThrown.getClass().getSimpleName()),
+            buildPrefix(message)
+                + String.format(
+                    "expected %s to be thrown, but %s was thrown",
+                    expectedThrowable.getSimpleName(), actualThrown.getClass().getSimpleName()),
             actualThrown);
       }
     }
-    String message =
-        String.format(
-            "expected %s to be thrown, but nothing was thrown", expectedThrowable.getSimpleName());
-    throw new AssertionError(message);
+    String mismatchMessage =
+        buildPrefix(message)
+            + String.format(
+                "expected %s to be thrown, but nothing was thrown",
+                expectedThrowable.getSimpleName());
+    throw new AssertionError(mismatchMessage);
+  }
+
+  private static String buildPrefix(String message) {
+    return message != null && message.length() != 0 ? message + ": " : "";
   }
 
   /** A helper interface for {@link #assertThrows}. */

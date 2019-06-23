@@ -14,7 +14,7 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration.LabelConverter;
+import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.LabelConverter;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.common.options.Converters;
@@ -24,9 +24,8 @@ import com.google.devtools.common.options.OptionEffectTag;
 import java.util.List;
 
 /**
- * Command-line options for J2ObjC translation of Java source code to ObjC.
- * These command line options are used by Java rules that can be transpiled
- * (specifically, J2ObjCAspects thereof).
+ * Command-line options for J2ObjC translation of Java source code to ObjC. These command line
+ * options are used by Java rules that can be transpiled (specifically, J2ObjCAspects thereof).
  */
 public class J2ObjcCommandLineOptions extends FragmentOptions {
   @Option(
@@ -34,7 +33,6 @@ public class J2ObjcCommandLineOptions extends FragmentOptions {
     converter = Converters.CommaSeparatedOptionListConverter.class,
     allowMultiple = true,
     defaultValue = "",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help = "Additional options to pass to the J2ObjC tool."
@@ -65,22 +63,20 @@ public class J2ObjcCommandLineOptions extends FragmentOptions {
   public Label deadCodeReport;
 
   @Option(
-    name = "explicit_jre_deps",
-    defaultValue = "true",
-    category = "flags",
-    documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-    effectTags = {OptionEffectTag.UNKNOWN},
-    help = "This flag is a noop and will be removed."
-  )
-  public boolean explicitJreDeps;
-
-  @Option(
     name = "experimental_j2objc_header_map",
     defaultValue = "true",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help = "Whether to generate J2ObjC header map in parallel of J2ObjC transpilation."
   )
   public boolean experimentalJ2ObjcHeaderMap;
+
+  @Option(
+    name = "experimental_j2objc_shorter_header_path",
+    defaultValue = "false",
+    documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
+    help = "Whether to generate with shorter header path (uses \"_ios\" instead of \"_j2objc\")."
+  )
+  public boolean experimentalShorterHeaderPath;
 }

@@ -1,7 +1,7 @@
 # Description:
 #   The Java library builders, which are used by Bazel to compile Java
 #   source code.
-package(default_visibility = ["//src:__subpackages__"])
+package(default_visibility = ["//src/java_tools/buildjar:buildjar_package_group"])
 
 filegroup(
     name = "srcs",
@@ -9,6 +9,7 @@ filegroup(
         ["**"],
     ) + [
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:srcs",
+        "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/statistics:srcs",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/genclass:srcs",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/jarhelper:srcs",
     ],
@@ -20,9 +21,13 @@ java_library(
         "InvalidCommandLineException.java",
         "OptionsParser.java",
     ],
+    visibility = [
+        "//src/java_tools/buildjar:buildjar_package_group",
+        "//src/test/java/com/google/devtools/build/lib:__subpackages__",
+    ],
     deps = [
-        ":JarOwner",
         "//third_party:guava",
+        "//third_party:jsr305",
     ],
 )
 
@@ -37,6 +42,7 @@ java_library(
     deps = [
         ":invalid_command_line_exception",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins",
+        "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/statistics",
         "//third_party:auto_value",
         "//third_party:guava",
         "//third_party:jsr305",
@@ -47,6 +53,10 @@ java_library(
 alias(
     name = "jarhelper",
     actual = "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/jarhelper",
+    visibility = [
+        "//src/java_tools/buildjar:buildjar_package_group",
+        "//src/tools/android:__subpackages__",
+    ],
 )
 
 # Bazel's BuildJar
@@ -64,7 +74,6 @@ java_library(
         ],
     ),
     deps = [
-        ":JarOwner",
         ":invalid_command_line_exception",
         ":jarhelper",
         ":javac",
@@ -73,8 +82,10 @@ java_library(
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:dependency",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:errorprone",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:processing",
+        "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/statistics",
         "//src/main/protobuf:worker_protocol_java_proto",
         "//third_party:guava",
+        "//third_party:jsr305",
         "//third_party/java/jacoco:core",
         "//third_party/java/jdk/langtools:javac",
     ],
@@ -159,25 +170,6 @@ bootstrap_java_library(
     name = "bootstrap_invalid_command_line_exception",
     srcs = ["InvalidCommandLineException.java"],
     tags = ["manual"],
-)
-
-bootstrap_java_binary(
-    name = "bootstrap",
-    srcs = glob(
-        ["**/*.java"],
-        exclude = [
-            "JarOwner.java",
-            "VanillaJavaBuilder.java",
-            "javac/testing/**",
-        ],
-    ),
-    main_class = "com.google.devtools.build.buildjar.BazelJavaBuilder",
-    tags = ["manual"],
-    deps = [
-        ":skylark-deps",
-        "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/jarhelper:bootstrap_jarhelper",
-        "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:bootstrap_plugins",
-    ],
 )
 
 bootstrap_java_library(

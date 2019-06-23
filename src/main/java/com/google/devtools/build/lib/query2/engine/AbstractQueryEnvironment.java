@@ -118,7 +118,7 @@ public abstract class AbstractQueryEnvironment<T> implements QueryEnvironment<T>
 
   @Override
   public QueryTaskFuture<Void> eval(
-      QueryExpression expr, VariableContext<T> context, final Callback<T> callback) {
+      QueryExpression expr, QueryExpressionContext<T> context, final Callback<T> callback) {
     // Not all QueryEnvironment implementations embrace the async+streaming evaluation framework. In
     // particular, the streaming callbacks employed by functions like 'deps' use
     // QueryEnvironment#buildTransitiveClosure. So if the implementation of that method does some
@@ -139,7 +139,7 @@ public abstract class AbstractQueryEnvironment<T> implements QueryEnvironment<T>
   }
 
   @Override
-  public <R> QueryTaskFuture<R> executeAsync(QueryTaskCallable<R> callable) {
+  public <R> QueryTaskFuture<R> execute(QueryTaskCallable<R> callable) {
     try {
       return immediateSuccessfulFuture(callable.call());
     } catch (QueryException e) {
@@ -147,6 +147,11 @@ public abstract class AbstractQueryEnvironment<T> implements QueryEnvironment<T>
     } catch (InterruptedException e) {
       return immediateCancelledFuture();
     }
+  }
+
+  @Override
+  public <R> QueryTaskFuture<R> executeAsync(QueryTaskAsyncCallable<R> callable) {
+    return callable.call();
   }
 
   @Override

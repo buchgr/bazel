@@ -51,6 +51,28 @@ public class ProxyHelper {
    */
   public Proxy createProxyIfNeeded(URL requestedUrl) throws IOException {
     String proxyAddress = null;
+    String noProxyUrl = env.get("no_proxy");
+    if (Strings.isNullOrEmpty(noProxyUrl)) {
+      noProxyUrl = env.get("NO_PROXY");
+    }
+    if (!Strings.isNullOrEmpty(noProxyUrl)) {
+      String[] noProxyUrlArray = noProxyUrl.split(",");
+      String requestedHost = requestedUrl.getHost();
+      for (int i = 0; i < noProxyUrlArray.length; i++) {
+        if (noProxyUrlArray[i].startsWith(".")) {
+          // This entry applies to sub-domains only.
+          if (requestedHost.endsWith(noProxyUrlArray[i])) {
+            return Proxy.NO_PROXY;
+          }
+        } else {
+          // This entry applies to the literal hostname and sub-domains.
+          if (requestedHost.equals(noProxyUrlArray[i])
+              || requestedHost.endsWith("." + noProxyUrlArray[i])) {
+            return Proxy.NO_PROXY;
+          }
+        }
+      }
+    }
     if (HttpUtils.isProtocol(requestedUrl, "https")) {
       proxyAddress = env.get("https_proxy");
       if (Strings.isNullOrEmpty(proxyAddress)) {
@@ -118,15 +140,9 @@ public class ProxyHelper {
       try {
         port = Integer.parseInt(portRaw);
       } catch (NumberFormatException e) {
-        throw new IOException("Error parsing proxy port: " + cleanProxyAddress);
+        throw new IOException("Error parsing proxy port: " + cleanProxyAddress, e);
       }
     }
-
-    // We need to set both of these because jgit uses whichever the resource dictates
-    System.setProperty("https.proxyHost", hostname);
-    System.setProperty("https.proxyPort", Integer.toString(port));
-    System.setProperty("http.proxyHost", hostname);
-    System.setProperty("http.proxyPort", Integer.toString(port));
 
     if (username != null) {
       if (password == null) {
@@ -136,11 +152,6 @@ public class ProxyHelper {
       // We need to make sure the proxy password is not url encoded; some special characters in
       // proxy passwords require url encoding for shells and other tools to properly consume.
       final String decodedPassword = URLDecoder.decode(password, "UTF-8");
-      System.setProperty("http.proxyUser", username);
-      System.setProperty("http.proxyPassword", decodedPassword);
-      System.setProperty("https.proxyUser", username);
-      System.setProperty("https.proxyPassword", decodedPassword);
-
       Authenticator.setDefault(
           new Authenticator() {
             @Override

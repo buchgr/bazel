@@ -22,8 +22,10 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.packages.License.DistributionType;
 import com.google.devtools.build.lib.packages.License.LicenseParsingException;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
 import com.google.devtools.build.lib.syntax.EvalException;
@@ -41,7 +43,6 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 import javax.annotation.Nullable;
 
@@ -51,96 +52,79 @@ import javax.annotation.Nullable;
 public final class BuildType {
 
   /**
-   * The type of a label. Labels are not actually a first-class datatype in
-   * the build language, but they are so frequently used in the definitions of
-   * attributes that it's worth treating them specially (and providing support
-   * for resolution of relative-labels in the <code>convert()</code> method).
+   * The type of a label. Labels are not actually a first-class datatype in the build language, but
+   * they are so frequently used in the definitions of attributes that it's worth treating them
+   * specially (and providing support for resolution of relative-labels in the <code>convert()
+   * </code> method).
    */
-  public static final Type<Label> LABEL = new LabelType(LabelClass.DEPENDENCY);
-  /**
-   * The type of a dictionary of {@linkplain #LABEL labels}.
-   */
-  public static final DictType<String, Label> LABEL_DICT_UNARY = DictType.create(
-      Type.STRING, LABEL);
-  /**
-   * The type of a dictionary keyed by {@linkplain #LABEL labels} with string values.
-   */
+  @AutoCodec public static final Type<Label> LABEL = new LabelType(LabelClass.DEPENDENCY);
+  /** The type of a dictionary of {@linkplain #LABEL labels}. */
+  @AutoCodec
+  public static final DictType<String, Label> LABEL_DICT_UNARY =
+      DictType.create(Type.STRING, LABEL);
+  /** The type of a dictionary keyed by {@linkplain #LABEL labels} with string values. */
+  @AutoCodec
   public static final DictType<Label, String> LABEL_KEYED_STRING_DICT =
       LabelKeyedDictType.create(Type.STRING);
+  /** The type of a list of {@linkplain #LABEL labels}. */
+  @AutoCodec public static final ListType<Label> LABEL_LIST = ListType.create(LABEL);
   /**
-   *  The type of a list of {@linkplain #LABEL labels}.
+   * This is a label type that does not cause dependencies. It is needed because certain rules want
+   * to verify the type of a target referenced by one of their attributes, but if there was a
+   * dependency edge there, it would be a circular dependency.
    */
-  public static final ListType<Label> LABEL_LIST = ListType.create(LABEL);
-  /**
-   * This is a label type that does not cause dependencies. It is needed because
-   * certain rules want to verify the type of a target referenced by one of their attributes, but
-   * if there was a dependency edge there, it would be a circular dependency.
-   */
+  @AutoCodec
   public static final Type<Label> NODEP_LABEL = new LabelType(LabelClass.NONDEP_REFERENCE);
+  /** The type of a list of {@linkplain #NODEP_LABEL labels} that do not cause dependencies. */
+  @AutoCodec public static final ListType<Label> NODEP_LABEL_LIST = ListType.create(NODEP_LABEL);
   /**
-   *  The type of a list of {@linkplain #NODEP_LABEL labels} that do not cause
-   *  dependencies.
+   * The type of a license. Like Label, licenses aren't first-class, but they're important enough to
+   * justify early syntax error detection.
    */
-  public static final ListType<Label> NODEP_LABEL_LIST = ListType.create(NODEP_LABEL);
-  /**
-   * The type of a license. Like Label, licenses aren't first-class, but
-   * they're important enough to justify early syntax error detection.
-   */
-  public static final Type<License> LICENSE = new LicenseType();
-  /**
-   * The type of a single distribution.  Only used internally, as a type
-   * symbol, not a converter.
-   */
-  public static final Type<DistributionType> DISTRIBUTION = new Type<DistributionType>() {
-    @Override
-    public DistributionType cast(Object value) {
-      return (DistributionType) value;
-    }
+  @AutoCodec public static final Type<License> LICENSE = new LicenseType();
+  /** The type of a single distribution. Only used internally, as a type symbol, not a converter. */
+  @AutoCodec
+  public static final Type<DistributionType> DISTRIBUTION =
+      new Type<DistributionType>() {
+        @Override
+        public DistributionType cast(Object value) {
+          return (DistributionType) value;
+        }
 
-    @Override
-    public DistributionType convert(Object x, Object what, Object context) {
-      throw new UnsupportedOperationException();
-    }
+        @Override
+        public DistributionType convert(Object x, Object what, Object context) {
+          throw new UnsupportedOperationException();
+        }
 
-    @Override
-    public DistributionType getDefaultValue() {
-      return null;
-    }
+        @Override
+        public DistributionType getDefaultValue() {
+          return null;
+        }
 
-    @Override
-    public <T> void visitLabels(LabelVisitor<T> visitor, Object value, T context) {
-    }
+        @Override
+        public <T> void visitLabels(LabelVisitor<T> visitor, Object value, T context) {}
 
-    @Override
-    public String toString() {
-      return "distribution";
-    }
-  };
+        @Override
+        public String toString() {
+          return "distribution";
+        }
+      };
   /**
-   * The type of a set of distributions. Distributions are not a first-class type,
-   * but they do warrant early syntax checking.
+   * The type of a set of distributions. Distributions are not a first-class type, but they do
+   * warrant early syntax checking.
    */
-  public static final Type<Set<DistributionType>> DISTRIBUTIONS = new Distributions();
-  /**
-   *  The type of an output file, treated as a {@link #LABEL}.
-   */
-  public static final Type<Label> OUTPUT = new OutputType();
-  /**
-   *  The type of a list of {@linkplain #OUTPUT outputs}.
-   */
-  public static final ListType<Label> OUTPUT_LIST = ListType.create(OUTPUT);
-  /**
-   * The type of a FilesetEntry attribute inside a Fileset.
-   */
-  public static final Type<FilesetEntry> FILESET_ENTRY = new FilesetEntryType();
-  /**
-   * The type of a list of {@linkplain #FILESET_ENTRY FilesetEntries}.
-   */
+  @AutoCodec public static final Type<Set<DistributionType>> DISTRIBUTIONS = new Distributions();
+  /** The type of an output file, treated as a {@link #LABEL}. */
+  @AutoCodec public static final Type<Label> OUTPUT = new OutputType();
+  /** The type of a list of {@linkplain #OUTPUT outputs}. */
+  @AutoCodec public static final ListType<Label> OUTPUT_LIST = ListType.create(OUTPUT);
+  /** The type of a FilesetEntry attribute inside a Fileset. */
+  @AutoCodec public static final Type<FilesetEntry> FILESET_ENTRY = new FilesetEntryType();
+  /** The type of a list of {@linkplain #FILESET_ENTRY FilesetEntries}. */
+  @AutoCodec
   public static final ListType<FilesetEntry> FILESET_ENTRY_LIST = ListType.create(FILESET_ENTRY);
-  /**
-   * The type of a TriState with values: true (x>0), false (x==0), auto (x<0).
-   */
-  public static final Type<TriState> TRISTATE = new TriStateType();
+  /** The type of a TriState with values: true (x>0), false (x==0), auto (x<0). */
+  @AutoCodec public static final Type<TriState> TRISTATE = new TriStateType();
 
   private BuildType() {
     // Do not instantiate
@@ -162,7 +146,7 @@ public final class BuildType {
    * <p>The caller is responsible for casting the returned value appropriately.
    */
   public static <T> Object selectableConvert(
-      Type type, Object x, Object what, @Nullable Label context)
+      Type<T> type, Object x, Object what, LabelConversionContext context)
       throws ConversionException {
     if (x instanceof com.google.devtools.build.lib.syntax.SelectorList) {
       return new SelectorList<T>(
@@ -205,11 +189,35 @@ public final class BuildType {
     }
 
     @Override
-    public <T> void visitLabels(LabelVisitor<T> visitor, Object value, T context)
-        throws InterruptedException {
+    public <T> void visitLabels(LabelVisitor<T> visitor, Object value, T context) {
       for (Label label : cast(value).getLabels()) {
         visitor.visit(label, context);
       }
+    }
+  }
+
+  /** Context in which to evaluate a label with repository remappings */
+  public static class LabelConversionContext {
+    private final Label label;
+    private final ImmutableMap<RepositoryName, RepositoryName> repositoryMapping;
+
+    public LabelConversionContext(
+        Label label, ImmutableMap<RepositoryName, RepositoryName> repositoryMapping) {
+      this.label = label;
+      this.repositoryMapping = repositoryMapping;
+    }
+
+    public Label getLabel() {
+      return label;
+    }
+
+    public ImmutableMap<RepositoryName, RepositoryName> getRepositoryMapping() {
+      return repositoryMapping;
+    }
+
+    @Override
+    public String toString() {
+      return label.toString();
     }
   }
 
@@ -231,8 +239,7 @@ public final class BuildType {
     }
 
     @Override
-    public <T> void visitLabels(LabelVisitor<T> visitor, Object value, T context)
-        throws InterruptedException {
+    public <T> void visitLabels(LabelVisitor<T> visitor, Object value, T context) {
       visitor.visit(cast(value), context);
     }
 
@@ -253,10 +260,26 @@ public final class BuildType {
         return (Label) x;
       }
       try {
-        if (x instanceof String && context == null) {
-          return Label.parseAbsolute((String) x, false);
+        if (!(x instanceof String)) {
+          throw new ConversionException(Type.STRING, x, what);
         }
-        return ((Label) context).getRelative(STRING.convert(x, what, context));
+        // TODO(b/110101445): check if context is ever actually null
+        if (context == null) {
+          return Label.parseAbsolute(
+              (String) x, /* defaultToMain= */ false, /* repositoryMapping= */ ImmutableMap.of());
+          // TODO(b/110308446): remove instances of context being a Label
+        } else if (context instanceof Label) {
+          return ((Label) context)
+              .getRelativeWithRemapping(STRING.convert(x, what, context), ImmutableMap.of());
+        } else if (context instanceof LabelConversionContext) {
+          LabelConversionContext labelConversionContext = (LabelConversionContext) context;
+          return labelConversionContext
+              .getLabel()
+              .getRelativeWithRemapping(
+                  STRING.convert(x, what, context), labelConversionContext.getRepositoryMapping());
+        } else {
+          throw new ConversionException("invalid context '" + context + "' in " + what);
+        }
       } catch (LabelSyntaxException e) {
         throw new ConversionException("invalid label '" + x + "' in "
             + what + ": " + e.getMessage());
@@ -276,7 +299,7 @@ public final class BuildType {
     public static <ValueT> LabelKeyedDictType<ValueT> create(Type<ValueT> valueType) {
       Preconditions.checkArgument(
           valueType.getLabelClass() == LabelClass.NONE
-          || valueType.getLabelClass() == LabelClass.DEPENDENCY,
+              || valueType.getLabelClass() == LabelClass.DEPENDENCY,
           "Values associated with label keys must not be labels themselves.");
       return new LabelKeyedDictType<>(valueType);
     }
@@ -285,7 +308,7 @@ public final class BuildType {
     public Map<Label, ValueT> convert(Object x, Object what, Object context)
         throws ConversionException {
       Map<Label, ValueT> result = super.convert(x, what, context);
-      // The input is known to be a map because super.convert succeded; otherwise, a
+      // The input is known to be a map because super.convert succeeded; otherwise, a
       // ConversionException would have been thrown.
       Map<?, ?> input = (Map<?, ?>) x;
 
@@ -418,8 +441,7 @@ public final class BuildType {
     }
 
     @Override
-    public <T> void visitLabels(LabelVisitor<T> visitor, Object value, T context)
-        throws InterruptedException {
+    public <T> void visitLabels(LabelVisitor<T> visitor, Object value, T context) {
       visitor.visit(cast(value), context);
     }
 
@@ -445,16 +467,22 @@ public final class BuildType {
       }
       try {
         // Enforce value is relative to the context.
-        Label currentRule = (Label) context;
-        Label result = currentRule.getRelative(value);
+        Label currentRule;
+        ImmutableMap<RepositoryName, RepositoryName> repositoryMapping = ImmutableMap.of();
+        if (context instanceof LabelConversionContext) {
+          currentRule = ((LabelConversionContext) context).getLabel();
+          repositoryMapping = ((LabelConversionContext) context).getRepositoryMapping();
+        } else {
+          throw new ConversionException("invalid context '" + context + "' in " + what);
+        }
+        Label result = currentRule.getRelativeWithRemapping(value, repositoryMapping);
         if (!result.getPackageIdentifier().equals(currentRule.getPackageIdentifier())) {
           throw new ConversionException("label '" + value + "' is not in the current package");
         }
         return result;
       } catch (LabelSyntaxException e) {
         throw new ConversionException(
-            "illegal output file name '" + value + "' in rule " + context + ": "
-            + e.getMessage());
+            "illegal output file name '" + value + "' in rule " + context + ": " + e.getMessage());
       }
     }
   }
@@ -469,8 +497,9 @@ public final class BuildType {
     private final List<Selector<T>> elements;
 
     @VisibleForTesting
-    SelectorList(List<Object> x, Object what, @Nullable Label context,
-        Type<T> originalType) throws ConversionException {
+    SelectorList(
+        List<Object> x, Object what, @Nullable LabelConversionContext context, Type<T> originalType)
+        throws ConversionException {
       if (x.size() > 1 && originalType.concat(ImmutableList.<T>of()) == null) {
         throw new ConversionException(
             String.format("type '%s' doesn't support select concatenation", originalType));
@@ -517,11 +546,11 @@ public final class BuildType {
     public Set<Label> getKeyLabels() {
       ImmutableSet.Builder<Label> keys = ImmutableSet.builder();
       for (Selector<T> selector : getSelectors()) {
-         for (Label label : selector.getEntries().keySet()) {
-           if (!Selector.isReservedLabel(label)) {
-             keys.add(label);
-           }
-         }
+        for (Label label : selector.getEntries().keySet()) {
+          if (!Selector.isReservedLabel(label)) {
+            keys.add(label);
+          }
+        }
       }
       return keys.build();
     }
@@ -567,24 +596,29 @@ public final class BuildType {
     private final String noMatchError;
     private final boolean hasDefaultCondition;
 
-    /**
-     * Creates a new Selector using the default error message when no conditions match.
-     */
-    Selector(ImmutableMap<?, ?> x, Object what, @Nullable Label context, Type<T> originalType)
+    /** Creates a new Selector using the default error message when no conditions match. */
+    Selector(
+        ImmutableMap<?, ?> x,
+        Object what,
+        @Nullable LabelConversionContext context,
+        Type<T> originalType)
         throws ConversionException {
       this(x, what, context, originalType, "");
     }
 
-    /**
-     * Creates a new Selector with a custom error message for when no conditions match.
-     */
-    Selector(ImmutableMap<?, ?> x, Object what, @Nullable Label context, Type<T> originalType,
-        String noMatchError) throws ConversionException {
+    /** Creates a new Selector with a custom error message for when no conditions match. */
+    Selector(
+        ImmutableMap<?, ?> x,
+        Object what,
+        @Nullable LabelConversionContext context,
+        Type<T> originalType,
+        String noMatchError)
+        throws ConversionException {
       this.originalType = originalType;
       LinkedHashMap<Label, T> result = Maps.newLinkedHashMapWithExpectedSize(x.size());
       ImmutableSet.Builder<Label> defaultValuesBuilder = ImmutableSet.builder();
       boolean foundDefaultCondition = false;
-      for (Entry<?, ?> entry : x.entrySet()) {
+      for (Map.Entry<?, ?> entry : x.entrySet()) {
         Label key = LABEL.convert(entry.getKey(), what, context);
         if (key.equals(DEFAULT_CONDITION_LABEL)) {
           foundDefaultCondition = true;
@@ -594,7 +628,11 @@ public final class BuildType {
           result.put(key, originalType.getDefaultValue());
           defaultValuesBuilder.add(key);
         } else {
-          result.put(key, originalType.convert(entry.getValue(), what, context));
+          String selectBranch = what == null
+              ? null
+              : String.format("each branch in select expression of %s (including '%s')",
+                  what.toString(), key.toString());
+          result.put(key, originalType.convert(entry.getValue(), selectBranch, context));
         }
       }
       this.map = Collections.unmodifiableMap(result);
@@ -686,12 +724,10 @@ public final class BuildType {
   }
 
   /**
-   * Tristate values are needed for cases where user intent matters.
-   *
-   * <p>Tristate values are not explicitly interchangeable with booleans and are
-   * handled explicitly as TriStates. Prefer Booleans with default values where
-   * possible.  The main use case for TriState values is when a Rule's behavior
-   * must interact with a Flag value in a complicated way.</p>
+   * A TriState value is like a boolean attribute whose default value may be distinguished from
+   * either of the possible explicitly assigned values. TriState attributes may be assigned the
+   * values 0 (NO), 1 (YES), or None (AUTO). TriState is deprecated; use attr.int(values=[-1, 0, 1])
+   * instead.
    */
   private static class TriStateType extends Type<TriState> {
     @Override
@@ -713,7 +749,6 @@ public final class BuildType {
       return "tristate";
     }
 
-    // Like BooleanType, this must handle integers as well.
     @Override
     public TriState convert(Object x, Object what, Object context)
         throws ConversionException {
@@ -721,6 +756,11 @@ public final class BuildType {
         return (TriState) x;
       }
       if (x instanceof Boolean) {
+        // TODO(adonovan): re-enable this under flag control; see b/116691720.
+        // throw new ConversionException(this, x,
+        //   "rule attribute (tristate is being replaced by "
+        //       + "attr.int(values=[-1, 0, 1]), and it no longer accepts Boolean values; "
+        //       + "instead, use 0 or 1, or None for the default)");
         return ((Boolean) x) ? TriState.YES : TriState.NO;
       }
       Integer xAsInteger = INTEGER.convert(x, what, context);

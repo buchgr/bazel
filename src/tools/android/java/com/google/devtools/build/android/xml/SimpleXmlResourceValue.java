@@ -13,9 +13,14 @@
 // limitations under the License.
 package com.google.devtools.build.android.xml;
 
+import com.android.aapt.Resources.Item;
+import com.android.aapt.Resources.StyledString;
+import com.android.aapt.Resources.StyledString.Span;
+import com.android.aapt.Resources.Value;
 import com.android.resources.ResourceType;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.xml.XmlEscapers;
 import com.google.devtools.build.android.AndroidDataWritingVisitor;
 import com.google.devtools.build.android.AndroidDataWritingVisitor.StartTag;
 import com.google.devtools.build.android.AndroidResourceSymbolSink;
@@ -24,10 +29,11 @@ import com.google.devtools.build.android.FullyQualifiedName;
 import com.google.devtools.build.android.XmlResourceValue;
 import com.google.devtools.build.android.XmlResourceValues;
 import com.google.devtools.build.android.proto.SerializeFormat;
-import com.google.devtools.build.android.proto.SerializeFormat.DataValueXml.Builder;
+import com.google.devtools.build.android.proto.SerializeFormat.DataValueXml;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.Objects;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
@@ -36,8 +42,7 @@ import javax.xml.namespace.QName;
 /**
  * Represents a simple Android resource xml value.
  *
- * <p>
- * There is a class of resources that are simple name/value pairs: string
+ * <p>There is a class of resources that are simple name/value pairs: string
  * (http://developer.android.com/guide/topics/resources/string-resource.html), bool
  * (http://developer.android.com/guide/topics/resources/more-resources.html#Bool), color
  * (http://developer.android.com/guide/topics/resources/more-resources.html#Color), and dimen
@@ -54,80 +59,36 @@ public class SimpleXmlResourceValue implements XmlResourceValue {
   static final QName TAG_FRACTION = QName.valueOf("fraction");
   static final QName TAG_INTEGER = QName.valueOf("integer");
   static final QName TAG_ITEM = QName.valueOf("item");
+  static final QName TAG_LAYOUT = QName.valueOf("layout");
+  static final QName TAG_MENU = QName.valueOf("menu");
+  static final QName TAG_MIPMAP = QName.valueOf("mipmap");
+  static final QName TAG_NAVIGATION = QName.valueOf("navigation");
   static final QName TAG_PUBLIC = QName.valueOf("public");
+  static final QName TAG_RAW = QName.valueOf("raw");
   static final QName TAG_STRING = QName.valueOf("string");
 
   /** Provides an enumeration resource type and simple value validation. */
   public enum Type {
-    BOOL(TAG_BOOL) {
-      @Override
-      public boolean validate(String value) {
-        final String cleanValue = value.toLowerCase().trim();
-        return "true".equals(cleanValue) || "false".equals(cleanValue);
-      }
-    },
-    COLOR(TAG_COLOR) {
-      @Override
-      public boolean validate(String value) {
-        // TODO(corysmith): Validate the hex color.
-        return true;
-      }
-    },
-    DIMEN(TAG_DIMEN) {
-      @Override
-      public boolean validate(String value) {
-        // TODO(corysmith): Validate the dimension type.
-        return true;
-      }
-    },
-    DRAWABLE(TAG_DRAWABLE) {
-      @Override
-      public boolean validate(String value) {
-        // TODO(corysmith): Validate the drawable type.
-        return true;
-      }
-    },
-    FRACTION(TAG_FRACTION) {
-      @Override
-      public boolean validate(String value) {
-        // TODO(corysmith): Validate the fraction type.
-        return true;
-      }
-    },
-    INTEGER(TAG_INTEGER) {
-      @Override
-      public boolean validate(String value) {
-        // TODO(corysmith): Validate the integer type.
-        return true;
-      }
-    },
-    ITEM(TAG_ITEM) {
-      @Override
-      public boolean validate(String value) {
-        // TODO(corysmith): Validate the item type.
-        return true;
-      }
-    },
-    PUBLIC(TAG_PUBLIC) {
-      @Override
-      public boolean validate(String value) {
-        // TODO(corysmith): Validate the public type.
-        return true;
-      }
-    },
-    STRING(TAG_STRING) {
-      @Override
-      public boolean validate(String value) {
-        return true;
-      }
-    };
-    private QName tagName;
+    BOOL(TAG_BOOL),
+    COLOR(TAG_COLOR),
+    DIMEN(TAG_DIMEN),
+    DRAWABLE(TAG_DRAWABLE),
+    FONT(TAG_ITEM),
+    FRACTION(TAG_FRACTION),
+    INTEGER(TAG_INTEGER),
+    ITEM(TAG_ITEM),
+    LAYOUT(TAG_LAYOUT),
+    MENU(TAG_MENU),
+    MIPMAP(TAG_MIPMAP),
+    NAVIGATION(TAG_NAVIGATION),
+    PUBLIC(TAG_PUBLIC),
+    RAW(TAG_RAW),
+    STRING(TAG_STRING);
+    private final QName tagName;
 
     Type(QName tagName) {
       this.tagName = tagName;
     }
-
-    abstract boolean validate(String value);
 
     public static Type from(ResourceType resourceType) {
       for (Type valueType : values()) {
@@ -140,8 +101,7 @@ public class SimpleXmlResourceValue implements XmlResourceValue {
       throw new IllegalArgumentException(
           String.format(
               "%s resource type not found in available types: %s",
-              resourceType,
-              Arrays.toString(values())));
+              resourceType, Arrays.toString(values())));
     }
   }
 
@@ -163,8 +123,7 @@ public class SimpleXmlResourceValue implements XmlResourceValue {
     return of(Type.ITEM, ImmutableMap.of("type", resourceType.getName(), "format", format), value);
   }
 
-  public static XmlResourceValue itemWithValue(
-      ResourceType resourceType, String value) {
+  public static XmlResourceValue itemWithValue(ResourceType resourceType, String value) {
     return of(Type.ITEM, ImmutableMap.of("type", resourceType.getName()), value);
   }
 
@@ -211,6 +170,48 @@ public class SimpleXmlResourceValue implements XmlResourceValue {
         proto.hasValue() ? proto.getValue() : null);
   }
 
+  public static XmlResourceValue from(Value proto, ResourceType resourceType) {
+    Item item = proto.getItem();
+    String stringValue = null;
+    ImmutableMap.Builder<String, String> attributes = ImmutableMap.builder();
+
+    if (item.hasStr()) {
+      stringValue = XmlEscapers.xmlContentEscaper().escape(item.getStr().getValue());
+    } else if (item.hasRef()) {
+      stringValue = "@" + item.getRef().getName();
+      attributes.put("format", "reference");
+    } else if (item.hasStyledStr()) {
+      StyledString styledString = item.getStyledStr();
+      StringBuilder stringBuilder = new StringBuilder(styledString.getValue());
+
+      for (Span span : styledString.getSpanList()) {
+        stringBuilder.append(
+            String.format(";%s,%d,%d", span.getTag(), span.getFirstChar(), span.getLastChar()));
+      }
+      stringValue = stringBuilder.toString();
+    } else if ((resourceType == ResourceType.COLOR || resourceType == ResourceType.DRAWABLE)
+        && item.hasPrim()) {
+      stringValue =
+          String.format("#%1$8s", Integer.toHexString(item.getPrim().getData())).replace(' ', '0');
+    } else if (resourceType == ResourceType.INTEGER && item.hasPrim()) {
+      stringValue = Integer.toString(item.getPrim().getData());
+    } else if (resourceType == ResourceType.BOOL && item.hasPrim()) {
+      stringValue = item.getPrim().getData() == 0 ? "false" : "true";
+    } else if (resourceType == ResourceType.FRACTION
+        || resourceType == ResourceType.DIMEN
+        || resourceType == ResourceType.STRING) {
+      stringValue = Integer.toString(item.getPrim().getData());
+    } else {
+      throw new IllegalArgumentException(
+          String.format("'%s' with value %s is not a simple resource type.", resourceType, proto));
+    }
+
+    return of(
+        Type.valueOf(resourceType.toString().toUpperCase(Locale.ENGLISH)),
+        attributes.build(),
+        stringValue);
+  }
+
   @Override
   public void writeResourceToClass(FullyQualifiedName key, AndroidResourceSymbolSink sink) {
     sink.acceptSimpleResource(key.type(), key.name());
@@ -221,7 +222,7 @@ public class SimpleXmlResourceValue implements XmlResourceValue {
       throws IOException {
     SerializeFormat.DataValue.Builder builder =
         XmlResourceValues.newSerializableDataValueBuilder(sourceId);
-    Builder xmlValueBuilder =
+    DataValueXml.Builder xmlValueBuilder =
         builder
             .getXmlValueBuilder()
             .putAllNamespace(namespaces.asMap())
@@ -265,7 +266,12 @@ public class SimpleXmlResourceValue implements XmlResourceValue {
   public XmlResourceValue combineWith(XmlResourceValue value) {
     throw new IllegalArgumentException(this + " is not a combinable resource.");
   }
-  
+
+  @Override
+  public int compareMergePriorityTo(XmlResourceValue value) {
+    return 0;
+  }
+
   @Override
   public String asConflictStringWith(DataSource source) {
     if (value != null) {

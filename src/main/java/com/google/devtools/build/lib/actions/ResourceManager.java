@@ -17,11 +17,14 @@ package com.google.devtools.build.lib.actions;
 import static com.google.devtools.build.lib.profiler.AutoProfiler.profiled;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.profiler.AutoProfiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
+import com.google.devtools.build.lib.unix.ProcMeminfoParser;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.Pair;
-import com.google.devtools.build.lib.util.Preconditions;
+import java.io.IOException;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
@@ -113,7 +116,6 @@ public class ResourceManager {
   // using less than requested amount.
   private static final double MIN_NECESSARY_CPU_RATIO = 0.6;
   private static final double MIN_NECESSARY_RAM_RATIO = 1.0;
-  private static final double MIN_NECESSARY_IO_RATIO = 1.0;
 
   // List of blocked threads. Associated CountDownLatch object will always
   // be initialized to 1 during creation in the acquire() method.
@@ -124,7 +126,7 @@ public class ResourceManager {
   // LocalHostCapacity.getLocalHostCapacity() as an argument.
   private ResourceSet staticResources = null;
 
-  private ResourceSet availableResources = null;
+  @VisibleForTesting public ResourceSet availableResources = null;
 
   // Used amount of CPU capacity (where 1.0 corresponds to the one fully
   // occupied CPU core. Corresponds to the CPU resource definition in the
@@ -135,16 +137,15 @@ public class ResourceManager {
   // definition in the ResourceSet class.
   private double usedRam;
 
-  // Used amount of I/O resources. Corresponds to the I/O resource
-  // definition in the ResourceSet class.
-  private double usedIo;
-
   // Used local test count. Corresponds to the local test count definition in the ResourceSet class.
   private int usedLocalTestCount;
 
   // Specifies how much of the RAM in staticResources we should allow to be used.
   public static final int DEFAULT_RAM_UTILIZATION_PERCENTAGE = 67;
   private int ramUtilizationPercentage = DEFAULT_RAM_UTILIZATION_PERCENTAGE;
+
+  // Determines if local memory estimates are used.
+  private boolean localMemoryEstimate = false;
 
   private ResourceManager() {
     requestList = new LinkedList<>();
@@ -161,7 +162,6 @@ public class ResourceManager {
   public synchronized void resetResourceUsage() {
     usedCpu = 0;
     usedRam = 0;
-    usedIo = 0;
     usedLocalTestCount = 0;
     for (Pair<ResourceSet, CountDownLatch> request : requestList) {
       // CountDownLatch can be set only to 0 or 1.
@@ -180,7 +180,6 @@ public class ResourceManager {
     availableResources = ResourceSet.create(
         staticResources.getMemoryMb() * this.ramUtilizationPercentage / 100.0,
         staticResources.getCpuUsage(),
-        staticResources.getIoUsage(),
         staticResources.getLocalTestCount());
     processWaitingThreads();
   }
@@ -190,6 +189,14 @@ public class ResourceManager {
    */
   public synchronized void setRamUtilizationPercentage(int percentage) {
     ramUtilizationPercentage = percentage;
+  }
+
+  /**
+   * If set to true, then resource acquisition will query the currently available memory, rather
+   * than counting it against the fixed maximum size.
+   */
+  public void setUseLocalMemoryEstimate(boolean value) {
+    localMemoryEstimate = value;
   }
 
   /**
@@ -203,7 +210,7 @@ public class ResourceManager {
     Preconditions.checkState(
         !threadHasResources(), "acquireResources with existing resource lock during %s", owner);
 
-    AutoProfiler p = profiled(owner, ProfilerTask.ACTION_LOCK);
+    AutoProfiler p = profiled(owner.describe(), ProfilerTask.ACTION_LOCK);
     CountDownLatch latch = null;
     try {
       latch = acquire(resources);
@@ -267,7 +274,6 @@ public class ResourceManager {
   private void incrementResources(ResourceSet resources) {
     usedCpu += resources.getCpuUsage();
     usedRam += resources.getMemoryMb();
-    usedIo += resources.getIoUsage();
     usedLocalTestCount += resources.getLocalTestCount();
   }
 
@@ -275,8 +281,7 @@ public class ResourceManager {
    * Return true if any resources have been claimed through this manager.
    */
   public synchronized boolean inUse() {
-    return usedCpu != 0.0 || usedRam != 0.0 || usedIo != 0.0 || usedLocalTestCount != 0
-        || !requestList.isEmpty();
+    return usedCpu != 0.0 || usedRam != 0.0 || usedLocalTestCount != 0 || !requestList.isEmpty();
   }
 
 
@@ -300,7 +305,7 @@ public class ResourceManager {
         threadHasResources(), "releaseResources without resource lock during %s", owner);
 
     boolean isConflict = false;
-    AutoProfiler p = profiled(owner, ProfilerTask.ACTION_RELEASE);
+    AutoProfiler p = profiled(owner.describe(), ProfilerTask.ACTION_RELEASE);
     try {
       isConflict = release(resources);
     } finally {
@@ -327,7 +332,6 @@ public class ResourceManager {
   private synchronized boolean release(ResourceSet resources) {
     usedCpu -= resources.getCpuUsage();
     usedRam -= resources.getMemoryMb();
-    usedIo -= resources.getIoUsage();
     usedLocalTestCount -= resources.getLocalTestCount();
 
     // TODO(bazel-team): (2010) rounding error can accumulate and value below can end up being
@@ -338,9 +342,6 @@ public class ResourceManager {
     }
     if (usedRam < epsilon) {
       usedRam = 0;
-    }
-    if (usedIo < epsilon) {
-      usedIo = 0;
     }
     if (!requestList.isEmpty()) {
       processWaitingThreads();
@@ -374,7 +375,7 @@ public class ResourceManager {
     Preconditions.checkNotNull(availableResources);
     // Comparison below is robust, since any calculation errors will be fixed
     // by the release() method.
-    if (usedCpu == 0.0 && usedRam == 0.0 && usedIo == 0.0 && usedLocalTestCount == 0) {
+    if (usedCpu == 0.0 && usedRam == 0.0 && usedLocalTestCount == 0) {
       return true;
     }
     // Use only MIN_NECESSARY_???_RATIO of the resource value to check for
@@ -384,13 +385,36 @@ public class ResourceManager {
     // mark whole requested amount as used.
     double cpu = resources.getCpuUsage() * MIN_NECESSARY_CPU_RATIO;
     double ram = resources.getMemoryMb() * MIN_NECESSARY_RAM_RATIO;
-    double io = resources.getIoUsage() * MIN_NECESSARY_IO_RATIO;
     int localTestCount = resources.getLocalTestCount();
 
     double availableCpu = availableResources.getCpuUsage();
     double availableRam = availableResources.getMemoryMb();
-    double availableIo = availableResources.getIoUsage();
     int availableLocalTestCount = availableResources.getLocalTestCount();
+
+    double remainingRam = availableRam - usedRam;
+
+    if (localMemoryEstimate && OS.getCurrent() == OS.LINUX) {
+      try {
+        ProcMeminfoParser memInfo = new ProcMeminfoParser();
+        double totalFreeRam = memInfo.getFreeRamKb() / 1024;
+        double reserveMemory =
+            staticResources.getMemoryMb() * (100.0 - this.ramUtilizationPercentage) / 100.0;
+        remainingRam = totalFreeRam - reserveMemory;
+      } catch (IOException e) {
+        // If we get an error trying to determine the currently free
+        // system memory for any reason, just continue on.  It is not
+        // terribly clear what could cause this, aside from an
+        // unexpected ABI breakage in the linux kernel or an OS-level
+        // misconfiguration such as not having permissions to read
+        // /proc/meminfo.
+        //
+        // remainingRam is initialized to a value that results in
+        // behavior as if localMemoryEstimate was disabled.
+      } catch (ProcMeminfoParser.KeywordNotFoundException e) {
+        // Similarly fall back to the non-localMemoryEstimate
+        // behavior.
+      }
+    }
 
     // Resources are considered available if any one of the conditions below is true:
     // 1) If resource is not requested at all, it is available.
@@ -400,11 +424,10 @@ public class ResourceManager {
     // resources even if it requests more than available.
     // 3) If used resource amount is less than total available resource amount.
     boolean cpuIsAvailable = cpu == 0.0 || usedCpu == 0.0 || usedCpu + cpu <= availableCpu;
-    boolean ramIsAvailable = ram == 0.0 || usedRam == 0.0 || usedRam + ram <= availableRam;
-    boolean ioIsAvailable = io == 0.0 || usedIo == 0.0 || usedIo + io <= availableIo;
+    boolean ramIsAvailable = ram == 0.0 || usedRam == 0.0 || ram <= remainingRam;
     boolean localTestCountIsAvailable = localTestCount == 0 || usedLocalTestCount == 0
         || usedLocalTestCount + localTestCount <= availableLocalTestCount;
-    return cpuIsAvailable && ramIsAvailable && ioIsAvailable && localTestCountIsAvailable;
+    return cpuIsAvailable && ramIsAvailable && localTestCountIsAvailable;
   }
 
   @VisibleForTesting
@@ -413,7 +436,7 @@ public class ResourceManager {
   }
 
   @VisibleForTesting
-  synchronized boolean isAvailable(double ram, double cpu, double io, int localTestCount) {
-    return areResourcesAvailable(ResourceSet.create(ram, cpu, io, localTestCount));
+  synchronized boolean isAvailable(double ram, double cpu, int localTestCount) {
+    return areResourcesAvailable(ResourceSet.create(ram, cpu, localTestCount));
   }
 }

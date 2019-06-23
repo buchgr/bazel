@@ -13,15 +13,14 @@
 // limitations under the License.
 package com.google.devtools.build.lib.exec;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.ActionContext;
-import com.google.devtools.build.lib.actions.ActionInputFileCache;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
 import com.google.devtools.build.lib.actions.Executor;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.util.RegexFilter;
 import java.util.ArrayList;
 import java.util.List;
-import javax.annotation.Nullable;
 
 /**
  * Builder class to create an {@link Executor} instance. This class is part of the module API,
@@ -29,8 +28,8 @@ import javax.annotation.Nullable;
  */
 public class ExecutorBuilder {
   private final List<ActionContextProvider> actionContextProviders = new ArrayList<>();
-  private final List<ActionContextConsumer> actionContextConsumers = new ArrayList<>();
-  private ActionInputFileCache cache;
+  private final SpawnActionContextMaps.Builder spawnActionContextMapsBuilder =
+      new SpawnActionContextMaps.Builder();
   private ActionInputPrefetcher prefetcher;
 
   // These methods shouldn't be public, but they have to be right now as ExecutionTool is in another
@@ -39,13 +38,8 @@ public class ExecutorBuilder {
     return ImmutableList.copyOf(actionContextProviders);
   }
 
-  public ImmutableList<ActionContextConsumer> getActionContextConsumers() {
-    return ImmutableList.copyOf(actionContextConsumers);
-  }
-
-  @Nullable
-  public ActionInputFileCache getActionInputFileCache() {
-    return cache;
+  public SpawnActionContextMaps.Builder getSpawnActionContextMapsBuilder() {
+    return spawnActionContextMapsBuilder;
   }
 
   public ActionInputPrefetcher getActionInputPrefetcher() {
@@ -69,20 +63,43 @@ public class ExecutorBuilder {
   }
 
   /**
-   * Adds the specified action context consumer to the executor.
+   * Sets the strategy names for a given action mnemonic.
+   *
+   * <p>During execution, the {@link ProxySpawnActionContext} will ask each strategy whether it can
+   * execute a given Spawn. The first strategy in the list that says so will get the job.
    */
-  public ExecutorBuilder addActionContextConsumer(ActionContextConsumer consumer) {
-    this.actionContextConsumers.add(consumer);
+  public ExecutorBuilder addStrategyByMnemonic(String mnemonic, List<String> strategies) {
+    spawnActionContextMapsBuilder.strategyByMnemonicMap().replaceValues(mnemonic, strategies);
     return this;
   }
 
   /**
-   * Sets the cache for action input files. Only one module may set the cache. If multiple modules
-   * set it, this method will throw an {@link IllegalStateException}.
+   * Adds an implementation with a specific strategy name.
+   *
+   * <p>Modules are free to provide different implementations of {@code ActionContext}. This can be
+   * used, for example, to implement sandboxed or distributed execution of {@code SpawnAction}s in
+   * different ways, while giving the user control over how exactly they are executed.
+   *
+   * <p>Example: a module requires {@code MyCustomActionContext} to be available, but doesn't
+   * associate it with any strategy. Call
+   * <code>addStrategyByContext(MyCustomActionContext.class, "")</code>.
+   *
+   * <p>Example: a module requires {@code MyLocalCustomActionContext} to be available, and wants
+   * it to always use the "local" strategy. Call
+   * <code>addStrategyByContext(MyCustomActionContext.class, "local")</code>.
    */
-  public ExecutorBuilder setActionInputFileCache(ActionInputFileCache cache) {
-    Preconditions.checkState(this.cache == null);
-    this.cache = Preconditions.checkNotNull(cache);
+  public ExecutorBuilder addStrategyByContext(
+      Class<? extends ActionContext> actionContext, String strategy) {
+    spawnActionContextMapsBuilder.strategyByContextMap().put(actionContext, strategy);
+    return this;
+  }
+
+  /**
+   * Similar to {@link #addStrategyByMnemonic}, but allows specifying a regex for the set of
+   * matching mnemonics, instead of an exact string.
+   */
+  public ExecutorBuilder addStrategyByRegexp(RegexFilter regexFilter, List<String> strategy) {
+    spawnActionContextMapsBuilder.addStrategyByRegexp(regexFilter, strategy);
     return this;
   }
 

@@ -16,11 +16,11 @@ syntax = "proto3";
 
 package build_event_stream;
 
+import "src/main/protobuf/command_line.proto";
+import "src/main/protobuf/invocation_policy.proto";
+
 option java_package = "com.google.devtools.build.lib.buildeventstream";
 option java_outer_classname = "BuildEventStreamProtos";
-
-import "src/main/protobuf/invocation_policy.proto";
-import "src/main/protobuf/command_line.proto";
 
 // Identifier for a build event. It is deliberately structured to also provide
 // information about which build target etc the event is related to.
@@ -49,13 +49,11 @@ message BuildEventId {
 
   // Identifier of an event indicating the beginning of a build; this will
   // normally be the first event.
-  message BuildStartedId {
-  }
+  message BuildStartedId {}
 
   // Identifier on an event indicating the original commandline received by
   // the bazel server.
-  message UnstructuredCommandLineId {
-  }
+  message UnstructuredCommandLineId {}
 
   // Identifier on an event describing the commandline received by Bazel.
   message StructuredCommandLineId {
@@ -67,13 +65,11 @@ message BuildEventId {
   }
 
   // Identifier of an event indicating the workspace status.
-  message WorkspaceStatusId {
-  }
+  message WorkspaceStatusId {}
 
   // Identifier on an event reporting on the options included in the command
   // line, both explicitly and implicitly.
-  message OptionsParsedId {
-  }
+  message OptionsParsedId {}
 
   // Identifier of an event reporting that an external resource was fetched
   // from.
@@ -85,12 +81,14 @@ message BuildEventId {
   // Identifier of an event indicating that a target pattern has been expanded
   // further.
   // Messages of this shape are also used to describe parts of a pattern that
-  // have been skipped for some reason, if the actual expasion was still carried
-  // out (e.g., if keep_going is set). In this case, the pattern_skipped choice
-  // in the id field is to be made.
+  // have been skipped for some reason, if the actual expansion was still
+  // carried out (e.g., if keep_going is set). In this case, the
+  // pattern_skipped choice in the id field is to be made.
   message PatternExpandedId {
     repeated string pattern = 1;
   }
+
+  message WorkspaceConfigId {}
 
   // Identifier of an event indicating that a target has been expanded by
   // identifying for which configurations it should be build.
@@ -112,7 +110,7 @@ message BuildEventId {
 
   // Identifier of an event introducing a configuration.
   message ConfigurationId {
-    // Identifier of the configuraiton; users of the protocol should not make
+    // Identifier of the configuration; users of the protocol should not make
     // any assumptions about it having any structure, or equality of the
     // identifier between different streams.
     string id = 1;
@@ -123,7 +121,7 @@ message BuildEventId {
   message TargetCompletedId {
     string label = 1;
 
-    // The configuration for wich the target was built.
+    // The configuration for which the target was built.
     ConfigurationId configuration = 3;
 
     // If not empty, the id refers to the completion of the target for a given
@@ -132,7 +130,7 @@ message BuildEventId {
   }
 
   // Identifier of an event reporting that an action was completed (not all
-  // actions are reported, only the onces that can be considered important;
+  // actions are reported, only the ones that can be considered important;
   // this includes all failed actions).
   message ActionCompletedId {
     string primary_output = 1;
@@ -151,10 +149,19 @@ message BuildEventId {
     string label = 1;
   }
 
+  // Identifier of an event reporting an event associated with a configured
+  // label, usually a visibility error. In any case, an event with such an
+  // id will always report some form of error (i.e., the payload will be an
+  // Aborted event); there are no regular events using this identifier.
+  message ConfiguredLabelId {
+    string label = 1;
+    ConfigurationId configuration = 2;
+  }
+
   // Identifier of an event reporting on an individual test run. The label
   // identifies the test that is reported about, the remaining fields are
   // in such a way as to uniquely identify the action within a build. In fact,
-  // attempts for the same test, run, shard tripple are counted sequentially,
+  // attempts for the same test, run, shard triple are counted sequentially,
   // starting with 1.
   message TestResultId {
     string label = 1;
@@ -171,8 +178,15 @@ message BuildEventId {
   }
 
   // Identifier of the BuildFinished event, indicating the end of a build.
-  message BuildFinishedId {
-  }
+  message BuildFinishedId {}
+
+  // Identifier of an event providing additional logs/statistics after
+  // completion of the build.
+  message BuildToolLogsId {}
+
+  // Identifier of an event providing build metrics after completion
+  // of the build.
+  message BuildMetricsId {}
 
   oneof id {
     UnknownBuildEventId unknown = 1;
@@ -191,9 +205,13 @@ message BuildEventId {
     TargetCompletedId target_completed = 5;
     ActionCompletedId action_completed = 6;
     UnconfiguredLabelId unconfigured_label = 19;
+    ConfiguredLabelId configured_label = 21;
     TestResultId test_result = 8;
     TestSummaryId test_summary = 7;
     BuildFinishedId build_finished = 9;
+    BuildToolLogsId build_tool_logs = 20;
+    BuildMetricsId build_metrics = 22;
+    WorkspaceConfigId workspace = 23;
   }
 }
 
@@ -219,6 +237,12 @@ message Aborted {
     // The user requested the build to be aborted (e.g., by hitting Ctl-C).
     USER_INTERRUPTED = 1;
 
+    // The user requested that no analysis be performed.
+    NO_ANALYZE = 8;
+
+    // The user requested that no build be carried out.
+    NO_BUILD = 9;
+
     // The build or target was aborted as a timeout was exceeded.
     TIME_OUT = 2;
 
@@ -238,6 +262,10 @@ message Aborted {
 
     // Target build was skipped (e.g. due to incompatible CPU constraints).
     SKIPPED = 7;
+
+    // Build incomplete due to an earlier build failure (e.g. --keep_going was
+    // set to false causing the build be ended upon failure).
+    INCOMPLETE = 10;
   }
   AbortReason reason = 1;
 
@@ -254,7 +282,7 @@ message Aborted {
 message BuildStarted {
   string uuid = 1;
 
-  // Start of the build in ms since the epoche.
+  // Start of the build in ms since the epoch.
   // TODO(buchgr): Use google.protobuf.TimeStamp once bazel's protoc supports
   // it.
   int64 start_time_millis = 2;
@@ -273,6 +301,16 @@ message BuildStarted {
 
   // The directory of the workspace.
   string workspace_directory = 7;
+
+  // The process ID of the Bazel server.
+  int64 server_pid = 8;
+}
+
+// Configuration related to the blaze workspace and output tree.
+message WorkspaceConfig {
+  // The root of the local blaze exec root. All output files live underneath
+  // this at "blaze-out/".
+  string local_exec_root = 1;
 }
 
 // Payload of an event reporting the command-line of the invocation as
@@ -326,8 +364,7 @@ message Configuration {
 // The main information is in the chaining part: the id will contain the
 // target pattern that was expanded and the children id will contain the
 // target or target pattern it was expanded to.
-message PatternExpanded {
-}
+message PatternExpanded {}
 
 // Enumeration type characterizing the size of a test, as specified by the
 // test rule.
@@ -342,7 +379,7 @@ enum TestSize {
 // Payload of the event indicating that the configurations for a target have
 // been identified. As with pattern expansion the main information is in the
 // chaining part: the id will contain the target that was configured and the
-// children id will ctontain the configured targets it was configured to.
+// children id will contain the configured targets it was configured to.
 message TargetConfigured {
   // The kind of target (e.g.,  e.g. "cc_library rule", "source file",
   // "generated file") where the completion is reported.
@@ -357,6 +394,13 @@ message TargetConfigured {
 }
 
 message File {
+  // A sequence of prefixes to apply to the file name to construct a full path.
+  // In most but not all cases, there will be 3 entries:
+  //  1. A root output directory, eg "bazel-out"
+  //  2. A configuration mnemonic, eg "k8-fastbuild"
+  //  3. An output category, eg "genfiles"
+  repeated string path_prefix = 4;
+
   // identifier indicating the nature of the file (e.g., "stdout", "stderr")
   string name = 1;
 
@@ -387,6 +431,9 @@ message NamedSetOfFiles {
 message ActionExecuted {
   bool success = 1;
 
+  // The mnemonic of the action that was executed
+  string type = 8;
+
   // The exit code of the action, if it is available.
   int32 exit_code = 2;
 
@@ -406,6 +453,9 @@ message ActionExecuted {
 
   // Primary output; only provided for successful actions.
   File primary_output = 6;
+
+  // The command-line of the action, if the action is a command.
+  repeated string command_line = 9;
 }
 
 // Collection of all output files belonging to that output group.
@@ -447,6 +497,9 @@ message TargetComplete {
 
   // List of tags associated with this configured target.
   repeated string tag = 3;
+
+  // The timeout specified for test actions under this configured target.
+  int64 test_timeout_seconds = 7;
 }
 
 enum TestStatus {
@@ -459,7 +512,7 @@ enum TestStatus {
   REMOTE_FAILURE = 6;
   FAILED_TO_BUILD = 7;
   TOOL_HALTED_BEFORE_TESTING = 8;
-};
+}
 
 // Payload on events reporting about individual test action.
 message TestResult {
@@ -467,6 +520,10 @@ message TestResult {
 
   // The status of this test.
   TestStatus status = 5;
+
+  // Additional details about the status of the test. This is intended for
+  // user display and must not be parsed.
+  string status_details = 9;
 
   // True, if the reported attempt is taken from the tool's local cache.
   bool cached_locally = 4;
@@ -476,7 +533,7 @@ message TestResult {
   // build.
   int64 test_attempt_start_millis_epoch = 6;
 
-  // Time the test took to run. For locally chached results, this is the time
+  // Time the test took to run. For locally cached results, this is the time
   // the cached invocation took when it was invoked.
   int64 test_attempt_duration_millis = 3;
 
@@ -486,6 +543,44 @@ message TestResult {
 
   // Warnings generated by that test action.
   repeated string warning = 7;
+
+  // Message providing optional meta data on the execution of the test action,
+  // if available.
+  message ExecutionInfo {
+    // Deprecated, use TargetComplete.test_timeout_seconds instead.
+    int32 timeout_seconds = 1 [deprecated = true];
+
+    // Name of the strategy to execute this test action (e.g., "local",
+    // "remote")
+    string strategy = 2;
+
+    // True, if the reported attempt was a cache hit in a remote cache.
+    bool cached_remotely = 6;
+
+    // The exit code of the test action.
+    int32 exit_code = 7;
+
+    // The hostname of the machine where the test action was executed (in case
+    // of remote execution), if known.
+    string hostname = 3;
+
+    // Represents a hierarchical timing breakdown of an activity.
+    // The top level time should be the total time of the activity.
+    // Invariant: time_millis >= sum of time_millis of all direct children.
+    message TimingBreakdown {
+      repeated TimingBreakdown child = 1;
+      string name = 2;
+      int64 time_millis = 3;
+    }
+    TimingBreakdown timing_breakdown = 4;
+
+    message ResourceUsage {
+      string name = 1;
+      int64 value = 2;
+    }
+    repeated ResourceUsage resource_usage = 5;
+  }
+  ExecutionInfo execution_info = 8;
 }
 
 // Payload of the event summarizing a test.
@@ -516,7 +611,7 @@ message BuildFinished {
   // module might define. The predefined exit codes are subject to change (but
   // rarely do) and are not part of the public API.
   //
-  // A build was successfull iff ExitCode.code equals 0.
+  // A build was successful iff ExitCode.code equals 0.
   message ExitCode {
     // The name of the exit code.
     string name = 1;
@@ -528,7 +623,7 @@ message BuildFinished {
   // If the build succeeded or failed.
   bool overall_success = 1 [deprecated = true];
 
-  // The overall status of the build. A build was successfull iff
+  // The overall status of the build. A build was successful iff
   // ExitCode.code equals 0.
   ExitCode exit_code = 3;
 
@@ -536,6 +631,51 @@ message BuildFinished {
   // TODO(buchgr): Use google.protobuf.Timestamp once bazel's protoc supports
   // it.
   int64 finish_time_millis = 2;
+}
+
+message BuildMetrics {
+  message ActionSummary {
+    // The total number of actions created and registered during the build.
+    // This includes unused actions that were constructed but
+    // not executed during this build.
+    int64 actions_created = 1;
+
+    // The total number of actions executed during the build.
+    // This includes any remote cache hits, but excludes
+    // local action cache hits.
+    int64 actions_executed = 2;
+  }
+  ActionSummary action_summary = 1;
+
+  message MemoryMetrics {
+    // Size of the JVM heap post build in bytes. This is only collected if
+    // --bep_publish_used_heap_size_post_build is set,
+    // since it forces a full GC.
+    int64 used_heap_size_post_build = 1;
+  }
+  MemoryMetrics memory_metrics = 2;
+
+  message TargetMetrics {
+    // Number of targets loaded during this build.
+    int64 targets_loaded = 1;
+
+    // Number of targets configured during this build. This can
+    // be greater than targets_loaded if the same target is configured
+    // multiple times.
+    int64 targets_configured = 2;
+  }
+  TargetMetrics target_metrics = 3;
+
+  message PackageMetrics {
+    // Number of BUILD files (aka packages) loaded during this build.
+    int64 packages_loaded = 1;
+  }
+  PackageMetrics package_metrics = 4;
+}
+
+// Event providing additional statistics/logs after completion of the build.
+message BuildToolLogs {
+  repeated File log = 1;
 }
 
 // Message describing a build event. Events will have an identifier that
@@ -566,5 +706,8 @@ message BuildEvent {
     TestResult test_result = 10;
     TestSummary test_summary = 9;
     BuildFinished finished = 14;
-  };
+    BuildToolLogs build_tool_logs = 23;
+    BuildMetrics build_metrics = 24;
+    WorkspaceConfig workspace_info = 25;
+  }
 }

@@ -1,4 +1,5 @@
 #!/bin/bash
+# -*- coding: utf-8 -*-
 
 # Copyright 2015 The Bazel Authors. All rights reserved.
 #
@@ -22,7 +23,15 @@ source ${DIR}/testenv.sh || { echo "testenv.sh not found!" >&2; exit 1; }
 function get_tar_listing() {
   local input=$1
   local test_data="${TEST_DATA_DIR}/${input}"
+  # We strip unused prefixes rather than dropping "v" flag for tar, because we
+  # want to preserve symlink information.
   tar tvf "${test_data}" | sed -e 's/^.*:00 //'
+}
+
+function get_tar_verbose_listing() {
+  local input=$1
+  local test_data="${TEST_DATA_DIR}/${input}"
+  TZ="UTC" tar tvf "${test_data}"
 }
 
 function get_tar_owner() {
@@ -76,6 +85,13 @@ function get_deb_ctl_listing() {
   local input=$1
   local test_data="${TEST_DATA_DIR}/${input}"
   dpkg-deb --ctrl-tarfile "${test_data}" | tar tf - | sort
+}
+
+function get_deb_ctl_file() {
+  local input=$1
+  local ctl_file=$2
+  local test_data="${TEST_DATA_DIR}/${input}"
+  dpkg-deb --info "${test_data}" "${ctl_file}"
 }
 
 function get_deb_ctl_permission() {
@@ -147,6 +163,18 @@ function test_tar() {
   check_eq "./
 ./not-etc/
 ./not-etc/mapped-filename.conf" "$(get_tar_listing test-tar-files_dict.tar)"
+  check_eq "drwxr-xr-x 0/0               0 2000-01-01 00:00 ./
+-rwxrwxrwx 0/0               0 2000-01-01 00:00 ./a
+-rwxrwxrwx 0/0               0 2000-01-01 00:00 ./b" \
+      "$(get_tar_verbose_listing test-tar-empty_files.tar)"
+  check_eq "drwxr-xr-x 0/0               0 2000-01-01 00:00 ./
+drwxrwxrwx 0/0               0 2000-01-01 00:00 ./tmp/
+drwxrwxrwx 0/0               0 2000-01-01 00:00 ./pmt/" \
+      "$(get_tar_verbose_listing test-tar-empty_dirs.tar)"
+  check_eq \
+    "drwxr-xr-x 0/0               0 1999-12-31 23:59 ./
+-r-xr-xr-x 0/0               2 1999-12-31 23:59 ./nsswitch.conf" \
+    "$(get_tar_verbose_listing test-tar-mtime.tar)"
 }
 
 function test_deb() {
@@ -165,23 +193,36 @@ function test_deb() {
   check_eq "-rwxr-xr-x" "$(get_deb_permission test-deb.deb ./usr/titi)"
   check_eq "-rw-r--r--" "$(get_deb_permission test-deb.deb ./etc/nsswitch.conf)"
   get_deb_description test-deb.deb >$TEST_log
-  expect_log "Description: toto"
+  expect_log "Description: toto ®, Й, ק ,م, ๗, あ, 叶, 葉, 말, ü and é"
   expect_log "Package: titi"
+  expect_log "soméone@somewhere.com"
   expect_log "Depends: dep1, dep2"
+  expect_log "Built-Using: some_test_data"
 
   get_changes titi_test_all.changes >$TEST_log
   expect_log "Urgency: low"
   expect_log "Distribution: trusty"
 
+  get_deb_ctl_file test-deb.deb templates >$TEST_log
+  expect_log "Template: titi/test"
+  expect_log "Type: string"
+
+  get_deb_ctl_file test-deb.deb config >$TEST_log
+  expect_log "# test config file"
+
   if ! dpkg_deb_supports_ctrl_tarfile test-deb.deb ; then
-    echo "Unable to test deb control files, too old dpkg-deb!" >&2
+    echo "Unable to test deb control files listing, too old dpkg-deb!" >&2
     return 0
   fi
   local ctrl_listing="conffiles
-control"
+config
+control
+templates"
   check_eq "$ctrl_listing" "$(get_deb_ctl_listing test-deb.deb)"
   check_eq "-rw-r--r--" "$(get_deb_ctl_permission test-deb.deb conffiles)"
+  check_eq "-rwxr-xr-x" "$(get_deb_ctl_permission test-deb.deb config)"
   check_eq "-rw-r--r--" "$(get_deb_ctl_permission test-deb.deb control)"
+  check_eq "-rwxr-xr-x" "$(get_deb_ctl_permission test-deb.deb templates)"
   local conffiles="/etc/nsswitch.conf
 /etc/other"
   check_eq "$conffiles" "$(get_deb_ctl_file test-deb.deb conffiles)"

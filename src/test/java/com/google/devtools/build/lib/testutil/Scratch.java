@@ -22,6 +22,7 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
@@ -121,9 +122,8 @@ public final class Scratch {
   }
 
   /**
-   * Create a scratch file in the scratch filesystem, with the given pathName,
-   * consisting of a set of lines. The method returns a Path instance for the
-   * scratch file.
+   * Create a scratch file in the scratch filesystem, with the given pathName, consisting of a set
+   * of lines. The method returns a Path instance for the scratch file.
    */
   public Path file(String pathName, Charset charset, String... lines) throws IOException {
     Path file = newFile(pathName);
@@ -132,10 +132,44 @@ public final class Scratch {
     return file;
   }
 
+  /**
+   * Create a scratch file in the given filesystem, with the given pathName, consisting of a set of
+   * lines. The method returns a Path instance for the scratch file.
+   */
+  public Path file(String pathName, byte[] content) throws IOException {
+    Path file = newFile(pathName);
+    FileSystemUtils.writeContent(file, content);
+    return file;
+  }
+
   public String readFile(String pathName) throws IOException {
-    return new String(
-        ByteStreams.toByteArray(resolve(pathName).getInputStream()),
-        DEFAULT_CHARSET);
+    try (InputStream in = resolve(pathName).getInputStream()) {
+      return new String(ByteStreams.toByteArray(in), DEFAULT_CHARSET);
+    }
+  }
+
+  /** Like {@code scratch.file}, but the lines are added to the end if the file already exists. */
+  public Path appendFile(String pathName, Collection<String> lines) throws IOException {
+    return appendFile(pathName, lines.toArray(new String[lines.size()]));
+  }
+
+  /** Like {@code scratch.file}, but the lines are added to the end if the file already exists. */
+  public Path appendFile(String pathName, String... lines) throws IOException {
+    return appendFile(pathName, DEFAULT_CHARSET, lines);
+  }
+
+  /** Like {@code scratch.file}, but the lines are added to the end if the file already exists. */
+  public Path appendFile(String pathName, Charset charset, String... lines) throws IOException {
+    Path path = resolve(pathName);
+
+    StringBuilder content = new StringBuilder();
+    if (path.exists()) {
+      content.append(readFile(pathName));
+      content.append("\n");
+    }
+    content.append(linesAsString(lines));
+
+    return overwriteFile(pathName, content.toString());
   }
 
   /**
@@ -172,17 +206,6 @@ public final class Scratch {
    */
   public boolean deleteFile(String pathName) throws IOException {
     return resolve(pathName).delete();
-  }
-
-  /**
-   * Create a scratch file in the given filesystem, with the given pathName,
-   * consisting of a set of lines. The method returns a Path instance for the
-   * scratch file.
-   */
-  public Path file(String pathName, byte[] content) throws IOException {
-    Path file = newFile(pathName);
-    FileSystemUtils.writeContent(file, content);
-    return file;
   }
 
   /** Creates a new scratch file, ensuring parents exist. */

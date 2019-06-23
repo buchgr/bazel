@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
@@ -24,22 +25,27 @@ import com.google.common.collect.Range;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ArtifactFileMetadata;
+import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.concurrent.ExecutorUtil;
 import com.google.devtools.build.lib.concurrent.Sharder;
 import com.google.devtools.build.lib.concurrent.ThrowableRecordingRunnableWrapper;
 import com.google.devtools.build.lib.profiler.AutoProfiler;
 import com.google.devtools.build.lib.profiler.AutoProfiler.ElapsedTimeReceiver;
+import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.skyframe.SkyValueDirtinessChecker.DirtyResult;
 import com.google.devtools.build.lib.util.LoggingUtil;
 import com.google.devtools.build.lib.util.Pair;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.BatchStat;
 import com.google.devtools.build.lib.vfs.FileStatusWithDigest;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.skyframe.Differencer;
+import com.google.devtools.build.skyframe.FunctionHermeticity;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
@@ -75,7 +81,7 @@ public class FilesystemValueChecker {
   private static final Predicate<SkyKey> ACTION_FILTER =
       SkyFunctionName.functionIs(SkyFunctions.ACTION_EXECUTION);
 
-  private final TimestampGranularityMonitor tsgm;
+  @Nullable private final TimestampGranularityMonitor tsgm;
   @Nullable
   private final Range<Long> lastExecutionTimeRange;
   private AtomicInteger modifiedOutputFilesCounter = new AtomicInteger(0);
@@ -168,9 +174,11 @@ public class FilesystemValueChecker {
     logger.info("Accumulating dirty actions");
     final int numOutputJobs = Runtime.getRuntime().availableProcessors() * 4;
     final Set<SkyKey> actionSkyKeys = new HashSet<>();
-    for (SkyKey key : valuesMap.keySet()) {
-      if (ACTION_FILTER.apply(key)) {
-        actionSkyKeys.add(key);
+    try (SilentCloseable c = Profiler.instance().profile("getDirtyActionValues.filter_actions")) {
+      for (SkyKey key : valuesMap.keySet()) {
+        if (ACTION_FILTER.apply(key)) {
+          actionSkyKeys.add(key);
+        }
       }
     }
     final Sharder<Pair<SkyKey, ActionExecutionValue>> outputShards =
@@ -210,16 +218,24 @@ public class FilesystemValueChecker {
         }
       });
 
-    for (List<Pair<SkyKey, ActionExecutionValue>> shard : outputShards) {
-      Runnable job = (batchStatter == null)
-          ? outputStatJob(dirtyKeys, shard, knownModifiedOutputFiles,
-              sortedKnownModifiedOutputFiles)
-          : batchStatJob(dirtyKeys, shard, batchStatter, knownModifiedOutputFiles,
-              sortedKnownModifiedOutputFiles);
-      Future<?> unused = executor.submit(wrapper.wrap(job));
-    }
+    boolean interrupted;
+    try (SilentCloseable c = Profiler.instance().profile("getDirtyActionValues.stat_files")) {
+      for (List<Pair<SkyKey, ActionExecutionValue>> shard : outputShards) {
+        Runnable job =
+            (batchStatter == null)
+                ? outputStatJob(
+                    dirtyKeys, shard, knownModifiedOutputFiles, sortedKnownModifiedOutputFiles)
+                : batchStatJob(
+                    dirtyKeys,
+                    shard,
+                    batchStatter,
+                    knownModifiedOutputFiles,
+                    sortedKnownModifiedOutputFiles);
+        Future<?> unused = executor.submit(wrapper.wrap(job));
+      }
 
-    boolean interrupted = ExecutorUtil.interruptibleShutdown(executor);
+      interrupted = ExecutorUtil.interruptibleShutdown(executor);
+    }
     Throwables.propagateIfPossible(wrapper.getFirstThrownError());
     logger.info("Completed output file stat checks");
     if (interrupted) {
@@ -288,9 +304,10 @@ public class FilesystemValueChecker {
           Pair<SkyKey, ActionExecutionValue> keyAndValue = fileToKeyAndValue.get(artifact);
           ActionExecutionValue actionValue = keyAndValue.getSecond();
           SkyKey key = keyAndValue.getFirst();
-          FileValue lastKnownData = actionValue.getAllFileValues().get(artifact);
+          ArtifactFileMetadata lastKnownData = actionValue.getAllFileValues().get(artifact);
           try {
-            FileValue newData = ActionMetadataHandler.fileValueFromArtifact(artifact, stat, tsgm);
+            ArtifactFileMetadata newData =
+                ActionMetadataHandler.fileMetadataFromArtifact(artifact, stat, tsgm);
             if (!newData.equals(lastKnownData)) {
               updateIntraBuildModifiedCounter(
                   stat != null ? stat.getLastChangeTime() : -1,
@@ -380,9 +397,10 @@ public class FilesystemValueChecker {
     // There doesn't appear to be any facility to batch list directories... we must
     // do things the 'slow' way.
     try {
-      Set<PathFragment> currentDirectoryValue = TreeArtifactValue.explodeDirectory(artifact);
-      Set<PathFragment> valuePaths = value.getChildPaths();
-      return !currentDirectoryValue.equals(valuePaths);
+      Set<PathFragment> currentDirectoryValue =
+          TreeArtifactValue.explodeDirectory(artifact.getPath());
+      return !(currentDirectoryValue.isEmpty() && value.isRemote())
+          && !currentDirectoryValue.equals(value.getChildPaths());
     } catch (IOException e) {
       return true;
     }
@@ -392,17 +410,22 @@ public class FilesystemValueChecker {
       ImmutableSet<PathFragment> knownModifiedOutputFiles,
       Supplier<NavigableSet<PathFragment>> sortedKnownModifiedOutputFiles) {
     boolean isDirty = false;
-    for (Map.Entry<Artifact, FileValue> entry : actionValue.getAllFileValues().entrySet()) {
+    for (Map.Entry<Artifact, ArtifactFileMetadata> entry :
+        actionValue.getAllFileValues().entrySet()) {
       Artifact file = entry.getKey();
-      FileValue lastKnownData = entry.getValue();
+      ArtifactFileMetadata lastKnownData = entry.getValue();
       if (shouldCheckFile(knownModifiedOutputFiles, file)) {
         try {
-          FileValue fileValue = ActionMetadataHandler.fileValueFromArtifact(file, null,
-              tsgm);
-          if (!fileValue.equals(lastKnownData)) {
-            updateIntraBuildModifiedCounter(fileValue.exists()
-                ? fileValue.realRootedPath().asPath().getLastModifiedTime()
-                : -1, lastKnownData.isSymlink(), fileValue.isSymlink());
+          ArtifactFileMetadata fileMetadata =
+              ActionMetadataHandler.fileMetadataFromArtifact(file, null, tsgm);
+          FileArtifactValue fileValue = actionValue.getArtifactValue(file);
+          boolean lastSeenRemotely = (fileValue != null) && fileValue.isRemote();
+          boolean trustRemoteValue = !fileMetadata.exists() && lastSeenRemotely;
+          if (!trustRemoteValue && !fileMetadata.equals(lastKnownData)) {
+            updateIntraBuildModifiedCounter(
+                fileMetadata.exists() ? file.getPath().getLastModifiedTime(Symlinks.FOLLOW) : -1,
+                lastKnownData.isSymlink(),
+                fileMetadata.isSymlink());
             modifiedOutputFilesCounter.getAndIncrement();
             isDirty = true;
           }
@@ -477,17 +500,14 @@ public class FilesystemValueChecker {
     final AtomicInteger numKeysScanned = new AtomicInteger(0);
     final AtomicInteger numKeysChecked = new AtomicInteger(0);
     ElapsedTimeReceiver elapsedTimeReceiver =
-        new ElapsedTimeReceiver() {
-          @Override
-          public void accept(long elapsedTimeNanos) {
-            if (elapsedTimeNanos > 0) {
-              logger.info(
-                  String.format(
-                      "Spent %d ms checking %d filesystem nodes (%d scanned)",
-                      TimeUnit.MILLISECONDS.convert(elapsedTimeNanos, TimeUnit.NANOSECONDS),
-                      numKeysChecked.get(),
-                      numKeysScanned.get()));
-            }
+        elapsedTimeNanos -> {
+          if (elapsedTimeNanos > 0) {
+            logger.info(
+                String.format(
+                    "Spent %d ms checking %d filesystem nodes (%d scanned)",
+                    TimeUnit.MILLISECONDS.convert(elapsedTimeNanos, TimeUnit.NANOSECONDS),
+                    numKeysChecked.get(),
+                    numKeysScanned.get()));
           }
         };
     try (AutoProfiler prof = AutoProfiler.create(elapsedTimeReceiver)) {
@@ -496,20 +516,28 @@ public class FilesystemValueChecker {
         if (!checker.applies(key)) {
           continue;
         }
-        final SkyValue value = fetcher.get(key);
-        if (!checkMissingValues && value == null) {
-          continue;
-        }
+        Preconditions.checkState(
+            key.functionName().getHermeticity() == FunctionHermeticity.NONHERMETIC,
+            "Only non-hermetic keys can be dirty roots: %s",
+            key);
         executor.execute(
             wrapper.wrap(
-                new Runnable() {
-                  @Override
-                  public void run() {
-                    numKeysChecked.incrementAndGet();
-                    DirtyResult result = checker.check(key, value, tsgm);
-                    if (result.isDirty()) {
-                      batchResult.add(key, value, result.getNewValue());
-                    }
+                () -> {
+                  SkyValue value;
+                  try {
+                    value = fetcher.get(key);
+                  } catch (InterruptedException e) {
+                    // Exit fast. Interrupt is handled below on the main thread.
+                    return;
+                  }
+                  if (!checkMissingValues && value == null) {
+                    return;
+                  }
+
+                  numKeysChecked.incrementAndGet();
+                  DirtyResult result = checker.check(key, value, tsgm);
+                  if (result.isDirty()) {
+                    batchResult.add(key, value, result.getNewValue());
                   }
                 }));
       }

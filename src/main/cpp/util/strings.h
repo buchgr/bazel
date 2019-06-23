@@ -24,10 +24,15 @@
 
 namespace blaze_util {
 
-extern const unsigned char kAsciiPropertyBits[256];
-#define kApb kAsciiPropertyBits
-
-static inline bool ascii_isspace(unsigned char c) { return kApb[c] & 0x08; }
+// Space characters according to Python: chr(i).isspace()
+static inline bool ascii_isspace(unsigned char c) {
+  return c == 9       // TAB
+         || c == 10   // LF
+         || c == 11   // VT (vertical tab)
+         || c == 12   // FF (form feed)
+         || c == 13   // CR
+         || c == 32;  // space
+}
 
 bool starts_with(const std::string &haystack, const std::string &needle);
 
@@ -60,14 +65,6 @@ template <class CharStar>
 inline CharStar var_strprefix(CharStar str, const char *prefix) {
   const int len = strlen(prefix);
   return strncmp(str, prefix, len) == 0 ? str + len : NULL;
-}
-
-// Returns a mutable char* pointing to a string's internal buffer, which may not
-// be null-terminated. Returns NULL for an empty string. If not non-null,
-// writing through this pointer will modify the string.
-inline char *string_as_array(std::string *str) {
-  // DO NOT USE const_cast<char*>(str->data())! See the unittest for why.
-  return str->empty() ? NULL : &*str->begin();
 }
 
 // Join the elements of pieces separated by delimeter.  Returns the joined
@@ -112,11 +109,45 @@ std::string AsLower(const std::string &str);
 
 // Convert a wchar_t string to a char string. Useful when consuming results of
 // widechar Windows API functions.
+// TODO(laszlocsomor): audit usages of WstringToCstring and replace with
+// WcsToAcp or WcsToUtf8 appropriately. WstringToCstring does not specify the
+// output encoding.
+//
+// Deprecated. Use WcsToAcp or WcsToUtf8.
 std::unique_ptr<char[]> WstringToCstring(const wchar_t *input);
+
+// Deprecated. Use WcsToAcp or WcsToUtf8.
+std::string WstringToString(const std::wstring &input);
 
 // Convert a char string to a wchar_t string. Useful when passing arguments to
 // widechar Windows API functions.
+// TODO(laszlocsomor): audit usages of CstringToWstring and replace with
+// AcpToWcs or Utf8ToWcs appropriately. CstringToWstring does not specify the
+// input encoding.
+//
+// Deprecated. Use AcpToWcs or Utf8ToWcs.
 std::unique_ptr<wchar_t[]> CstringToWstring(const char *input);
+
+// Deprecated. Use AcpToWcs or Utf8ToWcs.
+std::wstring CstringToWstring(const std::string &input);
+
+#if defined(_WIN32) || defined(__CYGWIN__)
+// Convert UTF-16 string to ASCII (using the Active Code Page).
+bool WcsToAcp(const std::wstring &input, std::string *output,
+              uint32_t *error = nullptr);
+
+// Convert UTF-16 string to UTF-8.
+bool WcsToUtf8(const std::wstring &input, std::string *output,
+               uint32_t *error = nullptr);
+
+// Convert ASCII string (using the Active Code Page) to UTF-16 string.
+bool AcpToWcs(const std::string &input, std::wstring *output,
+              uint32_t *error = nullptr);
+
+// Convert UTF-8 string to UTF-16.
+bool Utf8ToWcs(const std::string &input, std::wstring *output,
+               uint32_t *error = nullptr);
+#endif  // defined(_WIN32) || defined(__CYGWIN__)
 
 }  // namespace blaze_util
 

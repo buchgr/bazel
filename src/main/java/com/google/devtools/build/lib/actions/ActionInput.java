@@ -17,8 +17,7 @@ package com.google.devtools.build.lib.actions;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
 /**
- * Represents an input file to a build action, with an appropriate relative path and digest
- * value.
+ * Represents an input file to a build action, with an appropriate relative path.
  *
  * <p>Artifact is the only notable implementer of the interface, but the interface remains
  * because 1) some Google specific rules ship files that could be Artifacts to remote execution
@@ -41,4 +40,12 @@ public interface ActionInput {
    * @return the relative path to the input file.
    */
   PathFragment getExecPath();
+
+  /**
+   * Returns if this input's file system path includes a digest of its content. See {@link
+   * com.google.devtools.build.lib.analysis.config.BuildConfiguration#useContentBasedOutputPaths}.
+   */
+  default boolean contentBasedPath() {
+    return false;
+  }
 }

@@ -30,6 +30,7 @@ import com.google.devtools.build.lib.profiler.statistics.MultiProfileStatistics;
 import com.google.devtools.build.lib.profiler.statistics.PhaseStatistics;
 import com.google.devtools.build.lib.profiler.statistics.PhaseSummaryStatistics;
 import com.google.devtools.build.lib.runtime.BlazeCommand;
+import com.google.devtools.build.lib.runtime.BlazeCommandResult;
 import com.google.devtools.build.lib.runtime.Command;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.util.ExitCode;
@@ -42,7 +43,8 @@ import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
-import com.google.devtools.common.options.OptionsProvider;
+import com.google.devtools.common.options.OptionsParsingResult;
+import com.google.devtools.common.options.RegexPatternOption;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -152,15 +154,15 @@ public final class ProfileCommand implements BlazeCommand {
     public boolean htmlHistograms;
 
     @Option(
-      name = "task_tree",
-      defaultValue = "null",
-      converter = Converters.RegexPatternConverter.class,
-      documentationCategory = OptionDocumentationCategory.LOGGING,
-      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
-      help =
-          "Print the tree of profiler tasks from all tasks matching the given regular expression."
-    )
-    public Pattern taskTree;
+        name = "task_tree",
+        defaultValue = "null",
+        converter = Converters.RegexPatternConverter.class,
+        documentationCategory = OptionDocumentationCategory.LOGGING,
+        effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
+        help =
+            "Print the tree of profiler tasks from all tasks matching the given regular"
+                + " expression.")
+    public RegexPatternOption taskTree;
 
     @Option(
       name = "task_tree_threshold",
@@ -212,7 +214,7 @@ public final class ProfileCommand implements BlazeCommand {
   public void editOptions(OptionsParser optionsParser) {}
 
   @Override
-  public ExitCode exec(final CommandEnvironment env, OptionsProvider options) {
+  public BlazeCommandResult exec(final CommandEnvironment env, OptionsParsingResult options) {
     ProfileOptions opts =
         options.getOptions(ProfileOptions.class);
 
@@ -220,10 +222,13 @@ public final class ProfileCommand implements BlazeCommand {
       opts.vfsStatsLimit = 0;
     }
 
-    try (PrintStream out = new PrintStream(env.getReporter().getOutErr().getOutputStream())) {
-      env.getReporter().handle(Event.warn(
-          null, "This information is intended for consumption by Blaze developers"
-              + " only, and may change at any time.  Script against it at your own risk"));
+    try (PrintStream out = getOutputStream(env)) {
+      env.getReporter()
+          .handle(
+              Event.warn(
+                  null,
+                  "This information is intended for consumption by Bazel developers"
+                      + " only, and may change at any time.  Script against it at your own risk"));
       if (opts.combine != null && opts.dumpMode == null) {
         MultiProfileStatistics statistics =
             new MultiProfileStatistics(
@@ -268,7 +273,7 @@ public final class ProfileCommand implements BlazeCommand {
             }
 
             if (opts.taskTree != null) {
-              printTaskTree(out, name, info, opts.taskTree, opts.taskTreeThreshold);
+              printTaskTree(out, name, info, opts.taskTree.regexPattern(), opts.taskTreeThreshold);
               continue;
             }
 
@@ -280,11 +285,16 @@ public final class ProfileCommand implements BlazeCommand {
             PhaseSummaryStatistics phaseSummaryStatistics = new PhaseSummaryStatistics(info);
             EnumMap<ProfilePhase, PhaseStatistics> phaseStatistics =
                 new EnumMap<>(ProfilePhase.class);
+
+            Path workspace = env.getWorkspace();
             for (ProfilePhase phase : ProfilePhase.values()) {
               phaseStatistics.put(
                   phase,
                   new PhaseStatistics(
-                      phase, info, env.getWorkspace().getBaseName(), opts.vfsStatsLimit > 0));
+                      phase,
+                      info,
+                      (workspace == null ? "<workspace>" : workspace.getBaseName()),
+                      opts.vfsStatsLimit > 0));
             }
 
             CriticalPathStatistics critPathStats = new CriticalPathStatistics(info);
@@ -321,11 +331,17 @@ public final class ProfileCommand implements BlazeCommand {
             env
                 .getReporter()
                 .handle(Event.error("Failed to analyze profile file(s): " + e.getMessage()));
+            return BlazeCommandResult.exitCode(ExitCode.PARSING_FAILURE);
           }
         }
       }
     }
-    return ExitCode.SUCCESS;
+    return BlazeCommandResult.exitCode(ExitCode.SUCCESS);
+  }
+
+  private static PrintStream getOutputStream(CommandEnvironment env) {
+    return new PrintStream(
+        new BufferedOutputStream(env.getReporter().getOutErr().getOutputStream()), false);
   }
 
   /**

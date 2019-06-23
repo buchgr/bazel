@@ -19,11 +19,13 @@ import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.analysis.actions.AbstractFileWriteAction;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
@@ -36,20 +38,21 @@ import java.util.HashSet;
 import java.util.List;
 
 /**
- * Creates C++ module map artifact genfiles. These are then passed to Clang to
- * do dependency checking.
+ * Creates C++ module map artifact genfiles. These are then passed to Clang to do dependency
+ * checking.
  */
 @Immutable
+@AutoCodec
 public final class CppModuleMapAction extends AbstractFileWriteAction {
 
   private static final String GUID = "4f407081-1951-40c1-befc-d6b4daff5de3";
 
   // C++ module map of the current target
   private final CppModuleMap cppModuleMap;
-  
+
   /**
-   * If set, the paths in the module map are relative to the current working directory instead
-   * of relative to the module map file's location. 
+   * If set, the paths in the module map are relative to the current working directory instead of
+   * relative to the module map file's location.
    */
   private final boolean moduleMapHomeIsCwd;
 
@@ -214,7 +217,7 @@ public final class CppModuleMapAction extends AbstractFileWriteAction {
     }
     content.append("\n");
   }
-  
+
   private boolean shouldCompileHeader(PathFragment path) {
     return compiledModule && !CppFileTypes.CPP_TEXTUAL_INCLUDE.matches(path);
   }
@@ -225,36 +228,39 @@ public final class CppModuleMapAction extends AbstractFileWriteAction {
   }
 
   @Override
-  protected String computeKey() {
-    Fingerprint f = new Fingerprint();
-    f.addString(GUID);
-    f.addInt(privateHeaders.size());
+  protected void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp) {
+    fp.addString(GUID);
+    fp.addInt(privateHeaders.size());
     for (Artifact artifact : privateHeaders) {
-      f.addPath(artifact.getExecPath());
+      fp.addPath(artifact.getExecPath());
     }
-    f.addInt(publicHeaders.size());
+    fp.addInt(publicHeaders.size());
     for (Artifact artifact : publicHeaders) {
-      f.addPath(artifact.getExecPath());
+      fp.addPath(artifact.getExecPath());
     }
-    f.addInt(dependencies.size());
+    fp.addInt(dependencies.size());
     for (CppModuleMap dep : dependencies) {
-      f.addPath(dep.getArtifact().getExecPath());
+      fp.addPath(dep.getArtifact().getExecPath());
     }
-    f.addInt(additionalExportedHeaders.size());
+    fp.addInt(additionalExportedHeaders.size());
     for (PathFragment path : additionalExportedHeaders) {
-      f.addPath(path);
+      fp.addPath(path);
     }
-    f.addPath(cppModuleMap.getArtifact().getExecPath());
+    fp.addPath(cppModuleMap.getArtifact().getExecPath());
     Optional<Artifact> umbrellaHeader = cppModuleMap.getUmbrellaHeader();
     if (umbrellaHeader.isPresent()) {
-      f.addPath(umbrellaHeader.get().getExecPath());
+      fp.addPath(umbrellaHeader.get().getExecPath());
     }
-    f.addString(cppModuleMap.getName());
-    f.addBoolean(moduleMapHomeIsCwd);
-    f.addBoolean(compiledModule);
-    f.addBoolean(generateSubmodules);
-    f.addBoolean(externDependencies);
-    return f.hexDigestAndReset();
+    fp.addString(cppModuleMap.getName());
+    fp.addBoolean(moduleMapHomeIsCwd);
+    fp.addBoolean(compiledModule);
+    fp.addBoolean(generateSubmodules);
+    fp.addBoolean(externDependencies);
+  }
+
+  @VisibleForTesting
+  public CppModuleMap getCppModuleMap() {
+    return cppModuleMap;
   }
 
   @VisibleForTesting
@@ -266,7 +272,7 @@ public final class CppModuleMapAction extends AbstractFileWriteAction {
   public Collection<Artifact> getPrivateHeaders() {
     return privateHeaders;
   }
-  
+
   @VisibleForTesting
   public ImmutableList<PathFragment> getAdditionalExportedHeaders() {
     return additionalExportedHeaders;

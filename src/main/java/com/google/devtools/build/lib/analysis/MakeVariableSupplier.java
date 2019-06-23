@@ -14,9 +14,13 @@
 
 package com.google.devtools.build.lib.analysis;
 
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.devtools.build.lib.packages.Package;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.analysis.stringtemplate.ExpansionException;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import javax.annotation.Nullable;
 
 /**
@@ -27,10 +31,44 @@ public interface MakeVariableSupplier {
 
   /** Returns Make variable value or null if value is not supplied. */
   @Nullable
-  String getMakeVariable(String variableName);
+  String getMakeVariable(String variableName) throws ExpansionException;
 
   /** Returns all Make variables that it supplies */
-  ImmutableMap<String, String> getAllMakeVariables();
+  ImmutableMap<String, String> getAllMakeVariables() throws ExpansionException;
+
+  /**
+   * {@link MakeVariableSupplier} that reads variables from a list of {@link TemplateVariableInfo}
+   * providers. This implementation respects the ordering of providers, with the first listed being
+   * the highest priority.
+   */
+  class TemplateVariableInfoBackedMakeVariableSupplier implements MakeVariableSupplier {
+    private final ImmutableList<TemplateVariableInfo> templateVariableProviders;
+
+    public TemplateVariableInfoBackedMakeVariableSupplier(
+        List<TemplateVariableInfo> templateVariableProviders) {
+      this.templateVariableProviders = ImmutableList.copyOf(templateVariableProviders);
+    }
+
+    @Nullable
+    @Override
+    public String getMakeVariable(String variableName) {
+      for (TemplateVariableInfo templateVariableInfo : templateVariableProviders) {
+        if (templateVariableInfo.getVariables().containsKey(variableName)) {
+          return templateVariableInfo.getVariables().get(variableName);
+        }
+      }
+      return null;
+    }
+
+    @Override
+    public ImmutableMap<String, String> getAllMakeVariables() {
+      Map<String, String> variables = new TreeMap<>();
+      for (TemplateVariableInfo templateVariableInfo : templateVariableProviders) {
+        variables.putAll(templateVariableInfo.getVariables());
+      }
+      return ImmutableMap.copyOf(variables);
+    }
+  }
 
   /** {@link MakeVariableSupplier} that reads variables it supplies from a map. */
   class MapBackedMakeVariableSupplier implements MakeVariableSupplier {
@@ -50,29 +88,6 @@ public interface MakeVariableSupplier {
     @Override
     public ImmutableMap<String, String> getAllMakeVariables() {
       return makeVariables;
-    }
-  }
-
-  /** {@link MakeVariableSupplier} that reads variables it supplies from a {@link Package} */
-  class PackageBackedMakeVariableSupplier implements MakeVariableSupplier {
-
-    private final String platform;
-    private final Package pkg;
-
-    public PackageBackedMakeVariableSupplier(Package pkg, String platform) {
-      this.pkg = pkg;
-      this.platform = platform;
-    }
-
-    @Nullable
-    @Override
-    public String getMakeVariable(String variableName) {
-      return pkg.lookupMakeVariable(variableName, platform);
-    }
-
-    @Override
-    public ImmutableMap<String, String> getAllMakeVariables() {
-      return pkg.getAllMakeVariables(platform);
     }
   }
 }

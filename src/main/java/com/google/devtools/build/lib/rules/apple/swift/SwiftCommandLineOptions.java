@@ -22,12 +22,10 @@ import java.util.List;
 
 /** Command-line options for building with Swift tools. */
 public class SwiftCommandLineOptions extends FragmentOptions {
-
   @Option(
     name = "swiftcopt",
     allowMultiple = true,
     defaultValue = "",
-    category = "flags",
     documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
     effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
     help = "Additional options to pass to Swift compilation."
@@ -35,12 +33,22 @@ public class SwiftCommandLineOptions extends FragmentOptions {
   public List<String> copts;
 
   @Option(
-    name = "swift_whole_module_optimization",
-    defaultValue = "false",
-    category = "flags",
-    documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
-    effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
-    help = "Whether to enable Whole Module Optimization"
-  )
-  public boolean enableWholeModuleOptimization;
+      name = "host_swiftcopt",
+      allowMultiple = true,
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
+      effectTags = {OptionEffectTag.ACTION_COMMAND_LINES, OptionEffectTag.AFFECTS_OUTPUTS},
+      help = "Additional options to pass to swiftc for host tools.")
+  public List<String> hostSwiftcoptList;
+
+  @Override
+  public FragmentOptions getHost() {
+    SwiftCommandLineOptions host = (SwiftCommandLineOptions) super.getHost();
+    host.copts = this.hostSwiftcoptList;
+
+    // Save host options in case of a further exec->host transition.
+    host.hostSwiftcoptList = hostSwiftcoptList;
+
+    return host;
+  }
 }

@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.rules.android;
 
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
@@ -29,9 +30,16 @@ import com.google.devtools.build.lib.syntax.Type;
 /** An implementation of the {@code android_host_service_fixture} rule. */
 public class AndroidHostServiceFixture implements RuleConfiguredTargetFactory {
 
+  private final AndroidSemantics androidSemantics;
+
+  protected AndroidHostServiceFixture(AndroidSemantics androidSemantics) {
+    this.androidSemantics = androidSemantics;
+  }
+
   @Override
   public ConfiguredTarget create(RuleContext ruleContext)
-      throws InterruptedException, RuleErrorException {
+      throws InterruptedException, RuleErrorException, ActionConflictException {
+    androidSemantics.checkForMigrationTag(ruleContext);
     RuleConfiguredTargetBuilder ruleBuilder = new RuleConfiguredTargetBuilder(ruleContext);
     NestedSet<Artifact> supportApks = AndroidCommon.getSupportApks(ruleContext);
     FilesToRunProvider executable = ruleContext.getExecutablePrerequisite("executable", Mode.HOST);
@@ -43,7 +51,7 @@ public class AndroidHostServiceFixture implements RuleConfiguredTargetFactory {
             .build();
     Runfiles runfiles =
         new Runfiles.Builder(ruleContext.getWorkspaceName())
-            .addTransitiveArtifacts(filesToBuild)
+            .addTransitiveArtifacts(supportApks)
             .merge(executable.getRunfilesSupport())
             .build();
     return ruleBuilder

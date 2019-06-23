@@ -14,16 +14,14 @@
 package com.google.devtools.build.skyframe;
 
 import com.google.common.base.MoreObjects;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import com.google.devtools.build.lib.util.Preconditions;
-
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-
 import javax.annotation.Nullable;
 
 /**
@@ -107,6 +105,14 @@ public class EvaluationResult<T extends SkyValue> {
   }
 
   /**
+   * Returns some error info. Convenience method equivalent to Iterables.getFirst({@link
+   * #errorMap()}, null).getValue().
+   */
+  public ErrorInfo getError() {
+    return Iterables.getFirst(errorMap.entrySet(), null).getValue();
+  }
+
+  /**
    * @return Names of all values that were successfully evaluated. This collection is disjoint from
    *     the keys in {@link #errorMap}.
    */
@@ -126,14 +132,6 @@ public class EvaluationResult<T extends SkyValue> {
   @Nullable
   public WalkableGraph getWalkableGraph() {
     return walkableGraph;
-  }
-
-  /**
-   * Returns some error info. Convenience method equivalent to
-   * Iterables.getFirst({@link #errorMap()}, null).getValue().
-   */
-  public ErrorInfo getError() {
-    return Iterables.getFirst(errorMap.entrySet(), null).getValue();
   }
 
   @Override
@@ -193,8 +191,9 @@ public class EvaluationResult<T extends SkyValue> {
       return new EvaluationResult<>(result, errors, catastrophe, walkableGraph);
     }
 
-    public void setCatastrophe(Exception catastrophe) {
+    public Builder<T> setCatastrophe(Exception catastrophe) {
       this.catastrophe = catastrophe;
+      return this;
     }
   }
 }

@@ -13,21 +13,24 @@
 // limitations under the License.
 package com.google.devtools.build.lib.bazel.repository.skylark;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.shell.AbnormalTerminationException;
 import com.google.devtools.build.lib.shell.BadExitStatusException;
 import com.google.devtools.build.lib.shell.Command;
 import com.google.devtools.build.lib.shell.CommandException;
 import com.google.devtools.build.lib.shell.CommandResult;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.shell.TerminationStatus;
+import com.google.devtools.build.lib.skylarkbuildapi.repository.SkylarkExecutionResultApi;
 import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.util.io.DelegatingOutErr;
 import com.google.devtools.build.lib.util.io.OutErr;
 import com.google.devtools.build.lib.util.io.RecordingOutErr;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -39,16 +42,8 @@ import java.util.Map;
  * contains the standard output stream content, the standard error stream content and the execution
  * return code.
  */
-@SkylarkModule(
-  name = "exec_result",
-  category = SkylarkModuleCategory.NONE,
-  doc =
-      "A structure storing result of repository_ctx.execute() method. It contains the standard"
-          + " output stream content, the standard error stream content and the execution return"
-          + " code."
-)
 @Immutable
-final class SkylarkExecutionResult {
+final class SkylarkExecutionResult implements SkylarkExecutionResultApi {
   private final int returnCode;
   private final String stdout;
   private final String stderr;
@@ -59,30 +54,17 @@ final class SkylarkExecutionResult {
     this.stderr = stderr;
   }
 
-  @SkylarkCallable(
-    name = "return_code",
-    structField = true,
-    doc = "The return code returned after the execution of the program. 256 if an error happened"
-        + " while executing the command."
-  )
+  @Override
   public int getReturnCode() {
     return returnCode;
   }
 
-  @SkylarkCallable(
-    name = "stdout",
-    structField = true,
-    doc = "The content of the standard output returned by the execution."
-  )
+  @Override
   public String getStdout() {
     return stdout;
   }
 
-  @SkylarkCallable(
-    name = "stderr",
-    structField = true,
-    doc = "The content of the standard error output returned by the execution."
-  )
+  @Override
   public String getStderr() {
     return stderr;
   }
@@ -167,10 +149,16 @@ final class SkylarkExecutionResult {
       return this;
     }
 
-    /**
-     * Execute the command specified by {@link #addArguments(Iterable)}.
-     */
-    SkylarkExecutionResult execute() throws EvalException {
+    private static String toString(ByteArrayOutputStream stream) {
+      try {
+        return new String(stream.toByteArray(), UTF_8);
+      } catch (IllegalStateException e) {
+        return "";
+      }
+    }
+
+    /** Execute the command specified by {@link #addArguments(Iterable)}. */
+    SkylarkExecutionResult execute() throws EvalException, InterruptedException {
       Preconditions.checkArgument(timeout > 0, "Timeout must be set prior to calling execute().");
       Preconditions.checkArgument(!args.isEmpty(), "No command specified.");
       Preconditions.checkState(!executed, "Command was already executed, cannot re-use builder.");
@@ -202,6 +190,31 @@ final class SkylarkExecutionResult {
         return new SkylarkExecutionResult(
             e.getResult().getTerminationStatus().getExitCode(), recorder.outAsLatin1(),
             recorder.errAsLatin1());
+      } catch (AbnormalTerminationException e) {
+        TerminationStatus status = e.getResult().getTerminationStatus();
+        if (status.timedOut()) {
+          // Signal a timeout by an exit code outside the normal range
+          return new SkylarkExecutionResult(256, "", e.getMessage());
+        } else if (status.exited()) {
+          return new SkylarkExecutionResult(
+              status.getExitCode(),
+              toString(e.getResult().getStdoutStream()),
+              toString(e.getResult().getStderrStream()));
+        } else if (status.getTerminatingSignal() == 15) {
+          // We have a bit of a problem here: we cannot distingusih between the case where
+          // the SIGTERM was sent by something that the calling rule wants to legitimately handle,
+          // and the case where it was sent by bazel to abort the build, e.g., because something
+          // else failed.
+          //
+          // We just assume the latter to correctly handle aborts, accepting that rule authors have
+          // to write their rules without relying on the ability to handle termination by signal 15.
+          throw new InterruptedException();
+        } else {
+          return new SkylarkExecutionResult(
+              status.getRawExitCode(),
+              toString(e.getResult().getStdoutStream()),
+              toString(e.getResult().getStderrStream()));
+        }
       } catch (CommandException e) {
         // 256 is outside of the standard range for exit code on Unixes. We are not guaranteed that
         // on all system it would be outside of the standard range.

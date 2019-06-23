@@ -16,14 +16,13 @@ package com.google.devtools.build.lib.testutil;
 
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.util.Preconditions;
-
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
@@ -55,7 +54,7 @@ public class BuildRuleBuilder {
   private Multimap<String, String> multiValueAttributes;
   private Map<String, Object> singleValueAttributes;
   protected Map<String, RuleClass> ruleClassMap;
-  
+
   /**
    * Create a new instance.
    *
@@ -66,10 +65,6 @@ public class BuildRuleBuilder {
     this(ruleClass, ruleName, getDefaultRuleClassMap());
   }
 
-  protected static Map<String, RuleClass> getDefaultRuleClassMap() {
-    return TestRuleClassProvider.getRuleClassProvider().getRuleClassMap();
-  }
-
   public BuildRuleBuilder(String ruleClass, String ruleName, Map<String, RuleClass> ruleClassMap) {
     this.ruleClass = ruleClassMap.get(ruleClass);
     this.ruleName = ruleName;
@@ -78,9 +73,11 @@ public class BuildRuleBuilder {
     this.ruleClassMap = ruleClassMap;
   }
 
-  /**
-   * Sets the value of a single valued attribute
-   */
+  protected static Map<String, RuleClass> getDefaultRuleClassMap() {
+    return TestRuleClassProvider.getRuleClassProvider().getRuleClassMap();
+  }
+
+  /** Sets the value of a single valued attribute */
   public BuildRuleBuilder setSingleValueAttribute(String attrName, Object value) {
     Preconditions.checkState(
         !singleValueAttributes.containsKey(attrName), "attribute '%s' already set", attrName);

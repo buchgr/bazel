@@ -3,64 +3,27 @@ layout: documentation
 title: Installing Bazel on macOS
 ---
 
-# <a name="mac-os-x"></a>Install Bazel on macOS (OS X)
+<h1 id="mac-os-x">Installing Bazel on macOS</h1>
 
-Install Bazel on macOS (OS X) using one of the following methods:
+Install Bazel on macOS using one of the following methods:
 
-*   [Use Homebrew (recommended)](#install-on-mac-os-x-homebrew)
-*   [Use the binary installer](#install-with-installer-mac-os-x)
+*   [Use the binary installer (recommended)](#install-with-installer-mac-os-x)
+*   [Use Homebrew](#install-on-mac-os-x-homebrew)
 *   [Compile Bazel from source](install-compile-source.md)
 
 Bazel comes with two completion scripts. After installing Bazel, you can:
 
-*   access the [bash completion script](install.md)
-*   install the [zsh completion script](install.md)
+*   Access the [bash completion script](completion.md#bash)
+*   Install the [zsh completion script](completion.md#zsh)
 
-## <a name="install-on-mac-os-x-homebrew"></a>Install using Homebrew
-
-### 1. Install JDK 8
-
-JDK 8 can be downloaded from [Oracle's JDK
-Page](http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html).
-
-Look for "Mac OS X" under "Java SE Development Kit". This will download a DMG
-image with an install wizard.
-
-### 2. Install Homebrew on macOS (OS X)
-
-Installing Homebrew is a one-time setup:
-
-```bash
-/usr/bin/ruby -e "$(curl -fsSL \
-https://raw.githubusercontent.com/Homebrew/install/master/install)"
-```
-
-### 3. Install Bazel Homebrew Package
-
-```bash
-brew install bazel
-```
-
-You are all set. You can confirm Bazel is installed successfully by running
-
-```bash
-bazel version
-```
-
-Once installed, you can upgrade to a newer version of Bazel with:
-
-```bash
-brew upgrade bazel
-```
-
-## <a name="install-with-installer-mac-os-x"></a>Install using binary installer
+<h2 id="install-with-installer-mac-os-x">Installing using binary installer</h2>
 
 The binary installers are on Bazel's [GitHub releases page](https://github.com/bazelbuild/bazel/releases).
 
-The installer contains the Bazel binary and the required JDK. Some additional
-libraries must also be installed for Bazel to work.
+The installer contains the Bazel binary.<sup>1</sup> Some additional libraries must also be
+installed for Bazel to work.
 
-### 1. Install XCode command line tools
+### Step 1: Install Xcode command line tools
 
 Xcode can be downloaded from the [Apple Developer
 Site](https://developer.apple.com/xcode/downloads/) (this link redirects to
@@ -69,39 +32,30 @@ their App Store).
 For `objc_*` and `ios_*` rule support, you must have Xcode 6.1 or later with iOS
 SDK 8.1 installed on your system.
 
-Once XCode is installed you can trigger signing the license with the following
-command:
+Once Xcode is installed, accept the license agreement for all users with the following command:
 
 ```
-sudo gcc --version
+sudo xcodebuild -license accept
 ```
 
-### 2. Download the Bazel installer
+### Step 2: Download the Bazel installer
 
-Go to Bazel's [GitHub releases page](https://github.com/bazelbuild/bazel/releases).
+Next, download the Bazel binary installer named `bazel-<version>-installer-darwin-x86_64.sh` from the [Bazel releases page on GitHub](https://github.com/bazelbuild/bazel/releases).
 
-Download the binary installer `bazel-0.5.4-installer-darwin-x86_64.sh`. This
-installer contains the Bazel binary and the required JDK, and can be used even
-if a JDK is already installed.
+### Step 3: Run the installer
 
-Note that `bazel-0.5.4-without-jdk-installer-darwin-x86_64.sh` is a version of
-the installer without embedded JDK 8. Only use this installer if you already
-have JDK 8 installed.
+Run the Bazel installer as follows:
 
-### 3. Run the installer
-
-Run the installer:
-
-<pre>
-chmod +x bazel-0.5.4-installer-darwin-x86_64.sh
-./bazel-0.5.4-installer-darwin-x86_64.sh --user
-</pre>
+```
+chmod +x bazel-<version>-installer-darwin-x86_64.sh
+./bazel-<version>-installer-darwin-x86_64.sh --user
+```
 
 The `--user` flag installs Bazel to the `$HOME/bin` directory on your system and
 sets the `.bazelrc` path to `$HOME/.bazelrc`. Use the `--help` command to see
 additional installation options.
 
-### 4. Set up your environment
+### Step 4: Set up your environment
 
 If you ran the Bazel installer with the `--user` flag as above, the Bazel
 executable is installed in your `$HOME/bin` directory. It's a good idea to add
@@ -113,10 +67,46 @@ export PATH="$PATH:$HOME/bin"
 
 You can also add this command to your `~/.bashrc` or `~/.profile` file.
 
-You are all set. You can confirm Bazel is installed successfully by running
+All set! You can confirm Bazel is installed successfully by running the following command:
+
+```bash
+bazel version
+```
+To update to a newer release of Bazel, download and install the desired version.
+
+<h2 id="install-on-mac-os-x-homebrew">Installing using Homebrew</h2>
+
+### Step 1: Install Homebrew on macOS
+
+Install Homebrew (a one-time step):
+
+```bash
+/usr/bin/ruby -e "$(curl -fsSL \
+https://raw.githubusercontent.com/Homebrew/install/master/install)"
+```
+
+### Step 2: Install the Bazel Homebrew package
+
+_Please note that if your system has the Bazel package from homebrew core installed you first
+need to uninstall it by typing `brew uninstall bazel`_
+
+Install the Bazel package via Homebrew as follows:
+
+```bash
+brew tap bazelbuild/tap
+brew install bazelbuild/tap/bazel
+```
+
+All set! You can confirm Bazel is installed successfully by running the following command:
+
 ```bash
 bazel version
 ```
 
-When Bazel is installed using the binary installer, updating Bazel is only
-possible by downloading and installing a new release.
+Once installed, you can upgrade to a newer version of Bazel using the following command:
+
+```bash
+brew upgrade bazelbuild/tap/bazel
+```
+
+

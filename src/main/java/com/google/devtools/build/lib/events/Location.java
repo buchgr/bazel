@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.events;
 
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.Serializable;
@@ -23,24 +24,23 @@ import java.util.Objects;
 /**
  * A Location is a range of characters within a file.
  *
- * <p>The start and end locations may be the same, in which case the Location
- * denotes a point in the file, not a range.  The path may be null, indicating
- * an unknown file.
+ * <p>The start and end locations may be the same, in which case the Location denotes a point in the
+ * file, not a range. The path may be null, indicating an unknown file.
  *
- * <p>Implementations of Location should be optimised for speed of construction,
- * not speed of attribute access, as far more Locations are created during
- * parsing than are ever used to display error messages.
+ * <p>Implementations of Location should be optimised for speed of construction, not speed of
+ * attribute access, as far more Locations are created during parsing than are ever used to display
+ * error messages.
  */
 public abstract class Location implements Serializable {
-
+  @AutoCodec
   @Immutable
-  private static final class LocationWithPathAndStartColumn extends Location {
+  static final class LocationWithPathAndStartColumn extends Location {
     private final PathFragment path;
     private final LineAndColumn startLineAndColumn;
 
-    private LocationWithPathAndStartColumn(PathFragment path, int startOffSet, int endOffSet,
-        LineAndColumn startLineAndColumn) {
-      super(startOffSet, endOffSet);
+    LocationWithPathAndStartColumn(
+        PathFragment path, int startOffset, int endOffset, LineAndColumn startLineAndColumn) {
+      super(startOffset, endOffset);
       this.path = path;
       this.startLineAndColumn = startLineAndColumn;
     }
@@ -174,8 +174,9 @@ public abstract class Location implements Serializable {
   }
 
   /**
-   * A default implementation of toString() that formats the location in the
-   * following ways based on the amount of information available:
+   * A default implementation of toString() that formats the location in the following ways based on
+   * the amount of information available:
+   *
    * <pre>
    *    "foo.cc:23:2"
    *    "23:2"
@@ -187,25 +188,6 @@ public abstract class Location implements Serializable {
     return printWithPath(getPath());
   }
 
-  private String printWithPath(PathFragment path) {
-    StringBuilder buf = new StringBuilder();
-    if (path != null) {
-      buf.append(path).append(':');
-    }
-    LineAndColumn start = getStartLineAndColumn();
-    if (start == null) {
-      if (getStartOffset() == 0 && getEndOffset() == 0) {
-        buf.append("1"); // i.e. line 1 (special case: no information at all)
-      } else {
-        buf.append("char offsets ").
-            append(getStartOffset()).append("--").append(getEndOffset());
-      }
-    } else {
-      buf.append(start.getLine()).append(':').append(start.getColumn());
-    }
-    return buf.toString();
-  }
-
   /**
    * A default implementation of toString() that formats the location in the following ways based on
    * the amount of information available:
@@ -215,14 +197,14 @@ public abstract class Location implements Serializable {
    *   "23:2"
    *   "foo.cc:char offsets 123--456"
    *   "char offsets 123--456"
-   *</pre>
+   * </pre>
    *
    * <p>This version replace the package's path with the relative package path. I.e., if {@code
    * packagePath} is equivalent to "/absolute/path/to/workspace/pack/age" and {@code
    * relativePackage} is equivalent to "pack/age" then the result for the 2nd character of the 23rd
    * line of the "foo/bar.cc" file in "pack/age" would be "pack/age/foo/bar.cc:23:2" whereas with
    * {@link #print()} the result would be "/absolute/path/to/workspace/pack/age/foo/bar.cc:23:2".
-   * 
+   *
    * <p>If {@code packagePath} is not a parent of the location path, then the result of this
    * function is the same as the result of {@link #print()}.
    */
@@ -235,6 +217,24 @@ public abstract class Location implements Serializable {
     } else {
       return printWithPath(path);
     }
+  }
+
+  public String printWithPath(PathFragment path) {
+    StringBuilder buf = new StringBuilder();
+    if (path != null) {
+      buf.append(path).append(':');
+    }
+    LineAndColumn start = getStartLineAndColumn();
+    if (start == null) {
+      if (getStartOffset() == 0 && getEndOffset() == 0) {
+        buf.append("1"); // i.e. line 1 (special case: no information at all)
+      } else {
+        buf.append("char offsets ").append(getStartOffset()).append("--").append(getEndOffset());
+      }
+    } else {
+      buf.append(start.getLine()).append(':').append(start.getColumn());
+    }
+    return buf.toString();
   }
 
   /**
@@ -254,11 +254,10 @@ public abstract class Location implements Serializable {
     return this.startOffset == that.startOffset && this.endOffset == that.endOffset;
   }
 
-  /**
-   * A value class that describes the line and column of an offset in a file.
-   */
+  /** A value class that describes the line and column of an offset in a file. */
+  @AutoCodec
   @Immutable
-  public static final class LineAndColumn implements Serializable {
+  public static final class LineAndColumn {
     private final int line;
     private final int column;
 
@@ -293,11 +292,11 @@ public abstract class Location implements Serializable {
     }
   }
 
-  /**
-   * Dummy location for built-in functions which ensures that stack traces contain "nice" location
-   * strings.
-   */
-  public static final Location BUILTIN = new Location(0, 0) {
+  static final class BuiltinLocation extends Location {
+    private BuiltinLocation() {
+      super(0, 0);
+    }
+
     @Override
     public String toString() {
       return "Built-In";
@@ -307,7 +306,23 @@ public abstract class Location implements Serializable {
     public PathFragment getPath() {
       return null;
     }
-  };
+
+    @Override
+    public int hashCode() {
+      return internalHashCode();
+    }
+
+    @Override
+    public boolean equals(Object object) {
+      return object instanceof BuiltinLocation;
+    }
+  }
+
+  /**
+   * Dummy location for built-in functions which ensures that stack traces contain "nice" location
+   * strings.
+   */
+  @AutoCodec public static final Location BUILTIN = new BuiltinLocation();
 
   /**
    * Returns the location in the format "filename:line".
@@ -315,20 +330,17 @@ public abstract class Location implements Serializable {
    * <p>If such a location is not defined, this method returns an empty string.
    */
   public static String printLocation(Location location) {
-    return (location == null) ? "" : location.printLocation();
-  }
+    if (location == null) {
+      return "";
+    }
 
-  /**
-   * Returns this location in the format "filename:line".
-   */
-  public String printLocation() {
     StringBuilder builder = new StringBuilder();
-    PathFragment path = getPath();
+    PathFragment path = location.getPath();
     if (path != null) {
       builder.append(path.getPathString());
     }
 
-    LineAndColumn position = getStartLineAndColumn();
+    LineAndColumn position = location.getStartLineAndColumn();
     if (position != null) {
       builder.append(":").append(position.getLine());
     }

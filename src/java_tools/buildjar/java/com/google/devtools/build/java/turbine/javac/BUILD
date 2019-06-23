@@ -1,15 +1,21 @@
-package(default_visibility = ["//src:__subpackages__"])
+package(default_visibility = ["//src/java_tools/buildjar:buildjar_package_group"])
+
+java_binary(
+    name = "turbine",
+    main_class = "com.google.devtools.build.java.turbine.javac.JavacTurbine",
+    runtime_deps = [":javac_turbine"],
+)
 
 java_library(
     name = "javac_turbine",
     srcs = ["JavacTurbine.java"],
     deps = [
+        ":formatted_diagnostic",
         ":javac_transitive",
         ":javac_turbine_compile_request",
         ":javac_turbine_compile_result",
         ":javac_turbine_compiler",
         ":zip_util",
-        "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar:JarOwner",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar:javac_options",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:dependency",
         "//third_party:asm",
@@ -36,6 +42,7 @@ java_library(
     name = "javac_turbine_compile_result",
     srcs = ["JavacTurbineCompileResult.java"],
     deps = [
+        ":formatted_diagnostic",
         "//third_party:guava",
         "//third_party:jsr305",
         "//third_party/java/jdk/langtools:javac",
@@ -46,11 +53,13 @@ java_library(
     name = "javac_turbine_compiler",
     srcs = ["JavacTurbineCompiler.java"],
     deps = [
+        ":formatted_diagnostic",
         ":javac_transitive",
         ":javac_turbine_compile_request",
         ":javac_turbine_compile_result",
         ":javac_turbine_java_compiler",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:dependency",
+        "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/statistics",
         "//third_party:guava",
         "//third_party:jimfs",
         "//third_party:jsr305",
@@ -65,6 +74,7 @@ java_library(
         ":javac_transitive",
         ":tree_pruner",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/plugins:dependency",
+        "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/javac/statistics",
         "//third_party:jsr305",
         "//third_party/java/jdk/langtools:javac",
     ],
@@ -97,6 +107,14 @@ java_library(
     deps = [
         "//third_party:guava",
         "//third_party:jsr305",
+        "//third_party/java/jdk/langtools:javac",
+    ],
+)
+
+java_library(
+    name = "formatted_diagnostic",
+    srcs = ["FormattedDiagnostic.java"],
+    deps = [
         "//third_party/java/jdk/langtools:javac",
     ],
 )

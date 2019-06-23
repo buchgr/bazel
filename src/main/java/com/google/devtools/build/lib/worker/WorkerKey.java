@@ -13,16 +13,15 @@
 // limitations under the License.
 package com.google.devtools.build.lib.worker;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.hash.HashCode;
 import com.google.devtools.build.lib.actions.Spawns;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.SortedMap;
 
 /**
@@ -41,11 +40,7 @@ final class WorkerKey {
    * methods.
    */
   private final HashCode workerFilesCombinedHash;
-
   private final SortedMap<PathFragment, HashCode> workerFilesWithHashes;
-
-  private final Map<PathFragment, Path> inputFiles;
-  private final Set<PathFragment> outputFiles;
   private final boolean mustBeSandboxed;
 
   WorkerKey(
@@ -55,8 +50,6 @@ final class WorkerKey {
       String mnemonic,
       HashCode workerFilesCombinedHash,
       SortedMap<PathFragment, HashCode> workerFilesWithHashes,
-      Map<PathFragment, Path> inputFiles,
-      Set<PathFragment> outputFiles,
       boolean mustBeSandboxed) {
     this.args = ImmutableList.copyOf(Preconditions.checkNotNull(args));
     this.env = ImmutableMap.copyOf(Preconditions.checkNotNull(env));
@@ -64,8 +57,6 @@ final class WorkerKey {
     this.mnemonic = Preconditions.checkNotNull(mnemonic);
     this.workerFilesCombinedHash = Preconditions.checkNotNull(workerFilesCombinedHash);
     this.workerFilesWithHashes = Preconditions.checkNotNull(workerFilesWithHashes);
-    this.inputFiles = Preconditions.checkNotNull(inputFiles);
-    this.outputFiles = Preconditions.checkNotNull(outputFiles);
     this.mustBeSandboxed = mustBeSandboxed;
   }
 
@@ -91,14 +82,6 @@ final class WorkerKey {
 
   public SortedMap<PathFragment, HashCode> getWorkerFilesWithHashes() {
     return workerFilesWithHashes;
-  }
-
-  public Map<PathFragment, Path> getInputFiles() {
-    return inputFiles;
-  }
-
-  public Set<PathFragment> getOutputFiles() {
-    return outputFiles;
   }
 
   public boolean mustBeSandboxed() {
@@ -140,6 +123,6 @@ final class WorkerKey {
 
   @Override
   public String toString() {
-    return Spawns.asShellCommand(args, execRoot, env);
+    return Spawns.asShellCommand(args, execRoot, env, /* prettyPrintArgs= */ false);
   }
 }

@@ -21,7 +21,6 @@ import com.google.devtools.build.lib.analysis.BaseRuleClasses.RootRule;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
 
 /**
@@ -29,12 +28,21 @@ import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
  */
 public class WorkspaceBaseRule implements RuleDefinition {
   @Override
-  public RuleClass build(Builder builder, RuleDefinitionEnvironment environment) {
+  public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment environment) {
     return builder
         .exemptFromConstraintChecking("workspace rules aren't built for target environments")
-        .add(attr("generator_name", STRING).undocumented("internal"))
-        .add(attr("generator_function", STRING).undocumented("internal"))
-        .add(attr("generator_location", STRING).undocumented("internal"))
+        .add(
+            attr("generator_name", STRING)
+                .undocumented("internal")
+                .nonconfigurable("internal attributes are non-configurable"))
+        .add(
+            attr("generator_function", STRING)
+                .undocumented("internal")
+                .nonconfigurable("internal attributes are non-configurable"))
+        .add(
+            attr("generator_location", STRING)
+                .undocumented("internal")
+                .nonconfigurable("internal attributes are non-configurable"))
         .build();
   }
 

@@ -14,14 +14,12 @@
 package com.google.devtools.build.lib.rules.java;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.analysis.PlatformOptions;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.Fragment;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
-import com.google.devtools.build.lib.analysis.config.ConfigurationEnvironment;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFragmentFactory;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
-import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.rules.java.JavaConfiguration.JavaClasspathMode;
 
 /**
  * A loader that creates JavaConfiguration instances based on JavaBuilder configurations and
@@ -30,26 +28,17 @@ import com.google.devtools.build.lib.rules.java.JavaConfiguration.JavaClasspathM
 public class JavaConfigurationLoader implements ConfigurationFragmentFactory {
   @Override
   public ImmutableSet<Class<? extends FragmentOptions>> requiredOptions() {
-    return ImmutableSet.<Class<? extends FragmentOptions>>of(JavaOptions.class);
+    return ImmutableSet.<Class<? extends FragmentOptions>>of(
+        JavaOptions.class, PlatformOptions.class);
   }
 
-
   @Override
-  public JavaConfiguration create(ConfigurationEnvironment env, BuildOptions buildOptions)
-      throws InvalidConfigurationException, InterruptedException {
-    JavaOptions javaOptions = buildOptions.get(JavaOptions.class);
-    return create(javaOptions, javaOptions.javaToolchain);
+  public JavaConfiguration create(BuildOptions buildOptions) throws InvalidConfigurationException {
+    return new JavaConfiguration(buildOptions.get(JavaOptions.class));
   }
 
   @Override
   public Class<? extends Fragment> creates() {
     return JavaConfiguration.class;
-  }
-  
-  private JavaConfiguration create(JavaOptions javaOptions, Label javaToolchain)
-      throws InvalidConfigurationException {
-    boolean generateJavaDeps =
-        javaOptions.javaDeps || javaOptions.javaClasspath != JavaClasspathMode.OFF;
-    return new JavaConfiguration(generateJavaDeps, javaOptions.jvmOpts, javaOptions, javaToolchain);
   }
 }

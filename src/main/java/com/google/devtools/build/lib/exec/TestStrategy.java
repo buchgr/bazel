@@ -15,93 +15,91 @@
 package com.google.devtools.build.lib.exec;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.io.ByteStreams;
-import com.google.common.io.Closeables;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.actions.ExecException;
-import com.google.devtools.build.lib.actions.SpawnResult;
+import com.google.devtools.build.lib.actions.TestExecException;
 import com.google.devtools.build.lib.actions.UserExecException;
-import com.google.devtools.build.lib.analysis.config.BinTools;
+import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.PerLabelOptions;
 import com.google.devtools.build.lib.analysis.test.TestActionContext;
+import com.google.devtools.build.lib.analysis.test.TestConfiguration;
 import com.google.devtools.build.lib.analysis.test.TestResult;
 import com.google.devtools.build.lib.analysis.test.TestRunnerAction;
+import com.google.devtools.build.lib.analysis.test.TestRunnerAction.ResolvedPaths;
 import com.google.devtools.build.lib.analysis.test.TestTargetExecutionSettings;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.io.FileWatcher;
 import com.google.devtools.build.lib.util.io.OutErr;
-import com.google.devtools.build.lib.vfs.FileStatus;
-import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.TestCase;
-import com.google.devtools.common.options.Converters.RangeConverter;
+import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
 import com.google.devtools.common.options.EnumConverter;
-import com.google.devtools.common.options.OptionsParsingException;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import javax.annotation.Nullable;
 
 /** A strategy for executing a {@link TestRunnerAction}. */
 public abstract class TestStrategy implements TestActionContext {
-  public static final String TEST_SETUP_BASENAME = "test-setup.sh";
 
   /**
    * Ensures that all directories used to run test are in the correct state and their content will
    * not result in stale files.
    */
   protected void prepareFileSystem(
-      TestRunnerAction testAction, Path tmpDir, Path coverageDir, Path workingDirectory)
+      TestRunnerAction testAction, Path execRoot, Path tmpDir, Path workingDirectory)
       throws IOException {
-    if (testAction.isCoverageMode()) {
-      recreateDirectory(coverageDir);
+    if (tmpDir != null) {
+      recreateDirectory(tmpDir);
     }
-    recreateDirectory(tmpDir);
-    FileSystemUtils.createDirectoryAndParents(workingDirectory);
+    if (workingDirectory != null) {
+      workingDirectory.createDirectoryAndParents();
+    }
+
+    ResolvedPaths resolvedPaths = testAction.resolve(execRoot);
+    if (testAction.isCoverageMode()) {
+      recreateDirectory(resolvedPaths.getCoverageDirectory());
+    }
+
+    resolvedPaths.getBaseDir().createDirectoryAndParents();
+    resolvedPaths.getUndeclaredOutputsDir().createDirectoryAndParents();
+    resolvedPaths.getUndeclaredOutputsAnnotationsDir().createDirectoryAndParents();
+    resolvedPaths.getSplitLogsDir().createDirectoryAndParents();
+  }
+
+  /**
+   * Ensures that all directories used to run test are in the correct state and their content will
+   * not result in stale files. Only use this if no local tmp and working directory are required.
+   */
+  protected void prepareFileSystem(TestRunnerAction testAction, Path execRoot) throws IOException {
+    prepareFileSystem(testAction, execRoot, null, null);
   }
 
   /** Removes directory if it exists and recreates it. */
-  protected void recreateDirectory(Path directory) throws IOException {
-    FileSystemUtils.deleteTree(directory);
-    FileSystemUtils.createDirectoryAndParents(directory);
-  }
-
-  /** Converter for the --flaky_test_attempts option. */
-  public static class TestAttemptsConverter extends RangeConverter {
-    public TestAttemptsConverter() {
-      super(1, 10);
-    }
-
-    @Override
-    public Integer convert(String input) throws OptionsParsingException {
-      if ("default".equals(input)) {
-        return -1;
-      } else {
-        return super.convert(input);
-      }
-    }
-
-    @Override
-    public String getTypeDescription() {
-      return super.getTypeDescription() + " or the string \"default\"";
-    }
+  private void recreateDirectory(Path directory) throws IOException {
+    directory.deleteTree();
+    directory.createDirectoryAndParents();
   }
 
   /** An enum for specifying different formats of test output. */
@@ -124,7 +122,9 @@ public abstract class TestStrategy implements TestActionContext {
     SHORT, // Print information only about tests.
     TERSE, // Like "SHORT", but even shorter: Do not print PASSED and NO STATUS tests.
     DETAILED, // Print information only about failed test cases.
-    NONE; // Do not print summary.
+    NONE, // Do not print summary.
+    TESTCASE; // Print summary in test case resolution, do not print detailed information about
+    // failed test cases.
 
     /** Converts to {@link TestSummaryFormat}. */
     public static class Converter extends EnumConverter<TestSummaryFormat> {
@@ -148,44 +148,47 @@ public abstract class TestStrategy implements TestActionContext {
   }
 
   @Override
-  public abstract Set<SpawnResult> exec(
-      TestRunnerAction action, ActionExecutionContext actionExecutionContext)
-      throws ExecException, InterruptedException;
+  public final boolean isTestKeepGoing() {
+    return executionOptions.testKeepGoing;
+  }
 
   /**
    * Generates a command line to run for the test action, taking into account coverage and {@code
    * --run_under} settings.
    *
-   * @param coverageScript a script interjected between setup script and rest of command line to
-   *     collect coverage data. If this is an empty string, it is ignored.
    * @param testAction The test action.
    * @return the command line as string list.
-   * @throws ExecException 
+   * @throws ExecException
    */
-  protected ImmutableList<String> getArgs(String coverageScript, TestRunnerAction testAction)
-      throws ExecException {
+  public static ImmutableList<String> getArgs(TestRunnerAction testAction) throws ExecException {
     List<String> args = Lists.newArrayList();
-    // TODO(ulfjack): This is incorrect for remote execution, where we need to consider the target
-    // configuration, not the machine Bazel happens to run on. Change this to something like:
-    // testAction.getConfiguration().getTargetOS() == OS.WINDOWS
-    if (OS.getCurrent() == OS.WINDOWS) {
-      args.add(testAction.getShExecutable().getPathString());
+    // TODO(ulfjack): `executedOnWindows` is incorrect for remote execution, where we need to
+    // consider the target configuration, not the machine Bazel happens to run on. Change this to
+    // something like: testAction.getConfiguration().getTargetOS() == OS.WINDOWS
+    final boolean executedOnWindows = (OS.getCurrent() == OS.WINDOWS);
+    final boolean useTestWrapper = testAction.isUsingTestWrapperInsteadOfTestSetupScript();
+
+    if (executedOnWindows && !useTestWrapper) {
+      // TestActionBuilder constructs TestRunnerAction with a 'null' shell path only when we use the
+      // native test wrapper. Something clearly went wrong.
+      Preconditions.checkNotNull(testAction.getShExecutableMaybe(), "%s", testAction);
+      args.add(testAction.getShExecutableMaybe().getPathString());
       args.add("-c");
-      args.add("$0 $*");
+      args.add("$0 \"$@\"");
     }
 
-    Artifact testSetup = testAction.getRuntimeArtifact(TEST_SETUP_BASENAME);
+    Artifact testSetup = testAction.getTestSetupScript();
     args.add(testSetup.getExecPath().getCallablePathString());
 
     if (testAction.isCoverageMode()) {
-      args.add(coverageScript);
+      args.add(testAction.getCollectCoverageScript().getExecPathString());
     }
 
     TestTargetExecutionSettings execSettings = testAction.getExecutionSettings();
 
     // Insert the command prefix specified by the "--run_under=<command-prefix>" option, if any.
     if (execSettings.getRunUnder() != null) {
-      addRunUnderArgs(testAction, args);
+      addRunUnderArgs(testAction, args, executedOnWindows);
     }
 
     // Execute the test using the alias in the runfiles tree, as mandated by the Test Encyclopedia.
@@ -198,23 +201,23 @@ public abstract class TestStrategy implements TestActionContext {
     return ImmutableList.copyOf(args);
   }
 
-  private static void addRunUnderArgs(TestRunnerAction testAction, List<String> args) {
+  private static void addRunUnderArgs(
+      TestRunnerAction testAction, List<String> args, boolean executedOnWindows) {
     TestTargetExecutionSettings execSettings = testAction.getExecutionSettings();
     if (execSettings.getRunUnderExecutable() != null) {
       args.add(execSettings.getRunUnderExecutable().getRootRelativePath().getCallablePathString());
     } else {
-      String command = execSettings.getRunUnder().getCommand();
-      // --run_under commands that do not contain '/' are either shell built-ins or need to be
-      // located on the PATH env, so we wrap them in a shell invocation. Note that we shell tokenize
-      // the --run_under parameter and getCommand only returns the first such token.
-      boolean needsShell = !command.contains("/");
-      if (needsShell) {
-        args.add(testAction.getConfiguration().getShellExecutable().getPathString());
+      if (execSettings.needsShell(executedOnWindows)) {
+        // TestActionBuilder constructs TestRunnerAction with a 'null' shell only when none is
+        // required. Something clearly went wrong.
+        Preconditions.checkNotNull(testAction.getShExecutableMaybe(), "%s", testAction);
+        String shellExecutable = testAction.getShExecutableMaybe().getPathString();
+        args.add(shellExecutable);
         args.add("-c");
         args.add("\"$@\"");
-        args.add("/bin/sh"); // Sets $0.
+        args.add(shellExecutable); // Sets $0.
       }
-      args.add(command);
+      args.add(execSettings.getRunUnder().getCommand());
     }
     args.addAll(testAction.getExecutionSettings().getRunUnder().getOptions());
   }
@@ -228,18 +231,32 @@ public abstract class TestStrategy implements TestActionContext {
   @VisibleForTesting /* protected */
   public int getTestAttempts(TestRunnerAction action) {
     return action.getTestProperties().isFlaky()
-        ? getTestAttemptsForFlakyTest()
-        : getTestAttempts(/*defaultTestAttempts=*/ 1);
+        ? getTestAttemptsForFlakyTest(action)
+        : getTestAttempts(action, /*defaultTestAttempts=*/ 1);
   }
 
-  public int getTestAttemptsForFlakyTest() {
-    return getTestAttempts(/*defaultTestAttempts=*/ 3);
+  public int getTestAttemptsForFlakyTest(TestRunnerAction action) {
+    return getTestAttempts(action, /*defaultTestAttempts=*/ 3);
   }
 
-  private int getTestAttempts(int defaultTestAttempts) {
-    return executionOptions.testAttempts == -1
-        ? defaultTestAttempts
-        : executionOptions.testAttempts;
+  private int getTestAttempts(TestRunnerAction action, int defaultTestAttempts) {
+    Label testLabel = action.getOwner().getLabel();
+    return getTestAttemptsPerLabel(executionOptions, testLabel, defaultTestAttempts);
+  }
+
+  private static int getTestAttemptsPerLabel(
+      ExecutionOptions options, Label label, int defaultTestAttempts) {
+    // Check from the last provided, so that the last option provided takes precedence.
+    for (PerLabelOptions perLabelAttempts : Lists.reverse(options.testAttempts)) {
+      if (perLabelAttempts.isIncluded(label)) {
+        String attempts = Iterables.getOnlyElement(perLabelAttempts.getOptions());
+        if ("default".equals(attempts)) {
+          return defaultTestAttempts;
+        }
+        return Integer.parseInt(attempts);
+      }
+    }
+    return defaultTestAttempts;
   }
 
   /**
@@ -248,7 +265,11 @@ public abstract class TestStrategy implements TestActionContext {
    * but ends up with the same effective value as all other rules in that bucket.
    */
   protected final Duration getTimeout(TestRunnerAction testAction) {
-    return executionOptions.testTimeout.get(testAction.getTestProperties().getTimeout());
+    BuildConfiguration configuration = testAction.getConfiguration();
+    return configuration
+        .getFragment(TestConfiguration.class)
+        .getTestTimeout()
+        .get(testAction.getTestProperties().getTimeout());
   }
 
   /*
@@ -256,8 +277,8 @@ public abstract class TestStrategy implements TestActionContext {
    */
   protected void postTestResult(ActionExecutionContext actionExecutionContext, TestResult result)
       throws IOException {
-    result.getTestAction().saveCacheStatus(result.getData());
-    actionExecutionContext.getEventBus().post(result);
+    result.getTestAction().saveCacheStatus(actionExecutionContext, result.getData());
+    actionExecutionContext.getEventHandler().post(result);
   }
 
   /**
@@ -278,11 +299,11 @@ public abstract class TestStrategy implements TestActionContext {
     }
   }
 
-  protected String getTmpDirName(PathFragment execPath, int shard, int run) {
+  public static String getTmpDirName(TestRunnerAction action) {
     Fingerprint digest = new Fingerprint();
-    digest.addPath(execPath);
-    digest.addInt(shard);
-    digest.addInt(run);
+    digest.addPath(action.getExecutionSettings().getExecutable().getExecPath());
+    digest.addInt(action.getShardNum());
+    digest.addInt(action.getRunNumber());
     return digest.hexDigestAndReset();
   }
 
@@ -291,7 +312,8 @@ public abstract class TestStrategy implements TestActionContext {
   protected TestCase parseTestResult(Path resultFile) {
     /* xml files. We avoid parsing it unnecessarily, since test results can potentially consume
     a large amount of memory. */
-    if (executionOptions.testSummary != TestSummaryFormat.DETAILED) {
+    if ((executionOptions.testSummary != TestSummaryFormat.DETAILED)
+        && (executionOptions.testSummary != TestSummaryFormat.TESTCASE)) {
       return null;
     }
 
@@ -299,6 +321,45 @@ public abstract class TestStrategy implements TestActionContext {
       return new TestXmlOutputParser().parseXmlIntoTestResult(fileStream);
     } catch (IOException | TestXmlOutputParserException e) {
       return null;
+    }
+  }
+
+  /**
+   * Outputs test result to the stdout after test has finished (e.g. for --test_output=all or
+   * --test_output=errors). Will also try to group output lines together (up to 10000 lines) so
+   * parallel test outputs will not get interleaved.
+   */
+  protected void processTestOutput(
+      ActionExecutionContext actionExecutionContext,
+      TestResultData testResultData,
+      String testName,
+      Path testLog)
+      throws IOException {
+    boolean isPassed = testResultData.getTestPassed();
+    try {
+      if (TestLogHelper.shouldOutputTestLog(executionOptions.testOutput, isPassed)) {
+        TestLogHelper.writeTestLog(
+            testLog, testName, actionExecutionContext.getFileOutErr().getOutputStream());
+      }
+    } finally {
+      if (isPassed) {
+        actionExecutionContext.getEventHandler().handle(Event.of(EventKind.PASS, null, testName));
+      } else {
+        if (testResultData.hasStatusDetails()) {
+          actionExecutionContext
+              .getEventHandler()
+              .handle(Event.error(testName + ": " + testResultData.getStatusDetails()));
+        }
+        if (testResultData.getStatus() == BlazeTestStatus.TIMEOUT) {
+          actionExecutionContext
+              .getEventHandler()
+              .handle(Event.of(EventKind.TIMEOUT, null, testName + " (see " + testLog + ")"));
+        } else {
+          actionExecutionContext
+              .getEventHandler()
+              .handle(Event.of(EventKind.FAIL, null, testName + " (see " + testLog + ")"));
+        }
+      }
     }
   }
 
@@ -343,7 +404,13 @@ public abstract class TestStrategy implements TestActionContext {
       boolean enableRunfiles)
       throws ExecException, InterruptedException {
     TestTargetExecutionSettings execSettings = testAction.getExecutionSettings();
-    Path runfilesDir = execSettings.getRunfilesDir();
+
+    if (execSettings.getInputManifest() == null) {
+      throw new TestExecException("cannot run local tests with --nobuild_runfile_manifests");
+    }
+
+    Path runfilesDir =
+        actionExecutionContext.getPathResolver().convertPath(execSettings.getRunfilesDir());
 
     // If the symlink farm is already created then return the existing directory. If not we
     // need to explicitly build it. This can happen when --nobuild_runfile_links is supplied
@@ -358,7 +425,7 @@ public abstract class TestStrategy implements TestActionContext {
     // local test sharding.
     long startTime = Profiler.nanoTimeMaybe();
     synchronized (execSettings.getInputManifest()) {
-      Profiler.instance().logSimpleTask(startTime, ProfilerTask.WAIT, testAction);
+      Profiler.instance().logSimpleTask(startTime, ProfilerTask.WAIT, testAction.describe());
       updateLocalRunfilesDirectory(
           testAction,
           runfilesDir,
@@ -394,7 +461,8 @@ public abstract class TestStrategy implements TestActionContext {
       // an up-to-date check.
       if (!outputManifest.isSymbolicLink()
           && Arrays.equals(
-              outputManifest.getDigest(), execSettings.getInputManifest().getPath().getDigest())) {
+              outputManifest.getDigest(),
+              actionExecutionContext.getInputPath(execSettings.getInputManifest()).getDigest())) {
         return;
       }
     } catch (IOException e1) {
@@ -409,34 +477,24 @@ public abstract class TestStrategy implements TestActionContext {
                     + execSettings.getExecutable().prettyPrint()
                     + "'."));
 
-    new SymlinkTreeHelper(execSettings.getInputManifest().getPath(), runfilesDir, false)
-        .createSymlinks(
-            testAction, actionExecutionContext, binTools, shellEnvironment, enableRunfiles);
+    new SymlinkTreeHelper(
+            actionExecutionContext.getInputPath(execSettings.getInputManifest()),
+            runfilesDir,
+            false)
+        .createSymlinks(actionExecutionContext, binTools, shellEnvironment, enableRunfiles);
 
     actionExecutionContext.getEventHandler()
         .handle(Event.progress(testAction.getProgressMessage()));
   }
 
-  /** In rare cases, we might write something to stderr. Append it to the real test.log. */
-  protected static void appendStderr(Path stdOut, Path stdErr) throws IOException {
-    FileStatus stat = stdErr.statNullable();
-    OutputStream out = null;
-    InputStream in = null;
-    if (stat != null) {
-      try {
-        if (stat.getSize() > 0) {
-          if (stdOut.exists()) {
-            stdOut.setWritable(true);
-          }
-          out = stdOut.getOutputStream(true);
-          in = stdErr.getInputStream();
-          ByteStreams.copy(in, out);
-        }
-      } finally {
-        Closeables.close(out, true);
-        Closeables.close(in, true);
-        stdErr.delete();
-      }
+  protected static void closeSuppressed(Throwable e, @Nullable Closeable c) {
+    if (c == null) {
+      return;
+    }
+    try {
+      c.close();
+    } catch (IOException e2) {
+      e.addSuppressed(e2);
     }
   }
 

@@ -13,14 +13,16 @@
 // limitations under the License.
 package com.google.devtools.build.skyframe;
 
+import com.google.common.base.MoreObjects;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.skyframe.SkyFunctionException.ReifiedSkyFunctionException;
 import java.util.Collection;
+import java.util.Objects;
 import javax.annotation.Nullable;
 
 /**
@@ -54,7 +56,7 @@ public class ErrorInfo {
         ImmutableList.of(cycleInfo),
         /*isDirectlyTransient=*/ false,
         /*isTransitivelyTransient=*/ false,
-        /* isCatostrophic= */ false);
+        /* isCatastrophic= */ false);
   }
 
   /** Create an ErrorInfo from a collection of existing errors. */
@@ -108,7 +110,7 @@ public class ErrorInfo {
       ImmutableList<CycleInfo> cycles,
       boolean isDirectlyTransient,
       boolean isTransitivelyTransient,
-      boolean isCatostrophic) {
+      boolean isCatastrophic) {
     Preconditions.checkState(exception != null || !Iterables.isEmpty(cycles),
         "At least one of exception and cycles must be non-null/empty, respectively");
     Preconditions.checkState((exception == null) == (rootCauseOfException == null),
@@ -121,13 +123,80 @@ public class ErrorInfo {
     this.cycles = cycles;
     this.isDirectlyTransient = isDirectlyTransient;
     this.isTransitivelyTransient = isTransitivelyTransient;
-    this.isCatastrophic = isCatostrophic;
+    this.isCatastrophic = isCatastrophic;
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (this == obj) {
+      return true;
+    }
+    if (!(obj instanceof ErrorInfo)) {
+      return false;
+    }
+
+    ErrorInfo other = (ErrorInfo) obj;
+    if (rootCauses != other.rootCauses) {
+      if (rootCauses == null || other.rootCauses == null) {
+        return false;
+      }
+      if (!rootCauses.shallowEquals(other.rootCauses)) {
+        return false;
+      }
+    }
+
+    if (!Objects.equals(cycles, other.cycles)) {
+      return false;
+    }
+
+    // Don't check the specific exception as most exceptions don't implement equality but at least
+    // check their types and messages are the same.
+    if (exception != other.exception) {
+      if (exception == null || other.exception == null) {
+        return false;
+      }
+      // Class objects are singletons with a single class loader.
+      if (exception.getClass() != other.exception.getClass()) {
+        return false;
+      }
+      if (!Objects.equals(exception.getMessage(), other.exception.getMessage())) {
+        return false;
+      }
+    }
+
+    if (!Objects.equals(rootCauseOfException, other.rootCauseOfException)) {
+      return false;
+    }
+
+    return isDirectlyTransient == other.isDirectlyTransient
+        && isTransitivelyTransient == other.isTransitivelyTransient
+        && isCatastrophic == other.isCatastrophic;
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(
+        exception == null ? null : exception.getClass(),
+        exception == null ? "" : exception.getMessage(),
+        rootCauseOfException,
+        cycles,
+        isDirectlyTransient,
+        isTransitivelyTransient,
+        isCatastrophic,
+        rootCauses == null ? 0 : rootCauses.shallowHashCode());
   }
 
   @Override
   public String toString() {
-    return String.format("<ErrorInfo exception=%s rootCauses=%s cycles=%s>",
-        exception, rootCauses, cycles);
+    return MoreObjects.toStringHelper(this)
+        .add("exception", exception)
+        .add("rootCauses", rootCauses)
+        .add("cycles", cycles)
+        .add("isCatastrophic", isCatastrophic)
+        .add("rootCauseOfException", rootCauseOfException)
+        .add("isDirectlyTransient", isDirectlyTransient)
+        .add("isTransitivelyTransient", isTransitivelyTransient)
+        .toString();
   }
 
   /**
@@ -165,7 +234,7 @@ public class ErrorInfo {
    * path is returned here. However, if there are multiple paths to the same cycle, each of which
    * goes through a different child, each of them is returned here.
    */
-  public Iterable<CycleInfo> getCycleInfo() {
+  public ImmutableList<CycleInfo> getCycleInfo() {
     return cycles;
   }
 

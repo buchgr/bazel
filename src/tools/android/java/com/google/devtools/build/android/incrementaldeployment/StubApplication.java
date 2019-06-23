@@ -262,11 +262,15 @@ public class StubApplication extends Application {
         throw new IllegalStateException("Could not create new AssetManager");
       }
 
-      // Kitkat needs this method call, Lollipop doesn't. However, it doesn't seem to cause any harm
-      // in L, so we do it unconditionally.
-      Method mEnsureStringBlocks = AssetManager.class.getDeclaredMethod("ensureStringBlocks");
-      mEnsureStringBlocks.setAccessible(true);
-      mEnsureStringBlocks.invoke(newAssetManager);
+      if (android.os.Build.VERSION.SDK_INT <= android.os.Build.VERSION_CODES.KITKAT) {
+        // Kitkat needs this method call, Lollipop doesn't.
+        //
+        // This method call was removed from Pie:
+        // https://android.googlesource.com/platform/frameworks/base/+/bebfcc46a249a70af04bc18490a897888a142fb8%5E%21/#F7
+        Method mEnsureStringBlocks = AssetManager.class.getDeclaredMethod("ensureStringBlocks");
+        mEnsureStringBlocks.setAccessible(true);
+        mEnsureStringBlocks.invoke(newAssetManager);
+      }
 
       // Find the singleton instance of ResourcesManager
       Class<?> clazz = Class.forName("android.app.ResourcesManager");
@@ -434,8 +438,7 @@ public class StubApplication extends Application {
 
   private static Map<String, String> parseManifest(File file) throws IOException {
     Map<String, String> result = new HashMap<>();
-    BufferedReader reader = new BufferedReader(new FileReader(file));
-    try {
+    try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
       while (true) {
         String line = reader.readLine();
         if (line == null) {
@@ -445,8 +448,6 @@ public class StubApplication extends Application {
         String[] items = line.split(" ");
         result.put(items[0], items[1]);
       }
-    } finally {
-      reader.close();
     }
 
     return result;

@@ -17,29 +17,34 @@ package com.google.devtools.build.lib.rules.cpp;
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.util.stream.Collectors.joining;
 
-import com.google.common.base.Predicate;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.actions.AbstractAction;
+import com.google.devtools.build.lib.actions.ActionEnvironment;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ResourceSet;
+import com.google.devtools.build.lib.actions.Spawn;
+import com.google.devtools.build.lib.actions.SpawnActionContext;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadCompatible;
 import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.rules.cpp.CcCommon.CoptsFilter;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.util.ShellEscaper;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
-import java.util.Set;
+import java.util.List;
 import java.util.UUID;
 import java.util.logging.Logger;
 
@@ -57,48 +62,50 @@ public class FakeCppCompileAction extends CppCompileAction {
 
   FakeCppCompileAction(
       ActionOwner owner,
-      NestedSet<Artifact> allInputs,
       FeatureConfiguration featureConfiguration,
-      CcToolchainFeatures.Variables variables,
+      CcToolchainVariables variables,
       Artifact sourceFile,
+      CppConfiguration cppConfiguration,
+      boolean shareable,
       boolean shouldScanIncludes,
       boolean shouldPruneModules,
       boolean usePic,
       boolean useHeaderModules,
       NestedSet<Artifact> mandatoryInputs,
-      NestedSet<Artifact> prunableInputs,
+      Iterable<Artifact> inputsForInvalidation,
+      ImmutableList<Artifact> builtinIncludeFiles,
+      NestedSet<Artifact> prunableHeaders,
       Artifact outputFile,
       PathFragment tempOutputFile,
-      DotdFile dotdFile,
-      ImmutableMap<String, String> localShellEnvironment,
-      CppConfiguration cppConfiguration,
-      CppCompilationContext context,
-      Class<? extends CppCompileActionContext> actionContext,
-      Predicate<String> nocopts,
-      Iterable<IncludeScannable> lipoScannables,
+      Artifact dotdFile,
+      ActionEnvironment env,
+      CcCompilationContext ccCompilationContext,
+      CoptsFilter nocopts,
       CppSemantics cppSemantics,
-      CcToolchainProvider cppProvider,
-      ImmutableMap<String, String> executionInfo) {
+      ImmutableList<PathFragment> builtInIncludeDirectories,
+      ImmutableMap<String, String> executionInfo,
+      Artifact grepIncludes) {
     super(
         owner,
-        allInputs,
         featureConfiguration,
         variables,
         sourceFile,
+        cppConfiguration,
+        shareable,
         shouldScanIncludes,
         shouldPruneModules,
         usePic,
         useHeaderModules,
         mandatoryInputs,
-        prunableInputs,
+        inputsForInvalidation,
+        builtinIncludeFiles,
+        prunableHeaders,
         outputFile,
         dotdFile,
-        null,
-        null,
-        null,
-        null,
-        localShellEnvironment,
-        cppConfiguration,
+        /* gcnoFile=*/ null,
+        /* dwoFile=*/ null,
+        /* ltoIndexingFile=*/ null,
+        env,
         // We only allow inclusion of header files explicitly declared in
         // "srcs", so we only use declaredIncludeSrcs, not declaredIncludeDirs.
         // (Disallowing use of undeclared headers for cc_fake_binary is needed
@@ -106,18 +113,15 @@ public class FakeCppCompileAction extends CppCompileAction {
         // cc_fake_binary and for the negative compilation tests that depend on
         // the cc_fake_binary, and the runfiles must be determined at analysis
         // time, so they can't depend on the contents of the ".d" file.)
-        CppCompilationContext.disallowUndeclaredHeaders(context),
-        actionContext,
+        CcCompilationContext.disallowUndeclaredHeaders(ccCompilationContext),
         nocopts,
-        VOID_SPECIAL_INPUTS_HANDLER,
-        lipoScannables,
-        ImmutableList.<Artifact>of(),
+        /* additionalIncludeScanningRoots=*/ ImmutableList.of(),
         GUID,
         executionInfo,
-        ImmutableMap.<String, String>of(),
-        CppCompileAction.CPP_COMPILE,
+        CppActionNames.CPP_COMPILE,
         cppSemantics,
-        cppProvider);
+        builtInIncludeDirectories,
+        grepIncludes);
     this.tempOutputFile = Preconditions.checkNotNull(tempOutputFile);
   }
 
@@ -126,25 +130,27 @@ public class FakeCppCompileAction extends CppCompileAction {
   public ActionResult execute(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
     setModuleFileFlags();
-    Set<SpawnResult> spawnResults;
+    List<SpawnResult> spawnResults;
     // First, do a normal compilation, to generate the ".d" file. The generated object file is built
     // to a temporary location (tempOutputFile) and ignored afterwards.
     logger.info("Generating " + getDotdFile());
-    CppCompileActionContext context = actionExecutionContext.getContext(actionContext);
-    CppCompileActionContext.Reply reply = null;
+    byte[] dotDContents = null;
     try {
-      CppCompileActionResult cppCompileActionResult =
-          context.execWithReply(this, actionExecutionContext);
-      reply = cppCompileActionResult.contextReply();
-      spawnResults = cppCompileActionResult.spawnResults();
+      Spawn spawn = createSpawn(actionExecutionContext.getClientEnv());
+      SpawnActionContext context = actionExecutionContext.getContext(SpawnActionContext.class);
+      spawnResults = context.exec(spawn, actionExecutionContext);
+      // The SpawnActionContext guarantees that the first list entry is the successful one.
+      dotDContents = getDotDContents(spawnResults.get(0));
     } catch (ExecException e) {
       throw e.toActionExecutionException(
           "C++ compilation of rule '" + getOwner().getLabel() + "'",
           actionExecutionContext.getVerboseFailures(),
           this);
+    } finally {
+      clearAdditionalInputs();
     }
-    IncludeScanningContext scanningContext =
-        actionExecutionContext.getContext(IncludeScanningContext.class);
+    CppIncludeExtractionContext scanningContext =
+        actionExecutionContext.getContext(CppIncludeExtractionContext.class);
     Path execRoot = actionExecutionContext.getExecRoot();
 
     NestedSet<Artifact> discoveredInputs;
@@ -155,12 +161,12 @@ public class FakeCppCompileAction extends CppCompileAction {
           new HeaderDiscovery.Builder()
               .setAction(this)
               .setSourceFile(getSourceFile())
-              .setSpecialInputsHandler(specialInputsHandler)
-              .setDependencies(processDepset(execRoot, reply).getDependencies())
+              .setDependencies(
+                  processDepset(actionExecutionContext, execRoot, dotDContents).getDependencies())
               .setPermittedSystemIncludePrefixes(getPermittedSystemIncludePrefixes(execRoot))
-              .setAllowedDerivedinputsMap(getAllowedDerivedInputsMap());
+              .setAllowedDerivedinputs(getAllowedDerivedInputs());
 
-      if (cppSemantics.needsIncludeValidation()) {
+      if (needsIncludeValidation) {
         discoveryBuilder.shouldValidateInclusions();
       }
 
@@ -169,8 +175,8 @@ public class FakeCppCompileAction extends CppCompileAction {
               .build()
               .discoverInputsFromDependencies(execRoot, scanningContext.getArtifactResolver());
     }
-     
-    reply = null; // Clear in-memory .d files early.
+
+    dotDContents = null; // Garbage collect in-memory .d contents.
 
     // Even cc_fake_binary rules need to properly declare their dependencies...
     // In fact, they need to declare their dependencies even more than cc_binary rules do.
@@ -179,19 +185,27 @@ public class FakeCppCompileAction extends CppCompileAction {
     // listed in the "srcs" of the cc_fake_binary or in the "srcs" of a cc_library that it
     // depends on.
     try {
-      validateInclusions(
-          discoveredInputs,
-          actionExecutionContext.getArtifactExpander(),
-          actionExecutionContext.getEventHandler());
+      validateInclusions(actionExecutionContext, discoveredInputs);
     } catch (ActionExecutionException e) {
       // TODO(bazel-team): (2009) make this into an error, once most of the current warnings
       // are fixed.
-      actionExecutionContext.getEventHandler().handle(Event.warn(
-          getOwner().getLocation(),
-          e.getMessage() + ";\n  this warning may eventually become an error"));
+      actionExecutionContext
+          .getEventHandler()
+          .handle(
+              Event.warn(
+                  getOwner().getLocation(),
+                  e.getMessage() + ";\n  this warning may eventually become an error"));
     }
 
-    updateActionInputs(discoveredInputs);
+    if (discoversInputs()) {
+      updateActionInputs(discoveredInputs);
+    } else {
+      Preconditions.checkState(
+          discoveredInputs.isEmpty(),
+          "Discovered inputs without discovering inputs? %s %s",
+          discoveredInputs,
+          this);
+    }
 
     // Generate a fake ".o" file containing the command line needed to generate
     // the real object file.
@@ -205,26 +219,35 @@ public class FakeCppCompileAction extends CppCompileAction {
     // runfiles directory (where writing is forbidden), we patch the command
     // line to write to $TEST_TMPDIR instead.
     final String outputPrefix = "$TEST_TMPDIR/";
-    String argv =
-        getArgv(outputFile.getExecPath())
-            .stream()
-            .map(
-                input -> {
-                  String result = ShellEscaper.escapeString(input);
-                  // Once -c and -o options are added into action_config, the argument of
-                  // getArgv(outputFile.getExecPath()) won't be used anymore. There will always be
-                  // -c <tempOutputFile>, but here it has to be outputFile, so we replace it.
-                  if (input.equals(tempOutputFile.getPathString())) {
-                    result =
-                        outputPrefix + ShellEscaper.escapeString(outputFile.getExecPathString());
-                  }
-                  if (input.equals(outputFile.getExecPathString())
-                      || input.equals(getDotdFile().getSafeExecPath().getPathString())) {
-                    result = outputPrefix + ShellEscaper.escapeString(input);
-                  }
-                  return result;
-                })
-            .collect(joining(" "));
+    String argv;
+    try {
+      argv =
+          getArguments().stream()
+              .map(
+                  input -> {
+                    String result = ShellEscaper.escapeString(input);
+                    // Replace -c <tempOutputFile> so it's -c <outputFile>.
+                    if (input.equals(tempOutputFile.getPathString())) {
+                      result =
+                          outputPrefix + ShellEscaper.escapeString(outputFile.getExecPathString());
+                    }
+                    if (input.equals(outputFile.getExecPathString())
+                        || (getDotdFile() != null
+                            && input.equals(getDotdFile().getExecPathString()))) {
+                      result = outputPrefix + ShellEscaper.escapeString(input);
+                    }
+                    return result;
+                  })
+              .collect(joining(" "));
+    } catch (CommandLineExpansionException e) {
+      throw new ActionExecutionException(
+          "failed to generate compile command for rule '"
+              + getOwner().getLabel()
+              + ": "
+              + e.getMessage(),
+          this,
+          /* catastrophe= */ false);
+    }
 
     // Write the command needed to build the real .o file to the fake .o file.
     // Generate a command to ensure that the output directory exists; otherwise
@@ -232,22 +255,30 @@ public class FakeCppCompileAction extends CppCompileAction {
     try {
       // Ensure that the .d file and .o file are siblings, so that the "mkdir" below works for
       // both.
-      Preconditions.checkState(outputFile.getExecPath().getParentDirectory().equals(
-          getDotdFile().getSafeExecPath().getParentDirectory()));
-      FileSystemUtils.writeContent(outputFile.getPath(), ISO_8859_1,
-          outputFile.getPath().getBaseName() + ": "
-          + "mkdir -p " + outputPrefix + "$(dirname " + outputFile.getExecPath() + ")"
-          + " && " + argv + "\n");
+      Preconditions.checkState(
+          getDotdFile() == null
+              || outputFile
+                  .getExecPath()
+                  .getParentDirectory()
+                  .equals(getDotdFile().getExecPath().getParentDirectory()));
+      FileSystemUtils.writeContent(
+          actionExecutionContext.getInputPath(outputFile),
+          ISO_8859_1,
+          actionExecutionContext.getInputPath(outputFile).getBaseName()
+              + ": "
+              + "mkdir -p "
+              + outputPrefix
+              + "$(dirname "
+              + outputFile.getExecPath()
+              + ")"
+              + " && "
+              + argv
+              + "\n");
     } catch (IOException e) {
       throw new ActionExecutionException("failed to create fake compile command for rule '"
           + getOwner().getLabel() + ": " + e.getMessage(), this, false);
     }
     return ActionResult.create(spawnResults);
-  }
-
-  @Override
-  protected PathFragment getInternalOutputFile() {
-    return tempOutputFile;
   }
 
   @Override
@@ -257,6 +288,6 @@ public class FakeCppCompileAction extends CppCompileAction {
 
   @Override
   public ResourceSet estimateResourceConsumptionLocal() {
-    return ResourceSet.createWithRamCpuIo(/*memoryMb=*/1, /*cpuUsage=*/0.1, /*ioUsage=*/0.0);
+    return AbstractAction.DEFAULT_RESOURCE_SET;
   }
 }

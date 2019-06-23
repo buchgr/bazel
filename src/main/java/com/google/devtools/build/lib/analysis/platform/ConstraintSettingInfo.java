@@ -14,81 +14,103 @@
 
 package com.google.devtools.build.lib.analysis.platform;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
+import com.google.common.base.Objects;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.packages.NativeInfo;
 import com.google.devtools.build.lib.packages.NativeProvider;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.FunctionSignature;
-import com.google.devtools.build.lib.syntax.SkylarkType;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
+import com.google.devtools.build.lib.skylarkbuildapi.platform.ConstraintSettingInfoApi;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
+import com.google.devtools.build.lib.util.Fingerprint;
+import javax.annotation.Nullable;
 
 /** Provider for a platform constraint setting that is available to be fulfilled. */
-@SkylarkModule(
-  name = "ConstraintSettingInfo",
-  doc = "A specific constraint setting that may be used to define a platform.",
-  category = SkylarkModuleCategory.PROVIDER
-)
 @Immutable
-public class ConstraintSettingInfo extends NativeInfo {
-
+@AutoCodec
+public class ConstraintSettingInfo extends NativeInfo implements ConstraintSettingInfoApi {
   /** Name used in Skylark for accessing this provider. */
   public static final String SKYLARK_NAME = "ConstraintSettingInfo";
 
-  private static final FunctionSignature.WithValues<Object, SkylarkType> SIGNATURE =
-      FunctionSignature.WithValues.create(
-          FunctionSignature.of(
-              /*numMandatoryPositionals=*/ 1,
-              /*numOptionalPositionals=*/ 0,
-              /*numMandatoryNamedOnly*/ 0,
-              /*starArg=*/ false,
-              /*kwArg=*/ false,
-              /*names=*/ "label"),
-          /*defaultValues=*/ null,
-          /*types=*/ ImmutableList.<SkylarkType>of(SkylarkType.of(Label.class)));
-
   /** Skylark constructor and identifier for this provider. */
   public static final NativeProvider<ConstraintSettingInfo> PROVIDER =
-      new NativeProvider<ConstraintSettingInfo>(
-          ConstraintSettingInfo.class, SKYLARK_NAME, SIGNATURE) {
-        @Override
-        protected ConstraintSettingInfo createInstanceFromSkylark(Object[] args, Location loc)
-            throws EvalException {
-          // Based on SIGNATURE above, the args are label.
-          Label label = (Label) args[0];
-          return ConstraintSettingInfo.create(label, loc);
-        }
-      };
+      new NativeProvider<ConstraintSettingInfo>(ConstraintSettingInfo.class, SKYLARK_NAME) {};
 
   private final Label label;
+  @Nullable private final Label defaultConstraintValueLabel;
 
-  private ConstraintSettingInfo(Label label, Location location) {
-    super(PROVIDER, ImmutableMap.<String, Object>of("label", label), location);
+  @VisibleForSerialization
+  ConstraintSettingInfo(Label label, Label defaultConstraintValueLabel, Location location) {
+    super(PROVIDER, location);
 
     this.label = label;
+    this.defaultConstraintValueLabel = defaultConstraintValueLabel;
   }
 
-  @SkylarkCallable(
-    name = "label",
-    doc = "The label of the target that created this constraint.",
-    structField = true
-  )
+  @Override
   public Label label() {
     return label;
   }
 
-  /** Returns a new {@link ConstraintSettingInfo} with the given data. */
-  public static ConstraintSettingInfo create(Label constraintSetting) {
-    return create(constraintSetting, Location.BUILTIN);
+  @Override
+  public boolean hasDefaultConstraintValue() {
+    return defaultConstraintValueLabel != null;
+  }
+
+  @Override
+  @Nullable
+  public ConstraintValueInfo defaultConstraintValue() {
+    if (!hasDefaultConstraintValue()) {
+      return null;
+    }
+    return ConstraintValueInfo.create(this, defaultConstraintValueLabel);
+  }
+
+  /** Add this constraint setting to the given fingerprint. */
+  public void addTo(Fingerprint fp) {
+    fp.addString(label.getCanonicalForm());
+  }
+
+  @Override
+  public boolean equals(Object other) {
+    if (!(other instanceof ConstraintSettingInfo)) {
+      return false;
+    }
+
+    ConstraintSettingInfo otherConstraint = (ConstraintSettingInfo) other;
+    return Objects.equal(label, otherConstraint.label);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hashCode(label);
+  }
+
+  @Override
+  public void repr(SkylarkPrinter printer) {
+    printer.format("ConstraintSettingInfo(%s", label.toString());
+    if (defaultConstraintValueLabel != null) {
+      printer.format(", default_constraint_value=%s", defaultConstraintValueLabel.toString());
+    }
+    printer.append(")");
   }
 
   /** Returns a new {@link ConstraintSettingInfo} with the given data. */
-  public static ConstraintSettingInfo create(Label constraintSetting, Location location) {
-    return new ConstraintSettingInfo(constraintSetting, location);
+  public static ConstraintSettingInfo create(Label constraintSetting) {
+    return create(constraintSetting, null, Location.BUILTIN);
+  }
+
+  /** Returns a new {@link ConstraintSettingInfo} with the given data. */
+  public static ConstraintSettingInfo create(
+      Label constraintSetting, Label defaultConstraintValue) {
+    return create(constraintSetting, defaultConstraintValue, Location.BUILTIN);
+  }
+
+  /** Returns a new {@link ConstraintSettingInfo} with the given data. */
+  public static ConstraintSettingInfo create(
+      Label constraintSetting, Label defaultConstraintValue, Location location) {
+    return new ConstraintSettingInfo(constraintSetting, defaultConstraintValue, location);
   }
 }

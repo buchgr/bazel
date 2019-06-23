@@ -15,9 +15,10 @@ package com.google.devtools.build.lib.rules.core;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
-import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider.Builder;
+import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider.RuleSet;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration;
+import com.google.devtools.build.lib.analysis.test.TestTrimmingTransitionFactory;
 
 /** A set of basic rules - Bazel won't work correctly without these. */
 public final class CoreRules implements RuleSet {
@@ -28,10 +29,11 @@ public final class CoreRules implements RuleSet {
   }
 
   @Override
-  public void init(Builder builder) {
-    builder.addDynamicTransitionMaps(BaseRuleClasses.DYNAMIC_TRANSITIONS_MAP);
-
-    builder.addConfig(TestConfiguration.TestOptions.class, new TestConfiguration.Loader());
+  public void init(ConfiguredRuleClassProvider.Builder builder) {
+    builder.setShouldInvalidateCacheForOptionDiff(
+        TestConfiguration.SHOULD_INVALIDATE_FOR_OPTION_DIFF);
+    builder.addConfigurationFragment(new TestConfiguration.Loader());
+    builder.addTrimmingTransitionFactory(new TestTrimmingTransitionFactory());
     builder.addRuleDefinition(new BaseRuleClasses.RootRule());
     builder.addRuleDefinition(new BaseRuleClasses.BaseRule());
     builder.addRuleDefinition(new BaseRuleClasses.RuleBase());

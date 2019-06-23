@@ -39,9 +39,7 @@ public class AndroidResourceParsingAction {
   private static final Logger logger =
       Logger.getLogger(AndroidResourceParsingAction.class.getName());
 
-  /**
-   * Flag specifications for this action.
-   */
+  /** Flag specifications for this action. */
   public static final class Options extends OptionsBase {
 
     @Option(
@@ -71,9 +69,11 @@ public class AndroidResourceParsingAction {
   }
 
   public static void main(String[] args) throws Exception {
-    OptionsParser optionsParser = OptionsParser.newOptionsParser(Options.class);
-    optionsParser.enableParamsFileSupport(
-        new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()));
+    OptionsParser optionsParser =
+        OptionsParser.builder()
+            .optionsClasses(Options.class)
+            .argsPreProcessor(new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()))
+            .build();
     optionsParser.parseAndExitUponError(args);
     Options options = optionsParser.getOptions(Options.class);
 
@@ -83,15 +83,13 @@ public class AndroidResourceParsingAction {
     final Stopwatch timer = Stopwatch.createStarted();
     ParsedAndroidData parsedPrimary = ParsedAndroidData.from(options.primaryData);
     logger.fine(String.format("Walked XML tree at %dms", timer.elapsed(TimeUnit.MILLISECONDS)));
-    UnwrittenMergedAndroidData unwrittenData = UnwrittenMergedAndroidData.of(
-        null,
-        parsedPrimary,
-        ParsedAndroidData.from(ImmutableList.<DependencyAndroidData>of()));
+    UnwrittenMergedAndroidData unwrittenData =
+        UnwrittenMergedAndroidData.of(
+            null, parsedPrimary, ParsedAndroidData.from(ImmutableList.<DependencyAndroidData>of()));
     AndroidDataSerializer serializer = AndroidDataSerializer.create();
     unwrittenData.serializeTo(serializer);
     serializer.flushTo(options.output);
-    logger.fine(String.format(
-        "Finished parse + serialize in %dms", timer.elapsed(TimeUnit.MILLISECONDS)));
+    logger.fine(
+        String.format("Finished parse + serialize in %dms", timer.elapsed(TimeUnit.MILLISECONDS)));
   }
-
 }

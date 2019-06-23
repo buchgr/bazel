@@ -15,31 +15,31 @@
 package com.google.devtools.build.lib.rules.objc;
 
 import com.google.common.base.Joiner;
-import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.Fragment;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
-import com.google.devtools.build.lib.analysis.config.ConfigurationEnvironment;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFragmentFactory;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
+import com.google.devtools.build.lib.analysis.skylark.annotations.SkylarkConfigurationField;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.skylarkbuildapi.apple.J2ObjcConfigurationApi;
 import java.util.Collections;
-import java.util.List;
+import javax.annotation.Nullable;
 
 /**
- * A J2ObjC transpiler configuration fragment containing J2ObjC translation flags.
- * This configuration fragment is used by Java rules that can be transpiled
- * (specifically, J2ObjCAspects thereof).
+ * A J2ObjC transpiler configuration fragment containing J2ObjC translation flags. This
+ * configuration fragment is used by Java rules that can be transpiled (specifically, J2ObjCAspects
+ * thereof).
  */
 @Immutable
-public class J2ObjcConfiguration extends Fragment {
+public class J2ObjcConfiguration extends Fragment implements J2ObjcConfigurationApi {
   /**
    * Always-on flags for J2ObjC translation. These flags are always used when invoking the J2ObjC
-   * transpiler, and cannot be overriden by user-specified flags in {@link
+   * transpiler, and cannot be overridden by user-specified flags in {@link
    * J2ObjcCommandLineOptions}. See http://j2objc.org/docs/j2objc.html for flag documentation.
    */
   private static final ImmutableList<String> J2OBJC_ALWAYS_ON_TRANSLATION_FLAGS = ImmutableList.of(
@@ -50,7 +50,7 @@ public class J2ObjcConfiguration extends Fragment {
 
   /**
    * Default flags for J2ObjC translation. These flags are used by default when invoking the J2ObjC
-   * transpiler, but can be overriden by user-specified flags in {@link J2ObjcCommandLineOptions}.
+   * transpiler, but can be overridden by user-specified flags in {@link J2ObjcCommandLineOptions}.
    * See http://j2objc.org/docs/j2objc.html for flag documentation.
    */
   private static final ImmutableList<String> J2OBJC_DEFAULT_TRANSLATION_FLAGS =
@@ -71,7 +71,7 @@ public class J2ObjcConfiguration extends Fragment {
    */
   public static class Loader implements ConfigurationFragmentFactory {
     @Override
-    public Fragment create(ConfigurationEnvironment env, BuildOptions buildOptions) {
+    public Fragment create(BuildOptions buildOptions) {
       return new J2ObjcConfiguration(buildOptions.get(J2ObjcCommandLineOptions.class));
     }
 
@@ -86,20 +86,23 @@ public class J2ObjcConfiguration extends Fragment {
     }
   }
 
-  private final List<String> translationFlags;
+  private final ImmutableList<String> translationFlags;
   private final boolean removeDeadCode;
   private final boolean experimentalJ2ObjcHeaderMap;
-  private final Optional<Label> deadCodeReport;
+  private final boolean experimentalShorterHeaderPath;
+  @Nullable private final Label deadCodeReport;
 
-  J2ObjcConfiguration(J2ObjcCommandLineOptions j2ObjcOptions) {
+  private J2ObjcConfiguration(J2ObjcCommandLineOptions j2ObjcOptions) {
+    this.translationFlags =
+        ImmutableList.<String>builder()
+            .addAll(J2OBJC_DEFAULT_TRANSLATION_FLAGS)
+            .addAll(j2ObjcOptions.translationFlags)
+            .addAll(J2OBJC_ALWAYS_ON_TRANSLATION_FLAGS)
+            .build();
     this.removeDeadCode = j2ObjcOptions.removeDeadCode;
     this.experimentalJ2ObjcHeaderMap = j2ObjcOptions.experimentalJ2ObjcHeaderMap;
-    this.deadCodeReport = Optional.fromNullable(j2ObjcOptions.deadCodeReport);
-    this.translationFlags = ImmutableList.<String>builder()
-        .addAll(J2OBJC_DEFAULT_TRANSLATION_FLAGS)
-        .addAll(j2ObjcOptions.translationFlags)
-        .addAll(J2OBJC_ALWAYS_ON_TRANSLATION_FLAGS)
-        .build();
+    this.experimentalShorterHeaderPath = j2ObjcOptions.experimentalShorterHeaderPath;
+    this.deadCodeReport = j2ObjcOptions.deadCodeReport;
   }
 
   /**
@@ -109,15 +112,24 @@ public class J2ObjcConfiguration extends Fragment {
    * #J2OBJC_ALWAYS_ON_TRANSLATION_FLAGS}. The set of disallowed flags can be found at
    * {@link #J2OBJC_BLACKLISTED_TRANSLATION_FLAGS}.
    */
-  public Iterable<String> getTranslationFlags() {
+  @Override
+  public ImmutableList<String> getTranslationFlags() {
     return translationFlags;
   }
 
   /**
    * Returns the label of the dead code report generated by ProGuard for J2ObjC to eliminate dead
    * code. The dead Java code in the report will not be translated to Objective-C code.
+   *
+   * Returns null if no such report was requested.
    */
-  public Optional<Label> deadCodeReport() {
+  @Nullable
+  @SkylarkConfigurationField(
+      name = "dead_code_report",
+      doc = "The label of the dead code report generated by ProGuard for dead code elimination, "
+          + "or <code>None</code> if no such report was requested.",
+      defaultLabel = "")
+  public Label deadCodeReport() {
     return deadCodeReport;
   }
 
@@ -137,6 +149,13 @@ public class J2ObjcConfiguration extends Fragment {
    */
   public boolean experimentalJ2ObjcHeaderMap() {
     return experimentalJ2ObjcHeaderMap;
+  }
+
+  /**
+   * Returns whether to use a shorter path for generated header files.
+   */
+  public boolean experimentalShorterHeaderPath() {
+    return experimentalShorterHeaderPath;
   }
 
   @Override

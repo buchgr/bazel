@@ -15,14 +15,11 @@
 package com.google.devtools.build.lib.analysis;
 
 import com.google.common.base.Splitter;
-import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.AbstractAction;
 import com.google.devtools.build.lib.actions.ActionContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.ArtifactFactory;
-import com.google.devtools.build.lib.actions.ArtifactOwner;
 import com.google.devtools.build.lib.util.OptionsUtils;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
@@ -31,11 +28,11 @@ import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionsBase;
+import com.google.devtools.common.options.OptionsProvider;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * An action writing the workspace status files.
@@ -53,14 +50,11 @@ import java.util.UUID;
  */
 public abstract class WorkspaceStatusAction extends AbstractAction {
 
-  /**
-   * Options controlling the workspace status command.
-   */
+  /** Options controlling the workspace status command. */
   public static class Options extends OptionsBase {
     @Option(
       name = "embed_label",
       defaultValue = "",
-      category = "misc",
       valueHelp = "<string>",
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.UNKNOWN},
@@ -69,18 +63,8 @@ public abstract class WorkspaceStatusAction extends AbstractAction {
     public String embedLabel;
 
     @Option(
-      name = "experimental_embed_timestamp_epoch",
-      defaultValue = "-1",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Alternative timestamp to be used in stamping the binary"
-    )
-    public long embedTimestampEpoch;
-
-    @Option(
       name = "workspace_status_command",
       defaultValue = "",
-      category = "misc",
       converter = OptionsUtils.PathFragmentConverter.class,
       valueHelp = "<path>",
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
@@ -99,23 +83,22 @@ public abstract class WorkspaceStatusAction extends AbstractAction {
   public enum KeyType {
     INTEGER,
     STRING,
-    VERBATIM,
   }
 
   /**
-   * Language for keys that should be present in the build info for every language.
+   * Action context required by the workspace status action as well as language-specific actions
+   * that write workspace status artifacts.
    */
-  // TODO(bazel-team): Once this is released, migrate the only place in the depot to use
-  // the BUILD_USERNAME, BUILD_HOSTNAME and BUILD_DIRECTORY keys instead of BUILD_INFO. Then
-  // language-specific build info keys can be removed.
-  public static final String ALL_LANGUAGES = "*";
-
-  /**
-   * Action context required by the actions that write language-specific workspace status artifacts.
-   */
-  public static interface Context extends ActionContext {
+  public interface Context extends ActionContext {
     ImmutableMap<String, Key> getStableKeys();
     ImmutableMap<String, Key> getVolatileKeys();
+
+    // TODO(ulfjack): Maybe move these to a separate ActionContext interface?
+    WorkspaceStatusAction.Options getOptions();
+
+    ImmutableMap<String, String> getClientEnv();
+
+    com.google.devtools.build.lib.shell.Command getCommand();
   }
 
   /**
@@ -124,27 +107,17 @@ public abstract class WorkspaceStatusAction extends AbstractAction {
   public static class Key {
     private final KeyType type;
 
-    /**
-     * Should be set to ALL_LANGUAGES if the key should be present in the build info of every
-     * language.
-     */
-    private final String language;
     private final String defaultValue;
     private final String redactedValue;
 
-    private Key(KeyType type, String language, String defaultValue, String redactedValue) {
+    private Key(KeyType type, String defaultValue, String redactedValue) {
       this.type = type;
-      this.language = language;
       this.defaultValue = defaultValue;
       this.redactedValue = redactedValue;
     }
 
     public KeyType getType() {
       return type;
-    }
-
-    public boolean isInLanguage(String language) {
-      return this.language.equals(ALL_LANGUAGES) || this.language.equals(language);
     }
 
     public String getDefaultValue() {
@@ -155,13 +128,8 @@ public abstract class WorkspaceStatusAction extends AbstractAction {
       return redactedValue;
     }
 
-    public static Key forLanguage(
-        String language, KeyType type, String defaultValue, String redactedValue) {
-      return new Key(type, language, defaultValue, redactedValue);
-    }
-
     public static Key of(KeyType type, String defaultValue, String redactedValue) {
-      return new Key(type, ALL_LANGUAGES, defaultValue, redactedValue);
+      return new Key(type, defaultValue, redactedValue);
     }
   }
 
@@ -188,6 +156,26 @@ public abstract class WorkspaceStatusAction extends AbstractAction {
     return ImmutableMap.copyOf(result);
   }
 
+  /** Environment for the {@link Factory} to create the workspace status action. */
+  public interface Environment {
+    Artifact createStableArtifact(String name);
+
+    Artifact createVolatileArtifact(String name);
+  }
+
+  /**
+   * Environment for the {@link Factory} to create the dummy workspace status information. This is a
+   * subset of the information provided by CommandEnvironment. However, we cannot reference the
+   * CommandEnvironment from here due to layering.
+   */
+  public interface DummyEnvironment {
+    Path getWorkspace();
+
+    String getBuildRequestId();
+
+    OptionsProvider getOptions();
+  }
+
   /**
    * Factory for {@link WorkspaceStatusAction}.
    */
@@ -195,19 +183,16 @@ public abstract class WorkspaceStatusAction extends AbstractAction {
     /**
      * Creates the workspace status action.
      *
-     * <p>If the objects returned for two builds are equals, the workspace status action can be
-     * be reused between them. Note that this only applies to the action object itself (the action
-     * will be unconditionally re-executed on every build)
+     * <p>The action is never re-created, but the same action object is executed on every build. Use
+     * {@link Context} to access any non-hermetic data.
      */
-    WorkspaceStatusAction createWorkspaceStatusAction(
-        ArtifactFactory artifactFactory, ArtifactOwner artifactOwner, Supplier<UUID> buildId,
-        String workspaceName);
+    WorkspaceStatusAction createWorkspaceStatusAction(Environment env);
 
     /**
      * Creates a dummy workspace status map. Used in cases where the build failed, so that part of
      * the workspace status is nevertheless available.
      */
-    Map<String, String> createDummyWorkspaceStatus();
+    Map<String, String> createDummyWorkspaceStatus(DummyEnvironment env);
   }
 
   protected WorkspaceStatusAction(ActionOwner owner,

@@ -13,11 +13,15 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.java;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
+
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.AliasProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
@@ -33,38 +37,42 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
-import com.google.devtools.build.lib.rules.java.JavaToolchainData.SupportsWorkers;
 import com.google.devtools.build.lib.syntax.Type;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Implementation for the {@code java_toolchain} rule.
- */
-public final class JavaToolchain implements RuleConfiguredTargetFactory {
+/** Implementation for the {@code java_toolchain} rule. */
+public class JavaToolchain implements RuleConfiguredTargetFactory {
+
+  private final JavaSemantics semantics;
+
+  protected JavaToolchain(JavaSemantics semantics) {
+    this.semantics = semantics;
+  }
 
   @Override
-  public ConfiguredTarget create(RuleContext ruleContext) throws RuleErrorException {
-    String source = ruleContext.attributes().get("source_version", Type.STRING);
-    String target = ruleContext.attributes().get("target_version", Type.STRING);
-    NestedSet<Artifact> bootclasspath = PrerequisiteArtifacts.nestedSet(
-        ruleContext, "bootclasspath", Mode.HOST);
-    NestedSet<Artifact> extclasspath = PrerequisiteArtifacts.nestedSet(
-        ruleContext, "extclasspath", Mode.HOST);
-    String encoding = ruleContext.attributes().get("encoding", Type.STRING);
-    List<String> xlint = ruleContext.attributes().get("xlint", Type.STRING_LIST);
-    List<String> misc = ruleContext.getExpander().withDataLocations().tokenized("misc");
+  public ConfiguredTarget create(RuleContext ruleContext)
+      throws InterruptedException, RuleErrorException, ActionConflictException {
+    ImmutableList<String> javacopts = getJavacOpts(ruleContext);
+    NestedSet<Artifact> bootclasspath =
+        PrerequisiteArtifacts.nestedSet(ruleContext, "bootclasspath", Mode.HOST);
+    NestedSet<Artifact> extclasspath =
+        PrerequisiteArtifacts.nestedSet(ruleContext, "extclasspath", Mode.HOST);
     boolean javacSupportsWorkers =
         ruleContext.attributes().get("javac_supports_workers", Type.BOOLEAN);
     Artifact javac = ruleContext.getPrerequisiteArtifact("javac", Mode.HOST);
-    Artifact javabuilder = ruleContext.getPrerequisiteArtifact("javabuilder", Mode.HOST);
-    Artifact headerCompiler = ruleContext.getPrerequisiteArtifact("header_compiler", Mode.HOST);
+    FilesToRunProvider javabuilder =
+        ruleContext.getExecutablePrerequisite("javabuilder", Mode.HOST);
+    FilesToRunProvider headerCompiler =
+        ruleContext.getExecutablePrerequisite("header_compiler", Mode.HOST);
+    FilesToRunProvider headerCompilerDirect =
+        ruleContext.getExecutablePrerequisite("header_compiler_direct", Mode.HOST);
     boolean forciblyDisableHeaderCompilation =
         ruleContext.attributes().get("forcibly_disable_header_compilation", Type.BOOLEAN);
     Artifact singleJar = ruleContext.getPrerequisiteArtifact("singlejar", Mode.HOST);
     Artifact oneVersion = ruleContext.getPrerequisiteArtifact("oneversion", Mode.HOST);
-    Artifact oneVersionWhitelist = ruleContext
-        .getPrerequisiteArtifact("oneversion_whitelist", Mode.HOST);
+    Artifact oneVersionWhitelist =
+        ruleContext.getPrerequisiteArtifact("oneversion_whitelist", Mode.HOST);
     Artifact genClass = ruleContext.getPrerequisiteArtifact("genclass", Mode.HOST);
     Artifact resourceJarBuilder = ruleContext.getPrerequisiteArtifact("resourcejar", Mode.HOST);
     Artifact timezoneData = ruleContext.getPrerequisiteArtifact("timezone_data", Mode.HOST);
@@ -73,37 +81,48 @@ public final class JavaToolchain implements RuleConfiguredTargetFactory {
         getCompatibleJavacOptions(ruleContext);
 
     NestedSet<Artifact> tools = PrerequisiteArtifacts.nestedSet(ruleContext, "tools", Mode.HOST);
+    if (javac != null) {
+      tools = NestedSetBuilder.fromNestedSet(tools).add(javac).build();
+    }
 
     TransitiveInfoCollection javacDep = ruleContext.getPrerequisite("javac", Mode.HOST);
-    List<String> jvmOpts =
-        getJvmOpts(
-            ruleContext,
-            ImmutableMap.<Label, ImmutableCollection<Artifact>>of(
-                AliasProvider.getDependencyLabel(javacDep), ImmutableList.of(javac)));
 
-    JavaToolchainData toolchainData =
-        new JavaToolchainData(
-            source,
-            target,
-            Artifact.toExecPaths(bootclasspath),
-            Artifact.toExecPaths(extclasspath),
-            encoding,
-            xlint,
-            misc,
-            jvmOpts,
-            javacSupportsWorkers ? SupportsWorkers.YES : SupportsWorkers.NO);
-    JavaConfiguration configuration = ruleContext.getFragment(JavaConfiguration.class);
+    ImmutableMap.Builder<Label, ImmutableCollection<Artifact>> locationsBuilder =
+        ImmutableMap.builder();
+    if (javacDep != null) {
+      locationsBuilder.put(AliasProvider.getDependencyLabel(javacDep), ImmutableList.of(javac));
+    }
+    ImmutableMap<Label, ImmutableCollection<Artifact>> locations = locationsBuilder.build();
+
+    ImmutableList<String> jvmOpts = getJvmOpts(ruleContext, locations, "jvm_opts");
+    ImmutableList<String> javabuilderJvmOpts =
+        ImmutableList.<String>builder()
+            .addAll(jvmOpts)
+            .addAll(getJvmOpts(ruleContext, locations, "javabuilder_jvm_opts"))
+            .build();
+
+    ImmutableList<JavaPackageConfigurationProvider> packageConfiguration =
+        ImmutableList.copyOf(
+            ruleContext.getPrerequisites(
+                "package_configuration", Mode.HOST, JavaPackageConfigurationProvider.class));
+
+    FilesToRunProvider jacocoRunner =
+        ruleContext.getExecutablePrerequisite("jacocorunner", Mode.HOST);
+
     JavaToolchainProvider provider =
         JavaToolchainProvider.create(
             ruleContext.getLabel(),
-            toolchainData,
+            javacopts,
+            jvmOpts,
+            javabuilderJvmOpts,
+            javacSupportsWorkers,
             bootclasspath,
             extclasspath,
-            configuration.getDefaultJavacFlags(),
             javac,
             tools,
             javabuilder,
             headerCompiler,
+            headerCompilerDirect,
             forciblyDisableHeaderCompilation,
             singleJar,
             oneVersion,
@@ -112,16 +131,37 @@ public final class JavaToolchain implements RuleConfiguredTargetFactory {
             resourceJarBuilder,
             timezoneData,
             ijar,
-            compatibleJavacOptions);
+            compatibleJavacOptions,
+            packageConfiguration,
+            jacocoRunner,
+            semantics);
     RuleConfiguredTargetBuilder builder =
         new RuleConfiguredTargetBuilder(ruleContext)
-            .addSkylarkTransitiveInfo(
-                JavaToolchainSkylarkApiProvider.NAME, new JavaToolchainSkylarkApiProvider())
-            .addProvider(JavaToolchainProvider.class, provider)
+            .addSkylarkTransitiveInfo(JavaToolchainProvider.LEGACY_NAME, provider)
+            .addNativeDeclaredProvider(provider)
             .addProvider(RunfilesProvider.class, RunfilesProvider.simple(Runfiles.EMPTY))
             .setFilesToBuild(new NestedSetBuilder<Artifact>(Order.STABLE_ORDER).build());
 
     return builder.build();
+  }
+
+  private ImmutableList<String> getJavacOpts(RuleContext ruleContext) {
+    ImmutableList.Builder<String> javacopts = ImmutableList.builder();
+    String source = ruleContext.attributes().get("source_version", Type.STRING);
+    if (!isNullOrEmpty(source)) {
+      javacopts.add("-source").add(source);
+    }
+    String target = ruleContext.attributes().get("target_version", Type.STRING);
+    if (!isNullOrEmpty(target)) {
+      javacopts.add("-target").add(target);
+    }
+    List<String> xlint = ruleContext.attributes().get("xlint", Type.STRING_LIST);
+    if (!xlint.isEmpty()) {
+      javacopts.add("-Xlint:" + Joiner.on(",").join(xlint));
+    }
+    javacopts.addAll(ruleContext.getExpander().withDataLocations().tokenized("misc"));
+    javacopts.addAll(ruleContext.getExpander().withDataLocations().tokenized("javacopts"));
+    return javacopts.build();
   }
 
   private static ImmutableListMultimap<String, String> getCompatibleJavacOptions(
@@ -135,7 +175,9 @@ public final class JavaToolchain implements RuleConfiguredTargetFactory {
   }
 
   private static ImmutableList<String> getJvmOpts(
-      RuleContext ruleContext, ImmutableMap<Label, ImmutableCollection<Artifact>> locations) {
-    return ruleContext.getExpander().withExecLocations(locations).list("jvm_opts");
+      RuleContext ruleContext,
+      ImmutableMap<Label, ImmutableCollection<Artifact>> locations,
+      String attribute) {
+    return ruleContext.getExpander().withExecLocations(locations).list(attribute);
   }
 }

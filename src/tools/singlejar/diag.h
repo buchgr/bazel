@@ -20,12 +20,38 @@
  * for portability.
  */
 #if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
+
 #include <err.h>
 #define diag_err(...) err(__VA_ARGS__)
 #define diag_errx(...) errx(__VA_ARGS__)
 #define diag_warn(...) warn(__VA_ARGS__)
 #define diag_warnx(...) warnx(__VA_ARGS__)
+
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include <stdio.h>
+#include <string.h>
+#define _diag_msg(prefix, msg, ...) \
+  { fprintf(stderr, prefix msg "\n", __VA_ARGS__); }
+#define _diag_msgx(exit_value, prefix, msg, ...) \
+  { \
+    _diag_msg(prefix, msg, __VA_ARGS__); \
+    ::ExitProcess(exit_value); \
+  }
+#define diag_err(exit_value, fmt, ...) \
+  _diag_msgx(exit_value, "ERROR: ", fmt, __VA_ARGS__)
+#define diag_errx(exit_value, fmt, ...) \
+  _diag_msgx(exit_value, "ERROR: ", fmt, __VA_ARGS__)
+#define diag_warn(fmt, ...) _diag_msg("WARNING: ", fmt, __VA_ARGS__)
+#define diag_warnx(fmt, ...) _diag_msg("WARNING: ", fmt, __VA_ARGS__)
+
 #else
 #error Unknown platform
 #endif
+
 #endif  // BAZEL_SRC_TOOLS_SINGLEJAR_DIAG_H_

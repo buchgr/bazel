@@ -22,6 +22,8 @@ import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Streams;
+import com.google.devtools.build.lib.actions.FileValue;
+import com.google.devtools.build.lib.actions.InconsistentFilesystemException;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.packages.Rule;
@@ -29,9 +31,6 @@ import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
 import com.google.devtools.build.lib.rules.repository.WorkspaceAttributeMapper;
 import com.google.devtools.build.lib.skyframe.DirectoryListingValue;
 import com.google.devtools.build.lib.skyframe.Dirents;
-import com.google.devtools.build.lib.skyframe.FileSymlinkException;
-import com.google.devtools.build.lib.skyframe.FileValue;
-import com.google.devtools.build.lib.skyframe.InconsistentFilesystemException;
 import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.ResourceFileLoader;
@@ -39,6 +38,7 @@ import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
@@ -46,6 +46,7 @@ import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.ValueOrException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.Map;
 import java.util.Properties;
 
@@ -84,7 +85,8 @@ public class AndroidSdkRepositoryFunction extends AndroidRepositoryFunction {
       final Path outputDirectory,
       BlazeDirectories directories,
       Environment env,
-      Map<String, String> markerData)
+      Map<String, String> markerData,
+      SkyKey key)
       throws RepositoryFunctionException, InterruptedException {
     Map<String, String> environ =
         declareEnvironmentDependencies(markerData, env, PATH_ENV_VAR_AS_LIST);
@@ -105,7 +107,7 @@ public class AndroidSdkRepositoryFunction extends AndroidRepositoryFunction {
           new EvalException(
               rule.getLocation(),
               "Either the path attribute of android_sdk_repository or the ANDROID_HOME environment "
-                  + " variable must be set."),
+                  + "variable must be set."),
           Transience.PERSISTENT);
     }
 
@@ -304,20 +306,18 @@ public class AndroidSdkRepositoryFunction extends AndroidRepositoryFunction {
     Path sourcePropertiesFilePath = directory.getRelative(
         "build-tools/" + buildToolsDirectory + "/source.properties");
 
-    SkyKey releaseFileKey = FileValue.key(
-        RootedPath.toRootedPath(directory, sourcePropertiesFilePath));
+    SkyKey releaseFileKey =
+        FileValue.key(RootedPath.toRootedPath(Root.fromPath(directory), sourcePropertiesFilePath));
 
     try {
-      env.getValueOrThrow(releaseFileKey,
-          IOException.class,
-          FileSymlinkException.class,
-          InconsistentFilesystemException.class);
+      env.getValueOrThrow(releaseFileKey, IOException.class);
 
       Properties properties = new Properties();
-      properties.load(sourcePropertiesFilePath.getInputStream());
+      try (InputStream in = sourcePropertiesFilePath.getInputStream()) {
+        properties.load(in);
+      }
       return properties;
-
-    } catch (IOException | FileSymlinkException | InconsistentFilesystemException e) {
+    } catch (IOException e) {
       String error = String.format(
           "Could not read %s in Android SDK: %s", sourcePropertiesFilePath, e.getMessage());
       throw new RepositoryFunctionException(new IOException(error), Transience.PERSISTENT);
@@ -405,7 +405,8 @@ public class AndroidSdkRepositoryFunction extends AndroidRepositoryFunction {
                     input ->
                         DirectoryListingValue.key(
                             RootedPath.toRootedPath(
-                                root, root.getRelative(path).getRelative(input.getName())))));
+                                Root.fromPath(root),
+                                root.getRelative(path).getRelative(input.getName())))));
 
     Map<SkyKey, ValueOrException<InconsistentFilesystemException>> values =
         env.getValuesOrThrow(
@@ -421,7 +422,7 @@ public class AndroidSdkRepositoryFunction extends AndroidRepositoryFunction {
         }
         directoryListingValues.put(pathFragment, (DirectoryListingValue) skyValue);
       } catch (InconsistentFilesystemException e) {
-        throw new RepositoryFunctionException(new IOException(e), Transience.PERSISTENT);
+        throw new RepositoryFunctionException(e, Transience.PERSISTENT);
       }
     }
     return directoryListingValues.build();

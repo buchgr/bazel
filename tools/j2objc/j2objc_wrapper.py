@@ -125,11 +125,10 @@ def WriteDepMappingFile(objc_files,
     entry_file, deps = output_dep_mapping_queue.get()
     dep_mapping[entry_file] = deps
 
-  f = file_open(output_dependency_mapping_file, 'w')
-  for entry in sorted(dep_mapping):
-    for dep in dep_mapping[entry]:
-      f.write(entry + ':' + dep + '\n')
-  f.close()
+  with file_open(output_dependency_mapping_file, 'w') as f:
+    for entry in sorted(dep_mapping):
+      for dep in dep_mapping[entry]:
+        f.write(entry + ':' + dep + '\n')
 
 
 def _ReadDepMapping(input_file_queue, output_dep_mapping_queue,
@@ -453,7 +452,7 @@ def main():
   parser.add_argument(
       '--src_jars',
       required=False,
-      help='The list of Java source jars containg Java sources to translate.')
+      help='The list of Java source jars containing Java sources to translate.')
   parser.add_argument(
       '--output_gen_source_dir',
       required=False,

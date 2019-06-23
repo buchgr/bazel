@@ -13,14 +13,15 @@
 // limitations under the License.
 package com.google.devtools.build.lib.actions;
 
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.common.base.Preconditions;
+import com.google.devtools.build.lib.events.ExtendedEventHandler.ProgressLike;
 
 /**
  * This event is fired during the build, when a middleman action is executed. Middleman actions
  * don't usually do any computation but we need them in the critical path because they depend on
  * other actions.
  */
-public class ActionMiddlemanEvent {
+public class ActionMiddlemanEvent implements ProgressLike {
 
   private final Action action;
   private final long nanoTimeStart;

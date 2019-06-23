@@ -29,6 +29,7 @@ import com.google.devtools.build.lib.skyframe.PackageValue;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.skyframe.ErrorInfo;
+import com.google.devtools.build.skyframe.EvaluationContext;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.MemoizingEvaluator;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -68,8 +69,15 @@ public class SkyframeExecutorTestUtils {
       boolean keepGoing,
       ExtendedEventHandler errorEventListener)
       throws InterruptedException {
-    return skyframeExecutor.getDriverForTesting().evaluate(ImmutableList.of(key), keepGoing,
-        SkyframeExecutor.DEFAULT_THREAD_COUNT, errorEventListener);
+    EvaluationContext evaluationContext =
+        EvaluationContext.newBuilder()
+            .setKeepGoing(keepGoing)
+            .setNumThreads(SkyframeExecutor.DEFAULT_THREAD_COUNT)
+            .setEventHander(errorEventListener)
+            .build();
+    return skyframeExecutor
+        .getDriverForTesting()
+        .evaluate(ImmutableList.of(key), evaluationContext);
   }
 
   /**
@@ -111,11 +119,12 @@ public class SkyframeExecutorTestUtils {
    */
   public static Iterable<ConfiguredTarget> getExistingConfiguredTargets(
       SkyframeExecutor skyframeExecutor, final Label label) {
-    return Iterables.filter(getAllExistingConfiguredTargets(skyframeExecutor),
+    return Iterables.filter(
+        getAllExistingConfiguredTargets(skyframeExecutor),
         new Predicate<ConfiguredTarget>() {
           @Override
           public boolean apply(ConfiguredTarget input) {
-            return input.getTarget().getLabel().equals(label);
+            return input.getLabel().equals(label);
           }
         });
   }

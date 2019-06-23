@@ -16,20 +16,69 @@
 #
 # An end-to-end test for bazel-specific parts of the build-event stream.
 
-# Load the test setup defined in the parent directory
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${CURRENT_DIR}/../integration_test_setup.sh" \
+set -euo pipefail
+# --- begin runfiles.bash initialization ---
+if [[ ! -d "${RUNFILES_DIR:-/dev/null}" && ! -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+  if [[ -f "$0.runfiles_manifest" ]]; then
+    export RUNFILES_MANIFEST_FILE="$0.runfiles_manifest"
+  elif [[ -f "$0.runfiles/MANIFEST" ]]; then
+    export RUNFILES_MANIFEST_FILE="$0.runfiles/MANIFEST"
+  elif [[ -f "$0.runfiles/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+    export RUNFILES_DIR="$0.runfiles"
+  fi
+fi
+if [[ -f "${RUNFILES_DIR:-/dev/null}/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+  source "${RUNFILES_DIR}/bazel_tools/tools/bash/runfiles/runfiles.bash"
+elif [[ -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+  source "$(grep -m1 "^bazel_tools/tools/bash/runfiles/runfiles.bash " \
+            "$RUNFILES_MANIFEST_FILE" | cut -d ' ' -f 2-)"
+else
+  echo >&2 "ERROR: cannot find @bazel_tools//tools/bash/runfiles:runfiles.bash"
+  exit 1
+fi
+# --- end runfiles.bash initialization ---
+
+source "$(rlocation "io_bazel/src/test/shell/integration_test_setup.sh")" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 #### SETUP #############################################################
 
-set -e
+# `uname` returns the current platform, e.g "MSYS_NT-10.0" or "Linux".
+# `tr` converts all upper case letters to lower case.
+# `case` matches the result if the `uname | tr` expression to string prefixes
+# that use the same wildcards as names do in Bash, i.e. "msys*" matches strings
+# starting with "msys", and "*" matches everything (it's the default case).
+case "$(uname -s | tr [:upper:] [:lower:])" in
+msys*)
+  # As of 2019-01-15, Bazel on Windows only supports MSYS Bash.
+  declare -r is_windows=true
+  ;;
+*)
+  declare -r is_windows=false
+  ;;
+esac
+
+if "$is_windows"; then
+  # Disable MSYS path conversion that converts path-looking command arguments to
+  # Windows paths (even if they arguments are not in fact paths).
+  export MSYS_NO_PATHCONV=1
+  export MSYS2_ARG_CONV_EXCL="*"
+fi
 
 function set_up() {
   mkdir -p pkg
   touch remote_file
+  if $is_windows; then
+    # Windows needs "file:///c:/foo/bar".
+    FILE_URL="file:///$(cygpath -m "$PWD")/remote_file"
+  else
+    # Non-Windows needs "file:///foo/bar".
+    FILE_URL="file://${PWD}/remote_file"
+  fi
+
   cat > WORKSPACE <<EOF
-http_file(name="remote", urls=["file://`pwd`/remote_file"])
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+http_file(name="remote", urls=["${FILE_URL}"])
 EOF
   cat > pkg/BUILD <<'EOF'
 genrule(
@@ -84,6 +133,61 @@ function test_fetch_in_build() {
       || fail "bazel build failed"
   expect_log 'name: "SUCCESS"'
   expect_not_log '^fetch'
+}
+
+function test_query() {
+  # Verify that at least a minimally meaningful event stream is generated
+  # for non-build. In particular, we expect bazel not to crash.
+  bazel query --build_event_text_file=$TEST_log  //pkg:main \
+    || fail "bazel query failed"
+  expect_log '^started'
+  expect_log 'command: "query"'
+  expect_log 'args: "--build_event_text_file='
+  expect_log 'build_finished'
+  expect_not_log 'aborted'
+  expect_log '^finished'
+  expect_log 'name: "SUCCESS"'
+  expect_log 'last_message: true'
+}
+
+function test_fetch_failure() {
+  # We expect that if a build is failing due to an error fetching an external
+  # repository, we get a reasonable attribution of the root cause.
+  cat > WORKSPACE <<'EOF'
+load("//:failing_repo.bzl", "failing")
+
+failing(name="remote")
+EOF
+  touch BUILD
+  cat > failing_repo.bzl <<'EOF'
+def _impl(ctx):
+  fail("This is the error message")
+
+failing = repository_rule(
+  implementation = _impl,
+  attrs = {},
+)
+EOF
+  cat > pkg/BUILD <<'EOF'
+genrule(
+  name="main",
+  srcs=["@remote//file"],
+  outs = ["main.out"],
+  cmd = "cp $< $@",
+)
+genrule(
+  name="main2",
+  srcs=["@remote//file2"],
+  outs = ["main2.out"],
+  cmd = "cp $< $@",
+)
+EOF
+  bazel build -k --build_event_text_file=$TEST_log  //pkg:main //pkg:main2 \
+    && fail "expected failure" || :
+
+  expect_log 'label: "//external:remote"'
+  expect_log 'description:.*This is the error message'
+  expect_not_log 'label.*@remote//file'
 }
 
 run_suite "Bazel-specific integration tests for the build-event stream"

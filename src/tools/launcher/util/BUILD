@@ -1,5 +1,7 @@
 package(default_visibility = ["//src/tools/launcher:__subpackages__"])
 
+load("//src/tools/launcher:win_rules.bzl", "cc_binary", "cc_library", "cc_test")
+
 filegroup(
     name = "srcs",
     srcs = glob(["**"]),
@@ -17,15 +19,24 @@ cc_library(
     name = "util",
     srcs = ["launcher_util.cc"],
     hdrs = ["launcher_util.h"],
-    deps = ["//src/main/cpp/util:file"],
+    visibility = [
+        "//src/tools/launcher:__subpackages__",
+        "//tools/test:__pkg__",
+    ],
+    deps = ["//src/main/cpp/util:filesystem"],
 )
 
 cc_test(
     name = "util_test",
     srcs = ["launcher_util_test.cc"],
+    data = [
+        ":printarg",
+    ],
     deps = [
         ":util",
-        "//third_party:gtest",
+        "//src/main/native/windows:lib-file",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -34,8 +45,14 @@ cc_test(
     srcs = ["data_parser_test.cc"],
     deps = [
         ":data_parser",
-        "//third_party:gtest",
+        "@com_google_googletest//:gtest_main",
     ],
+)
+
+cc_binary(
+    name = "printarg",
+    testonly = 1,
+    srcs = ["printarg.cc"],
 )
 
 test_suite(

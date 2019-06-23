@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.packages;
 
-import com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition;
 import com.google.devtools.build.lib.packages.DependencyFilter.AttributeInfoProvider;
 import com.google.devtools.build.lib.syntax.Type.LabelClass;
 import com.google.devtools.build.lib.util.BinaryPredicate;
@@ -37,16 +36,16 @@ public abstract class DependencyFilter
   /** Dependency predicate that excludes host dependencies */
   public static final DependencyFilter NO_HOST_DEPS =
       new DependencyFilter() {
-    @Override
-    public boolean apply(AttributeInfoProvider infoProvider, Attribute attribute) {
-      // getConfigurationTransition() is only defined for labels which introduce a dependency.
-      if (attribute.getType().getLabelClass() != LabelClass.DEPENDENCY) {
-        return true;
-      }
+        @Override
+        public boolean apply(AttributeInfoProvider infoProvider, Attribute attribute) {
+          // getConfigurationTransition() is only defined for labels which introduce a dependency.
+          if (attribute.getType().getLabelClass() != LabelClass.DEPENDENCY) {
+            return true;
+          }
 
-      return attribute.getConfigurationTransition() != ConfigurationTransition.HOST;
-    }
-  };
+          return !attribute.getTransitionFactory().isHost();
+        }
+      };
   /** Dependency predicate that excludes implicit dependencies */
   public static final DependencyFilter NO_IMPLICIT_DEPS =
       new DependencyFilter() {

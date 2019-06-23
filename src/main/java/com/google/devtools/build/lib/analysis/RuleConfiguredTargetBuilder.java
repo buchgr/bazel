@@ -14,19 +14,28 @@
 package com.google.devtools.build.lib.analysis;
 
 import static com.google.devtools.build.lib.analysis.ExtraActionUtils.createExtraActionProvider;
+import static com.google.devtools.build.lib.packages.RuleClass.Builder.SKYLARK_BUILD_SETTING_DEFAULT_ATTR_NAME;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
+import com.google.devtools.build.lib.actions.Actions;
+import com.google.devtools.build.lib.actions.Actions.GeneratingActions;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget;
+import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.constraints.ConstraintSemantics;
 import com.google.devtools.build.lib.analysis.constraints.EnvironmentCollection;
 import com.google.devtools.build.lib.analysis.constraints.SupportedEnvironments;
 import com.google.devtools.build.lib.analysis.constraints.SupportedEnvironmentsProvider;
+import com.google.devtools.build.lib.analysis.constraints.SupportedEnvironmentsProvider.RemovedEnvironmentCulprit;
+import com.google.devtools.build.lib.analysis.test.AnalysisTestActionBuilder;
+import com.google.devtools.build.lib.analysis.test.AnalysisTestResultInfo;
 import com.google.devtools.build.lib.analysis.test.ExecutionInfo;
-import com.google.devtools.build.lib.analysis.test.InstrumentedFilesProvider;
+import com.google.devtools.build.lib.analysis.test.InstrumentedFilesInfo;
 import com.google.devtools.build.lib.analysis.test.TestActionBuilder;
 import com.google.devtools.build.lib.analysis.test.TestEnvironmentInfo;
 import com.google.devtools.build.lib.analysis.test.TestProvider;
@@ -36,17 +45,19 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.events.Location;
-import com.google.devtools.build.lib.packages.Info;
+import com.google.devtools.build.lib.packages.BuildSetting;
+import com.google.devtools.build.lib.packages.InfoInterface;
 import com.google.devtools.build.lib.packages.NativeProvider;
 import com.google.devtools.build.lib.packages.Provider;
-import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.TargetUtils;
 import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.Type;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.syntax.Type.LabelClass;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
+import javax.annotation.Nullable;
 
 /**
  * Builder class for analyzed rule instances.
@@ -79,25 +90,36 @@ public final class RuleConfiguredTargetBuilder {
 
   /**
    * Constructs the RuleConfiguredTarget instance based on the values set for this Builder.
+   * Returns null if there were rule errors reported.
    */
-  public ConfiguredTarget build() {
+  @Nullable
+  public ConfiguredTarget build() throws ActionConflictException {
+    // If allowing analysis failures, the current target may not propagate all of the
+    // expected providers; be lenient on such cases (for example, avoid precondition checks).
+    boolean allowAnalysisFailures = ruleContext.getConfiguration().allowAnalysisFailures();
+
     if (ruleContext.getConfiguration().enforceConstraints()) {
       checkConstraints();
     }
-    if (ruleContext.hasErrors()) {
+    if (ruleContext.hasErrors() && !allowAnalysisFailures) {
       return null;
     }
 
+    NestedSetBuilder<Artifact> runfilesMiddlemenBuilder = NestedSetBuilder.stableOrder();
+    if (runfilesSupport != null) {
+      runfilesMiddlemenBuilder.add(runfilesSupport.getRunfilesMiddleman());
+      runfilesMiddlemenBuilder.addTransitive(runfilesSupport.getRunfiles().getExtraMiddlemen());
+    }
+    NestedSet<Artifact> runfilesMiddlemen = runfilesMiddlemenBuilder.build();
     FilesToRunProvider filesToRunProvider =
         new FilesToRunProvider(
-            buildFilesToRun(runfilesSupport, filesToBuild), runfilesSupport, executable);
+            buildFilesToRun(runfilesMiddlemen, filesToBuild), runfilesSupport, executable);
     addProvider(new FileProvider(filesToBuild));
     addProvider(filesToRunProvider);
 
     if (runfilesSupport != null) {
       // If a binary is built, build its runfiles, too
-      addOutputGroup(
-          OutputGroupProvider.HIDDEN_TOP_LEVEL, runfilesSupport.getRunfilesMiddleman());
+      addOutputGroup(OutputGroupInfo.HIDDEN_TOP_LEVEL, runfilesMiddlemen);
     } else if (providersBuilder.contains(RunfilesProvider.class)) {
       // If we don't have a RunfilesSupport (probably because this is not a binary rule), we still
       // want to build the files this rule contributes to runfiles of dependent rules so that we
@@ -107,7 +129,7 @@ public final class RuleConfiguredTargetBuilder {
       // specific *RunfilesProvider classes, which we don't add here for reasons that are lost in
       // the mists of time.
       addOutputGroup(
-          OutputGroupProvider.HIDDEN_TOP_LEVEL,
+          OutputGroupInfo.HIDDEN_TOP_LEVEL,
           providersBuilder
               .getProvider(RunfilesProvider.class)
               .getDefaultRunfiles()
@@ -117,8 +139,13 @@ public final class RuleConfiguredTargetBuilder {
     // Create test action and artifacts if target was successfully initialized
     // and is a test.
     if (TargetUtils.isTestRule(ruleContext.getTarget())) {
-      Preconditions.checkState(runfilesSupport != null);
-      add(TestProvider.class, initializeTestProvider(filesToRunProvider));
+      if (runfilesSupport != null) {
+        add(TestProvider.class, initializeTestProvider(filesToRunProvider));
+      } else {
+        if (!allowAnalysisFailures) {
+          throw new IllegalStateException("Test rules must have runfiles");
+        }
+      }
     }
 
     ExtraActionArtifactsProvider extraActionsProvider =
@@ -131,26 +158,111 @@ public final class RuleConfiguredTargetBuilder {
         outputGroups.put(entry.getKey(), entry.getValue().build());
       }
 
-      OutputGroupProvider outputGroupProvider = new OutputGroupProvider(outputGroups.build());
-      addNativeDeclaredProvider(outputGroupProvider);
+      OutputGroupInfo outputGroupInfo = new OutputGroupInfo(outputGroups.build());
+      addNativeDeclaredProvider(outputGroupInfo);
+    }
+
+    if (ruleContext.getConfiguration().evaluatingForAnalysisTest()) {
+      if (ruleContext.getRule().isAnalysisTest()) {
+        ruleContext.ruleError(
+            String.format(
+                "analysis_test rule '%s' cannot be transitively "
+                    + "depended on by another analysis test rule",
+                ruleContext.getLabel()));
+        return null;
+      }
+      addProvider(new TransitiveLabelsInfo(transitiveLabels()));
+    }
+
+    if (ruleContext.getRule().hasAnalysisTestTransition()) {
+      NestedSet<Label> labels = transitiveLabels();
+      int depCount = labels.toList().size();
+      if (depCount > ruleContext.getConfiguration().analysisTestingDepsLimit()) {
+        ruleContext.ruleError(
+            String.format(
+                "analysis test rule excedeed maximum dependency edge count. "
+                    + "Count: %s. Limit is %s. This limit is imposed on analysis test rules which "
+                    + "use analysis_test_transition attribute transitions. Exceeding this limit "
+                    + "indicates either the analysis_test has too many dependencies, or the "
+                    + "underlying toolchains may be large. Try decreasing the number of test "
+                    + "dependencies, (Analysis tests should not be very large!) or, if possible, "
+                    + "try not using configuration transitions. If underlying toolchain size is "
+                    + "to blame, it might be worth considering increasing "
+                    + "--analysis_testing_deps_limit. (Beware, however, that large values of "
+                    + "this flag can lead to no safeguards against giant "
+                    + "test suites that can lead to Out Of Memory exceptions in the build server.)",
+                depCount, ruleContext.getConfiguration().analysisTestingDepsLimit()));
+        return null;
+      }
+    }
+
+    if (ruleContext.getRule().isBuildSetting()) {
+      BuildSetting buildSetting = ruleContext.getRule().getRuleClassObject().getBuildSetting();
+      Object defaultValue =
+          ruleContext
+              .attributes()
+              .get(SKYLARK_BUILD_SETTING_DEFAULT_ATTR_NAME, buildSetting.getType());
+      addProvider(BuildSettingProvider.class, new BuildSettingProvider(buildSetting, defaultValue));
     }
 
     TransitiveInfoProviderMap providers = providersBuilder.build();
 
-    return new RuleConfiguredTarget(ruleContext, providers);
+    if (ruleContext.getRule().isAnalysisTest()) {
+      // If the target is an analysis test that returned AnalysisTestResultInfo, register a
+      // test pass/fail action on behalf of the target.
+      AnalysisTestResultInfo testResultInfo =
+          providers.get(AnalysisTestResultInfo.SKYLARK_CONSTRUCTOR);
+
+      if (testResultInfo == null) {
+        ruleContext.ruleError(
+            "rules with analysis_test=true must return an instance of AnalysisTestResultInfo");
+        return null;
+      }
+
+      AnalysisTestActionBuilder.writeAnalysisTestAction(ruleContext, testResultInfo);
+    }
+
+    AnalysisEnvironment analysisEnvironment = ruleContext.getAnalysisEnvironment();
+    GeneratingActions generatingActions =
+        Actions.assignOwnersAndFilterSharedActionsAndThrowActionConflict(
+            analysisEnvironment.getActionKeyContext(),
+            analysisEnvironment.getRegisteredActions(),
+            ruleContext.getOwner(),
+            ((Rule) ruleContext.getTarget()).getOutputFiles());
+    return new RuleConfiguredTarget(
+        ruleContext,
+        providers,
+        generatingActions.getActions(),
+        generatingActions.getArtifactsByOutputLabel());
+  }
+
+  private NestedSet<Label> transitiveLabels() {
+    NestedSetBuilder<Label> nestedSetBuilder = NestedSetBuilder.stableOrder();
+
+    for (String attributeName : ruleContext.attributes().getAttributeNames()) {
+      Type<?> attributeType =
+          ruleContext.attributes().getAttributeDefinition(attributeName).getType();
+      if (attributeType.getLabelClass() == LabelClass.DEPENDENCY) {
+        for (TransitiveLabelsInfo labelsInfo :
+            ruleContext.getPrerequisites(
+                attributeName, Mode.DONT_CHECK, TransitiveLabelsInfo.class)) {
+          nestedSetBuilder.addTransitive(labelsInfo.getLabels());
+        }
+      }
+    }
+    nestedSetBuilder.add(ruleContext.getLabel());
+    return nestedSetBuilder.build();
   }
 
   /**
    * Compute the artifacts to put into the {@link FilesToRunProvider} for this target. These are the
-   * filesToBuild, any artifacts added by the rule with {@link #addFilesToRun}, and the runfiles
-   * middleman if it exists.
+   * filesToBuild, any artifacts added by the rule with {@link #addFilesToRun}, and the runfiles'
+   * middlemen if they exists.
    */
   private NestedSet<Artifact> buildFilesToRun(
-      RunfilesSupport runfilesSupport, NestedSet<Artifact> filesToBuild) {
+      NestedSet<Artifact> runfilesMiddlemen, NestedSet<Artifact> filesToBuild) {
     filesToRunBuilder.addTransitive(filesToBuild);
-    if (runfilesSupport != null) {
-      filesToRunBuilder.add(runfilesSupport.getRunfilesMiddleman());
-    }
+    filesToRunBuilder.addTransitive(runfilesMiddlemen);
     return filesToRunBuilder.build();
   }
 
@@ -163,12 +275,13 @@ public final class RuleConfiguredTargetBuilder {
     if (!ruleContext.getRule().getRuleClassObject().supportsConstraintChecking()) {
       return;
     }
+    ConstraintSemantics constraintSemantics = ruleContext.getConstraintSemantics();
     EnvironmentCollection supportedEnvironments =
-        ConstraintSemantics.getSupportedEnvironments(ruleContext);
+        constraintSemantics.getSupportedEnvironments(ruleContext);
     if (supportedEnvironments != null) {
       EnvironmentCollection.Builder refinedEnvironments = new EnvironmentCollection.Builder();
-      Map<Label, Target> removedEnvironmentCulprits = new LinkedHashMap<>();
-      ConstraintSemantics.checkConstraints(ruleContext, supportedEnvironments, refinedEnvironments,
+      Map<Label, RemovedEnvironmentCulprit> removedEnvironmentCulprits = new LinkedHashMap<>();
+      constraintSemantics.checkConstraints(ruleContext, supportedEnvironments, refinedEnvironments,
           removedEnvironmentCulprits);
       add(SupportedEnvironmentsProvider.class,
           new SupportedEnvironments(supportedEnvironments, refinedEnvironments.build(),
@@ -189,7 +302,10 @@ public final class RuleConfiguredTargetBuilder {
     }
     TestActionBuilder testActionBuilder =
         new TestActionBuilder(ruleContext)
-            .setInstrumentedFiles(providersBuilder.getProvider(InstrumentedFilesProvider.class));
+            .setInstrumentedFiles(
+                (InstrumentedFilesInfo)
+                    providersBuilder.getProvider(
+                        InstrumentedFilesInfo.SKYLARK_CONSTRUCTOR.getKey()));
 
     TestEnvironmentInfo environmentProvider =
         (TestEnvironmentInfo)
@@ -260,7 +376,8 @@ public final class RuleConfiguredTargetBuilder {
     return this;
   }
 
-  private <T extends TransitiveInfoProvider> void maybeAddSkylarkLegacyProvider(Info value) {
+  private <T extends TransitiveInfoProvider> void maybeAddSkylarkLegacyProvider(
+      InfoInterface value) {
     if (value.getProvider() instanceof NativeProvider.WithLegacySkylarkName) {
       addSkylarkTransitiveInfo(
           ((NativeProvider.WithLegacySkylarkName) value.getProvider()).getSkylarkName(), value);
@@ -283,22 +400,22 @@ public final class RuleConfiguredTargetBuilder {
    * Adds a "declared provider" defined in Skylark to the rule. Use this method for declared
    * providers defined in Skyark.
    *
-   * <p>Has special handling for {@link OutputGroupProvider}: that provider is not added from
-   * Skylark directly, instead its outpuyt groups are added.
+   * <p>Has special handling for {@link OutputGroupInfo}: that provider is not added from Skylark
+   * directly, instead its output groups are added.
    *
-   * <p>Use {@link #addNativeDeclaredProvider(Info)} in definitions of native rules.
+   * <p>Use {@link #addNativeDeclaredProvider(InfoInterface)} in definitions of native rules.
    */
-  public RuleConfiguredTargetBuilder addSkylarkDeclaredProvider(Info provider, Location loc)
+  public RuleConfiguredTargetBuilder addSkylarkDeclaredProvider(InfoInterface provider)
       throws EvalException {
     Provider constructor = provider.getProvider();
     if (!constructor.isExported()) {
       throw new EvalException(constructor.getLocation(),
           "All providers must be top level values");
     }
-    if (OutputGroupProvider.SKYLARK_CONSTRUCTOR.getKey().equals(constructor.getKey())) {
-      OutputGroupProvider outputGroupProvider = (OutputGroupProvider) provider;
-      for (String outputGroup : outputGroupProvider) {
-        addOutputGroup(outputGroup, outputGroupProvider.getOutputGroup(outputGroup));
+    if (OutputGroupInfo.SKYLARK_CONSTRUCTOR.getKey().equals(constructor.getKey())) {
+      OutputGroupInfo outputGroupInfo = (OutputGroupInfo) provider;
+      for (String outputGroup : outputGroupInfo) {
+        addOutputGroup(outputGroup, outputGroupInfo.getOutputGroup(outputGroup));
       }
     } else {
       providersBuilder.put(provider);
@@ -310,10 +427,10 @@ public final class RuleConfiguredTargetBuilder {
    * Adds "declared providers" defined in native code to the rule. Use this method for declared
    * providers in definitions of native rules.
    *
-   * <p>Use {@link #addSkylarkDeclaredProvider(Info, Location)} for Skylark rule implementations.
+   * <p>Use {@link #addSkylarkDeclaredProvider(InfoInterface)} for Skylark rule implementations.
    */
-  public RuleConfiguredTargetBuilder addNativeDeclaredProviders(Iterable<Info> providers) {
-    for (Info provider : providers) {
+  public RuleConfiguredTargetBuilder addNativeDeclaredProviders(Iterable<InfoInterface> providers) {
+    for (InfoInterface provider : providers) {
       addNativeDeclaredProvider(provider);
     }
     return this;
@@ -323,9 +440,9 @@ public final class RuleConfiguredTargetBuilder {
    * Adds a "declared provider" defined in native code to the rule. Use this method for declared
    * providers in definitions of native rules.
    *
-   * <p>Use {@link #addSkylarkDeclaredProvider(Info, Location)} for Skylark rule implementations.
+   * <p>Use {@link #addSkylarkDeclaredProvider(InfoInterface)} for Skylark rule implementations.
    */
-  public RuleConfiguredTargetBuilder addNativeDeclaredProvider(Info provider) {
+  public RuleConfiguredTargetBuilder addNativeDeclaredProvider(InfoInterface provider) {
     Provider constructor = provider.getProvider();
     Preconditions.checkState(constructor.isExported());
     providersBuilder.put(provider);
@@ -405,5 +522,26 @@ public final class RuleConfiguredTargetBuilder {
       ImmutableSet<ActionAnalysisMetadata> actions) {
     this.actionsWithoutExtraAction = actions;
     return this;
+  }
+
+  /**
+   * Contains a nested set of transitive dependencies of the target which propagated this object.
+   *
+   * <p>This is automatically provided by all targets which are being evaluated in analysis testing.
+   *
+   * <p>For large builds, this object will become <i>very large</i>, but analysis tests are required
+   * to be very small. The small-size of analysis tests are enforced by evaluating the size of this
+   * object.
+   */
+  private static class TransitiveLabelsInfo implements TransitiveInfoProvider {
+    private final NestedSet<Label> labels;
+
+    public TransitiveLabelsInfo(NestedSet<Label> labels) {
+      this.labels = labels;
+    }
+
+    public NestedSet<Label> getLabels() {
+      return labels;
+    }
   }
 }

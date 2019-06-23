@@ -105,7 +105,8 @@ public class FunctionTest extends EvaluationTestCase {
 
   @Test
   public void testFunctionDefLocalVariableReferencedBeforeAssignment() throws Exception {
-    checkEvalErrorContains("Variable 'a' is referenced before assignment.",
+    checkEvalErrorContains(
+        "local variable 'a' is referenced before assignment.",
         "a = 1",
         "def func():",
         "  b = a",
@@ -116,7 +117,8 @@ public class FunctionTest extends EvaluationTestCase {
 
   @Test
   public void testFunctionDefLocalVariableReferencedInCallBeforeAssignment() throws Exception {
-    checkEvalErrorContains("Variable 'a' is referenced before assignment.",
+    checkEvalErrorContains(
+        "local variable 'a' is referenced before assignment.",
         "def dummy(x):",
         "  pass",
         "a = 1",
@@ -197,6 +199,18 @@ public class FunctionTest extends EvaluationTestCase {
         "  return func2()",
         "b = func1()\n");
     assertThat(lookup("b")).isEqualTo(1);
+  }
+
+  @Test
+  public void testFunctionParamCanShadowGlobalVarAfterGlobalVarIsRead() throws Exception {
+    eval("a = 1",
+        "def func2(a):",
+        "  return 0",
+        "def func1():",
+        "  dummy = a",
+        "  return func2(2)",
+        "b = func1()\n");
+    assertThat(lookup("b")).isEqualTo(0);
   }
 
   @Test
@@ -300,13 +314,11 @@ public class FunctionTest extends EvaluationTestCase {
 
   @Test
   public void testKeywordOnlyIsForbidden() throws Exception {
-    env = newEnvironmentWithSkylarkOptions("--incompatible_disallow_keyword_only_args=true");
     checkEvalErrorContains("forbidden", "def foo(a, b, *, c): return a + b + c");
   }
 
   @Test
   public void testParamAfterStarArgs() throws Exception {
-    env = newEnvironmentWithSkylarkOptions("--incompatible_disallow_keyword_only_args=true");
     checkEvalErrorContains("forbidden", "def foo(a, *b, c): return a");
   }
 
@@ -360,11 +372,12 @@ public class FunctionTest extends EvaluationTestCase {
 
   @Test
   public void testStarArg() throws Exception {
-    eval("def f(name, value = '1', optional = '2'): return name + value + optional",
+    eval(
+        "def f(name, value = '1', optional = '2'): return name + value + optional",
         "v1 = f(*['name', 'value'])",
         "v2 = f('0', *['name', 'value'])",
-        "v3 = f('0', *['b'], optional = '3')",
-        "v4 = f(*[],name='a')\n");
+        "v3 = f('0', optional = '3', *['b'])",
+        "v4 = f(name='a', *[])\n");
     assertThat(lookup("v1")).isEqualTo("namevalue2");
     assertThat(lookup("v2")).isEqualTo("0namevalue");
     assertThat(lookup("v3")).isEqualTo("0b3");
@@ -372,8 +385,7 @@ public class FunctionTest extends EvaluationTestCase {
   }
 
   @Test
-  public void testIncompatibleStarParam() throws Exception {
-    env = newEnvironmentWithSkylarkOptions("--incompatible_disallow_keyword_only_args=true");
+  public void testStarParam() throws Exception {
     eval("def f(name, value = '1', optional = '2', *rest):",
         "  r = name + value + optional + '|'",
         "  for x in rest: r += x",

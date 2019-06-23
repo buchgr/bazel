@@ -11,16 +11,20 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 
 #include <string>
 
-#include "gtest/gtest.h"
+#include "googletest/include/gtest/gtest.h"
 #include "src/test/cpp/util/windows_test_util.h"
 
-#if !defined(COMPILER_MSVC) && !defined(__CYGWIN__)
+#if !defined(_WIN32) && !defined(__CYGWIN__)
 #error("This test should only be run on Windows")
-#endif  // !defined(COMPILER_MSVC) && !defined(__CYGWIN__)
+#endif  // !defined(_WIN32) && !defined(__CYGWIN__)
 
 namespace blaze_util {
 

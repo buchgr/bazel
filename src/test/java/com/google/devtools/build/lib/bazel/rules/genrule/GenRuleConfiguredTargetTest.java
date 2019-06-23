@@ -20,21 +20,16 @@ import static com.google.devtools.build.lib.testutil.TestConstants.GENRULE_SETUP
 import static com.google.devtools.build.lib.testutil.TestConstants.GENRULE_SETUP_PATH;
 import static org.junit.Assert.fail;
 
-import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
+import com.google.devtools.build.lib.analysis.ShellConfiguration;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.analysis.configuredtargets.FileConfiguredTarget;
-import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
-import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainProvider;
-import com.google.devtools.build.lib.rules.cpp.CppConfiguration.Tool;
-import com.google.devtools.build.lib.rules.cpp.CppHelper;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.List;
@@ -47,26 +42,6 @@ import org.junit.runners.JUnit4;
 /** Tests of {@link BazelGenRule}. */
 @RunWith(JUnit4.class)
 public class GenRuleConfiguredTargetTest extends BuildViewTestCase {
-
-  /** Filter to remove implicit dependencies of C/C++ rules. */
-  private static final Predicate<ConfiguredTarget> CC_CONFIGURED_TARGET_FILTER =
-      new Predicate<ConfiguredTarget>() {
-        @Override
-        public boolean apply(ConfiguredTarget target) {
-          return AnalysisMock.get().ccSupport().labelFilter().apply(target.getLabel());
-        }
-      };
-
-  /** Filter to remove implicit dependencies of Java rules. */
-  private static final Predicate<ConfiguredTarget> JAVA_CONFIGURED_TARGET_FILTER =
-      new Predicate<ConfiguredTarget>() {
-        @Override
-        public boolean apply(ConfiguredTarget target) {
-          Label label = target.getLabel();
-          String labelName = "//" + label.getPackageName();
-          return !labelName.startsWith("//third_party/java/jdk");
-        }
-      };
 
   private static final Pattern SETUP_COMMAND_PATTERN =
       Pattern.compile(".*/genrule-setup.sh;\\s+(?<command>.*)");
@@ -104,17 +79,7 @@ public class GenRuleConfiguredTargetTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testToolchainMakeVariableExpansion() throws Exception {
-    scratch.file("a/BUILD",
-        "genrule(name='gr', srcs=[], outs=['out'], cmd='$(FOO)', toolchains=[':v'])",
-        "make_variable_tester(name='v', variables={'FOO': 'FOOBAR'})");
-
-    String cmd = getCommand("//a:gr");
-    assertThat(cmd).endsWith("FOOBAR");
-  }
-
-  @Test
-  public void testToolchainOverridesConfiguration() throws Exception {
+  public void testToolchainOverridesJavabase() throws Exception {
     scratch.file("a/BUILD",
         "genrule(name='gr', srcs=[], outs=['out'], cmd='JAVABASE=$(JAVABASE)', toolchains=[':v'])",
         "make_variable_tester(name='v', variables={'JAVABASE': 'REPLACED'})");
@@ -188,8 +153,8 @@ public class GenRuleConfiguredTargetTest extends BuildViewTestCase {
     assertThat(shellAction.getOutputs()).containsExactly(messageArtifact);
 
     String expected = "echo \"Hello, world.\" >" + messageArtifact.getExecPathString();
-    assertThat(shellAction.getArguments().get(0))
-        .isEqualTo(targetConfig.getShellExecutable().getPathString());
+    assertThat(shellAction.getArguments().get(0)).isEqualTo(
+        targetConfig.getFragment(ShellConfiguration.class).getShellExecutable().getPathString());
     assertThat(shellAction.getArguments().get(1)).isEqualTo("-c");
     assertCommandEquals(expected, shellAction.getArguments().get(2));
   }
@@ -305,75 +270,24 @@ public class GenRuleConfiguredTargetTest extends BuildViewTestCase {
     assertThat(bazExpected.equals(barExpected)).isFalse();
   }
 
-  /** Ensure that variable $(CC) gets expanded correctly in the genrule cmd. */
+  /** Ensure that variable $(RULE_DIR) gets expanded correctly in the genrule cmd. */
   @Test
-  public void testMakeVarExpansion() throws Exception {
+  public void testRuleDirExpansion() throws Exception {
     scratch.file(
         "foo/BUILD",
         "genrule(name = 'bar',",
-        "        srcs = ['bar.cc'],",
-        "        cmd = '$(CC) -o $(OUTS) $(SRCS) $$shellvar',",
-        "        outs = ['bar.o'])");
-    FileConfiguredTarget barOutTarget = getFileConfiguredTarget("//foo:bar.o");
-    FileConfiguredTarget barInTarget = getFileConfiguredTarget("//foo:bar.cc");
+        "        srcs = ['bar_in.txt'],",
+        "        cmd = 'touch $(RULEDIR)',",
+        "        outs = ['bar/bar_out.txt'])",
+        "genrule(name = 'baz',",
+        "        srcs = ['bar/bar_out.txt'],",
+        "        cmd = 'touch $(RULEDIR)',",
+        "        outs = ['baz/baz_out.txt', 'logs/baz.log'])");
 
-    SpawnAction barAction = (SpawnAction) getGeneratingAction(barOutTarget.getArtifact());
-
-    CcToolchainProvider toolchain =
-        CppHelper.getToolchainUsingDefaultCcToolchainAttribute(
-            getRuleContext(getConfiguredTarget("//foo:bar")));
-    String cc = toolchain.getToolPathFragment(Tool.GCC).getPathString();
-    String expected =
-        cc
-            + " -o "
-            + barOutTarget.getArtifact().getExecPathString()
-            + " "
-            + barInTarget.getArtifact().getRootRelativePath().getPathString()
-            + " $shellvar";
-    assertCommandEquals(expected, barAction.getArguments().get(2));
-  }
-
-  @Test
-  public void onlyHasCcToolchainDepWhenCcMakeVariablesArePresent() throws Exception {
-    scratch.file(
-        "foo/BUILD",
-        "genrule(name = 'no_cc',",
-        "        srcs = [],",
-        "        cmd = 'echo no CC variables here > $@',",
-        "        outs = ['no_cc.out'])",
-        "genrule(name = 'cc',",
-        "        srcs = [],",
-        "        cmd = 'echo $(CC) > $@',",
-        "        outs = ['cc.out'])");
-    String ccToolchainAttr = ":cc_toolchain";
-    assertThat(getPrerequisites(getConfiguredTarget("//foo:no_cc"), ccToolchainAttr)).isEmpty();
-    assertThat(getPrerequisites(getConfiguredTarget("//foo:cc"), ccToolchainAttr)).isNotEmpty();
-  }
-
-  /** Ensure that Java make variables get expanded under the *host* configuration. */
-  @Test
-  public void testJavaMakeVarExpansion() throws Exception {
-    String ruleTemplate =
-        "genrule(name = '%s',"
-            + "  srcs = [],"
-            + "  cmd = 'echo $(%s) > $@',"
-            + "  outs = ['%s'])";
-
-    scratch.file(
-        "foo/BUILD",
-        String.format(ruleTemplate, "java_rule", "JAVA", "java.txt"),
-        String.format(ruleTemplate, "javabase_rule", "JAVABASE", "javabase.txt"));
-
-    Artifact javaOutput = getFileConfiguredTarget("//foo:java.txt").getArtifact();
-    Artifact javabaseOutput = getFileConfiguredTarget("//foo:javabase.txt").getArtifact();
-
-    String javaCommand =
-        ((SpawnAction) getGeneratingAction(javaOutput)).getArguments().get(2);
-    assertThat(javaCommand).containsMatch("jdk/bin/java(.exe)? >");
-
-    String javabaseCommand =
-        ((SpawnAction) getGeneratingAction(javabaseOutput)).getArguments().get(2);
-    assertThat(javabaseCommand).contains("jdk >");
+    // Make sure the expansion for $(RULE_DIR) results in the directory of the BUILD file ("foo")
+    String expectedRegex = "touch b.{4}-out.*foo";
+    assertThat(getCommand("//foo:bar")).containsMatch(expectedRegex);
+    assertThat(getCommand("//foo:baz")).containsMatch(expectedRegex);
   }
 
   // Returns the expansion of 'cmd' for the specified genrule.
@@ -436,7 +350,7 @@ public class GenRuleConfiguredTargetTest extends BuildViewTestCase {
         "        output_to_bindir=0)");
 
     assertThat(getFileConfiguredTarget("//x:bin.out").getArtifact())
-        .isEqualTo(getBinArtifact("bin.out", "//x:bin"));
+        .isEqualTo(getBinArtifact("bin.out", getConfiguredTarget("//x:bin")));
     assertThat(getFileConfiguredTarget("//x:genfiles.out").getArtifact())
         .isEqualTo(getGenfilesArtifact("genfiles.out", "//x:genfiles"));
   }
@@ -454,14 +368,16 @@ public class GenRuleConfiguredTargetTest extends BuildViewTestCase {
         "        cmd=':',",
         "        output_to_bindir=0)");
 
+    ConfiguredTarget binCt = getConfiguredTarget("//x:bin");
+    ConfiguredTarget genCt = getConfiguredTarget("//x:genfiles");
     assertThat(getFileConfiguredTarget("//x:bin_a.out").getArtifact())
-        .isEqualTo(getBinArtifact("bin_a.out", "//x:bin"));
+        .isEqualTo(getBinArtifact("bin_a.out", binCt));
     assertThat(getFileConfiguredTarget("//x:bin_b.out").getArtifact())
-        .isEqualTo(getBinArtifact("bin_b.out", "//x:bin"));
+        .isEqualTo(getBinArtifact("bin_b.out", binCt));
     assertThat(getFileConfiguredTarget("//x:genfiles_a.out").getArtifact())
-        .isEqualTo(getGenfilesArtifact("genfiles_a.out", "//x:genfiles"));
+        .isEqualTo(getGenfilesArtifact("genfiles_a.out", genCt));
     assertThat(getFileConfiguredTarget("//x:genfiles_b.out").getArtifact())
-        .isEqualTo(getGenfilesArtifact("genfiles_b.out", "//x:genfiles"));
+        .isEqualTo(getGenfilesArtifact("genfiles_b.out", genCt));
   }
 
   @Test
@@ -487,35 +403,27 @@ public class GenRuleConfiguredTargetTest extends BuildViewTestCase {
         "        srcs=[':src'], tools=[':tool'], outs=['out'],",
         "        cmd='$(location :tool)')");
 
-    Iterable<ConfiguredTarget> prereqs =
-        Iterables.filter(
-            Iterables.filter(
-                getDirectPrerequisites(getConfiguredTarget("//config")),
-                CC_CONFIGURED_TARGET_FILTER),
-            JAVA_CONFIGURED_TARGET_FILTER);
+    ConfiguredTarget parentTarget = getConfiguredTarget("//config");
+
+    Iterable<ConfiguredTarget> prereqs = getDirectPrerequisites(parentTarget);
 
     boolean foundSrc = false;
     boolean foundTool = false;
     boolean foundSetup = false;
     for (ConfiguredTarget prereq : prereqs) {
       String name = prereq.getLabel().getName();
-      if (name.contains("cc-") || name.contains("jdk")) {
-          // Ignore these, they are present due to the implied genrule dependency on crosstool and
-          // JDK.
-        continue;
-      }
       switch (name) {
         case "src":
-          assertConfigurationsEqual(getTargetConfiguration(), prereq.getConfiguration());
+          assertConfigurationsEqual(getConfiguration(parentTarget), getConfiguration(prereq));
           foundSrc = true;
           break;
         case "tool":
-          assertThat(getHostConfiguration().equalsOrIsSupersetOf(prereq.getConfiguration()))
+          assertThat(getHostConfiguration().equalsOrIsSupersetOf(getConfiguration(prereq)))
               .isTrue();
           foundTool = true;
           break;
         case GENRULE_SETUP_PATH:
-          assertThat(prereq.getConfiguration()).isNull();
+          assertThat(getConfiguration(prereq)).isNull();
           foundSetup = true;
           break;
         default:
@@ -635,7 +543,7 @@ public class GenRuleConfiguredTargetTest extends BuildViewTestCase {
   private void assertStamped(ConfiguredTarget target) throws Exception {
     Artifact out = Iterables.getFirst(getFilesToBuild(target), null);
     List<String> inputs = ActionsTestUtil.baseArtifactNames(getGeneratingAction(out).getInputs());
-    assertThat(inputs).containsAllOf("build-info.txt", "build-changelist.txt");
+    assertThat(inputs).containsAtLeast("build-info.txt", "build-changelist.txt");
   }
 
   private void assertNotStamped(ConfiguredTarget target) throws Exception {
@@ -705,5 +613,25 @@ public class GenRuleConfiguredTargetTest extends BuildViewTestCase {
             + "      tags = ['local'])");
     getConfiguredTarget("//foo:g");
     assertNoEvents();
+  }
+
+  @Test
+  public void testExecToolsAreExecConfiguration() throws Exception {
+    scratch.file(
+        "config/BUILD",
+        "genrule(name='src', outs=['src.out'], cmd=':')",
+        "genrule(name='exec_tool', outs=['exec_tool.out'], cmd=':')",
+        "genrule(name='config', ",
+        "        srcs=[':src'], exec_tools=[':exec_tool'], outs=['out'],",
+        "        cmd='$(location :exec_tool)')");
+
+    ConfiguredTarget parentTarget = getConfiguredTarget("//config");
+
+    // Cannot use getDirectPrerequisites, as this re-configures that target incorrectly.
+    Artifact out = Iterables.getFirst(getFilesToBuild(parentTarget), null);
+    assertThat(getGeneratingAction(out).getTools()).hasSize(1);
+    Artifact execTool = getOnlyElement(getGeneratingAction(out).getTools());
+    // This is the output dir fragment for the execution transition.
+    assertThat(execTool.getExecPathString()).contains("-exec-");
   }
 }

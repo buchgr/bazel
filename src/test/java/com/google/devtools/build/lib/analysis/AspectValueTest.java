@@ -14,8 +14,8 @@
 package com.google.devtools.build.lib.analysis;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.testing.EqualsTester;
-import com.google.devtools.build.lib.actions.ActionLookupValue;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestCase;
 import com.google.devtools.build.lib.analysis.util.TestAspects;
@@ -43,9 +43,9 @@ public class AspectValueTest extends AnalysisTestCase {
     update();
     BuildConfiguration c1 = getTargetConfiguration();
     BuildConfiguration c2 = getHostConfiguration();
-    Label l1 = Label.parseAbsolute("//a:l1");
-    Label l1b = Label.parseAbsolute("//a:l1");
-    Label l2 = Label.parseAbsolute("//a:l2");
+    Label l1 = Label.parseAbsolute("//a:l1", ImmutableMap.of());
+    Label l1b = Label.parseAbsolute("//a:l1", ImmutableMap.of());
+    Label l2 = Label.parseAbsolute("//a:l2", ImmutableMap.of());
     AspectParameters i1 = new AspectParameters.Builder()
         .addAttribute("foo", "bar")
         .build();
@@ -220,10 +220,11 @@ public class AspectValueTest extends AnalysisTestCase {
   private static SkyKey createKey(
       Label label, BuildConfiguration baseConfiguration, NativeAspectClass aspectClass,
       AspectParameters parameters, BuildConfiguration aspectConfiguration) {
-    return ActionLookupValue.key(AspectValue.createAspectKey(
-                label, baseConfiguration, new AspectDescriptor(aspectClass, parameters),
-        aspectConfiguration
-    ));
+    return AspectValue.createAspectKey(
+        label,
+        baseConfiguration,
+        new AspectDescriptor(aspectClass, parameters),
+        aspectConfiguration);
   }
 
   private static SkyKey createDerivedKey(
@@ -234,11 +235,12 @@ public class AspectValueTest extends AnalysisTestCase {
       BuildConfiguration aspectConfiguration2) {
     AspectKey baseKey = AspectValue.createAspectKey(label, baseConfiguration,
         new AspectDescriptor(aspectClass1, parameters1), aspectConfiguration1);
-    return ActionLookupValue.key(AspectValue.createAspectKey(
-        label, baseConfiguration,
-        ImmutableList.of(baseKey), new AspectDescriptor(aspectClass2, parameters2),
-        aspectConfiguration2
-    ));
+    return AspectValue.createAspectKey(
+        label,
+        baseConfiguration,
+        ImmutableList.of(baseKey),
+        new AspectDescriptor(aspectClass2, parameters2),
+        aspectConfiguration2);
   }
 
 }

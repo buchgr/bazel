@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.rules.android;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ExecException;
@@ -29,26 +30,24 @@ import com.google.devtools.common.options.OptionsBase;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * An action that writes the a parameter file to {@code incremental_install.py} based on the command
- * line arguments to {@code blaze mobile-install}.
+ * line arguments to {@code bazel mobile-install}.
  */
 @Immutable // note that it accesses data non-hermetically during the execution phase
 public final class WriteAdbArgsAction extends AbstractFileWriteAction {
   private static final String GUID = "16720416-3c01-4b0a-a543-ead7e563a1ca";
 
-  /**
-   * Options of the {@code mobile-install} command pertaining to the way {@code adb} is invoked.
-   */
+  /** Options of the {@code mobile-install} command pertaining to the way {@code adb} is invoked. */
   public static final class Options extends OptionsBase {
     @Option(
       name = "adb",
-      category = "mobile-install",
       defaultValue = "",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
+      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
+      effectTags = {OptionEffectTag.CHANGES_INPUTS},
       help =
           "adb binary to use for the 'mobile-install' command. If unspecified, the one in "
               + "the Android SDK specified by the --android_sdk command line option (or the "
@@ -58,42 +57,38 @@ public final class WriteAdbArgsAction extends AbstractFileWriteAction {
 
     @Option(
       name = "adb_arg",
-      category = "mobile-install",
       allowMultiple = true,
       defaultValue = "",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
+      documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
+      effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
       help = "Extra arguments to pass to adb. Usually used to designate a device to install to."
     )
     public List<String> adbArgs;
 
     @Option(
-      name = "adb_jobs",
-      category = "mobile-install",
-      defaultValue = "2",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "The number of instances of adb to use in parallel to update files on the device"
+      name = "device",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
+      effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
+      help = "The adb device serial number. If not specified, the first device will be used."
     )
-    public int adbJobs;
+    public String device;
 
     @Option(
       name = "incremental_install_verbosity",
-      category = "mobile-install",
       defaultValue = "",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.BAZEL_MONITORING},
       help = "The verbosity for incremental install. Set to 1 for debug logging."
     )
     public String incrementalInstallVerbosity;
 
     @Option(
       name = "start",
-      category = "mobile-install",
       converter = StartTypeConverter.class,
       defaultValue = "NO",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
+      documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
+      effectTags = {OptionEffectTag.EXECUTION},
       help =
           "How the app should be started after installing it. Set to WARM to preserve "
               + "and restore application state on incremental installs."
@@ -102,10 +97,9 @@ public final class WriteAdbArgsAction extends AbstractFileWriteAction {
 
     @Option(
       name = "start_app",
-      category = "mobile-install",
       defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
+      documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
+      effectTags = {OptionEffectTag.EXECUTION},
       help = "Whether to start the app after installing it.",
       expansion = {"--start=COLD"}
     )
@@ -113,10 +107,9 @@ public final class WriteAdbArgsAction extends AbstractFileWriteAction {
 
     @Option(
       name = "debug_app",
-      category = "mobile-install",
       defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
+      documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
+      effectTags = {OptionEffectTag.EXECUTION},
       help = "Whether to wait for the debugger before starting the app.",
       expansion = {"--start=DEBUG"}
     )
@@ -124,16 +117,16 @@ public final class WriteAdbArgsAction extends AbstractFileWriteAction {
   }
 
   public WriteAdbArgsAction(ActionOwner owner, Artifact outputFile) {
-    super(owner, ImmutableList.<Artifact>of(), outputFile, false);
+    super(owner, ImmutableList.of(), outputFile, false);
   }
 
   @Override
   public DeterministicWriter newDeterministicWriter(ActionExecutionContext ctx)
       throws IOException, InterruptedException, ExecException {
     Options options = ctx.getOptions().getOptions(Options.class);
-    final List<String> args = options.adbArgs;
+    final List<String> args = new ArrayList<>(options.adbArgs);
     final String adb = options.adb;
-    final int adbJobs = options.adbJobs;
+    final String device = options.device;
     final String incrementalInstallVerbosity = options.incrementalInstallVerbosity;
     final StartType start = options.start;
     final String userHomeDirectory =
@@ -148,18 +141,20 @@ public final class WriteAdbArgsAction extends AbstractFileWriteAction {
           ps.printf("--adb=%s\n", adb);
         }
 
+        if (!device.isEmpty()) {
+          args.add("-s");
+          args.add(device);
+        }
+
         for (String arg : args) {
           ps.printf("--extra_adb_arg=%s\n", arg);
         }
-
-        ps.printf("--adb_jobs=%d\n", adbJobs);
 
         if (!incrementalInstallVerbosity.isEmpty()) {
           ps.printf("--verbosity=%s\n", incrementalInstallVerbosity);
         }
 
         ps.printf("--start=%s\n", start.name().toLowerCase());
-
 
         if (userHomeDirectory != null) {
           ps.printf("--user_home_dir=%s\n", userHomeDirectory);
@@ -185,10 +180,8 @@ public final class WriteAdbArgsAction extends AbstractFileWriteAction {
   }
 
   @Override
-  protected String computeKey() {
-    return new Fingerprint()
-        .addString(GUID)
-        .hexDigestAndReset();
+  protected void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp) {
+    fp.addString(GUID);
   }
 
   /** Specifies how the app should be started/stopped. */

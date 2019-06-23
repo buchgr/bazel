@@ -13,20 +13,23 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.actions.FileValue;
+import com.google.devtools.build.lib.actions.InconsistentFilesystemException;
+import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.LabelValidator;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
+import com.google.devtools.build.lib.packages.BuildFileName;
 import com.google.devtools.build.lib.packages.BuildFileNotFoundException;
 import com.google.devtools.build.lib.packages.ErrorDeterminingRepositoryException;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
+import com.google.devtools.build.lib.packages.RepositoryFetchException;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
-import com.google.devtools.build.lib.skyframe.PackageLookupValue.BuildFileName;
 import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
@@ -69,13 +72,10 @@ public class PackageLookupFunction implements SkyFunction {
     PathPackageLocator pkgLocator = PrecomputedValue.PATH_PACKAGE_LOCATOR.get(env);
 
     PackageIdentifier packageKey = (PackageIdentifier) skyKey.argument();
-    if (PackageFunction.isDefaultsPackage(packageKey)) {
-      return PackageLookupValue.success(pkgLocator.getPathEntries().get(0), BuildFileName.BUILD);
-    }
 
     if (!packageKey.getRepository().isMain()) {
       return computeExternalPackageLookupValue(skyKey, env, packageKey);
-    } else if (packageKey.equals(Label.EXTERNAL_PACKAGE_IDENTIFIER)) {
+    } else if (packageKey.equals(LabelConstants.EXTERNAL_PACKAGE_IDENTIFIER)) {
       return computeWorkspacePackageLookupValue(env, pkgLocator.getPathEntries());
     }
 
@@ -106,6 +106,31 @@ public class PackageLookupFunction implements SkyFunction {
     return findPackageByBuildFile(env, pkgLocator, packageKey);
   }
 
+  /**
+   * For a package identifier {@code packageKey} such that the compute for {@code
+   * PackageLookupValue.key(packageKey)} returned {@code NO_BUILD_FILE_VALUE}, provide a
+   * human-readable error message with more details on where we searched for the package.
+   */
+  public static String explainNoBuildFileValue(PackageIdentifier packageKey, Environment env)
+      throws InterruptedException {
+    if (packageKey.getRepository().isMain()) {
+      PathPackageLocator pkgLocator = PrecomputedValue.PATH_PACKAGE_LOCATOR.get(env);
+      StringBuilder message = new StringBuilder();
+      message.append("BUILD file not found in any of the following directories.");
+      for (Root root : pkgLocator.getPathEntries()) {
+        message
+            .append("\n - ")
+            .append(root.asPath().getRelative(packageKey.getPackageFragment()).getPathString());
+      }
+      return message.toString();
+    } else {
+      return "BUILD file not found in directory '"
+          + packageKey.getPackageFragment()
+          + "' of external repository "
+          + packageKey.getRepository();
+    }
+  }
+
   @Nullable
   @Override
   public String extractTag(SkyKey skyKey) {
@@ -120,7 +145,7 @@ public class PackageLookupFunction implements SkyFunction {
     // to having restart the SkyFunction after every new dependency. However, if we try to batch
     // the missing value keys, more dependencies than necessary will be declared. This wart can be
     // fixed once we have nicer continuation support [skyframe-loading]
-    for (Path packagePathEntry : pkgLocator.getPathEntries()) {
+    for (Root packagePathEntry : pkgLocator.getPathEntries()) {
 
       // This checks for the build file names in the correct precedence order.
       for (BuildFileName buildFileName : buildFilesByPriority) {
@@ -146,8 +171,15 @@ public class PackageLookupFunction implements SkyFunction {
     SkyKey fileSkyKey = FileValue.key(fileRootedPath);
     FileValue fileValue = null;
     try {
-      fileValue = (FileValue) env.getValueOrThrow(fileSkyKey, IOException.class,
-          FileSymlinkException.class, InconsistentFilesystemException.class);
+      fileValue = (FileValue) env.getValueOrThrow(fileSkyKey, IOException.class);
+    } catch (InconsistentFilesystemException e) {
+      // This error is not transient from the perspective of the PackageLookupFunction.
+      throw new PackageLookupFunctionException(e, Transience.PERSISTENT);
+    } catch (FileSymlinkException e) {
+      throw new PackageLookupFunctionException(new BuildFileNotFoundException(packageIdentifier,
+          "Symlink cycle detected while trying to find " + basename + " file "
+              + fileRootedPath.asPath()),
+          Transience.PERSISTENT);
     } catch (IOException e) {
       // TODO(bazel-team): throw an IOException here and let PackageFunction wrap that into a
       // BuildFileNotFoundException.
@@ -155,21 +187,13 @@ public class PackageLookupFunction implements SkyFunction {
           "IO errors while looking for " + basename + " file reading "
               + fileRootedPath.asPath() + ": " + e.getMessage(), e),
           Transience.PERSISTENT);
-    } catch (FileSymlinkException e) {
-      throw new PackageLookupFunctionException(new BuildFileNotFoundException(packageIdentifier,
-          "Symlink cycle detected while trying to find " + basename + " file "
-              + fileRootedPath.asPath()),
-          Transience.PERSISTENT);
-    } catch (InconsistentFilesystemException e) {
-      // This error is not transient from the perspective of the PackageLookupFunction.
-      throw new PackageLookupFunctionException(e, Transience.PERSISTENT);
     }
     return fileValue;
   }
 
   private PackageLookupValue getPackageLookupValue(
       Environment env,
-      ImmutableList<Path> packagePathEntries,
+      ImmutableList<Root> packagePathEntries,
       PackageIdentifier packageIdentifier,
       BuildFileName buildFileName)
       throws PackageLookupFunctionException, InterruptedException {
@@ -178,7 +202,7 @@ public class PackageLookupFunction implements SkyFunction {
     // to having restart the SkyFunction after every new dependency. However, if we try to batch
     // the missing value keys, more dependencies than necessary will be declared. This wart can be
     // fixed once we have nicer continuation support [skyframe-loading]
-    for (Path packagePathEntry : packagePathEntries) {
+    for (Root packagePathEntry : packagePathEntries) {
       PackageLookupValue result =
           getPackageLookupValue(env, packagePathEntry, packageIdentifier, buildFileName);
       if (result == null) {
@@ -193,7 +217,7 @@ public class PackageLookupFunction implements SkyFunction {
 
   private PackageLookupValue getPackageLookupValue(
       Environment env,
-      Path packagePathEntry,
+      Root packagePathEntry,
       PackageIdentifier packageIdentifier,
       BuildFileName buildFileName)
       throws InterruptedException, PackageLookupFunctionException {
@@ -236,7 +260,7 @@ public class PackageLookupFunction implements SkyFunction {
         if (localRepositoryPath.isAbsolute()) {
           // We need the package path to also be absolute.
           pathToRequestedPackage =
-              packagePathEntry.asFragment().getRelative(pathToRequestedPackage);
+              packagePathEntry.getRelative(pathToRequestedPackage).asFragment();
         }
         PathFragment remainingPath = pathToRequestedPackage.relativeTo(localRepositoryPath);
         PackageIdentifier correctPackage =
@@ -265,11 +289,14 @@ public class PackageLookupFunction implements SkyFunction {
   }
 
   private PackageLookupValue computeWorkspacePackageLookupValue(
-      Environment env, ImmutableList<Path> packagePathEntries)
+      Environment env, ImmutableList<Root> packagePathEntries)
       throws PackageLookupFunctionException, InterruptedException {
     PackageLookupValue result =
         getPackageLookupValue(
-            env, packagePathEntries, Label.EXTERNAL_PACKAGE_IDENTIFIER, BuildFileName.WORKSPACE);
+            env,
+            packagePathEntries,
+            LabelConstants.EXTERNAL_PACKAGE_IDENTIFIER,
+            BuildFileName.WORKSPACE);
     if (result == null) {
       return null;
     }
@@ -282,11 +309,12 @@ public class PackageLookupFunction implements SkyFunction {
     if (packagePathEntries.isEmpty()) {
       return PackageLookupValue.NO_BUILD_FILE_VALUE;
     }
-    Path lastPackagePath = packagePathEntries.get(packagePathEntries.size() - 1);
-    FileValue lastPackagePackagePathFileValue = getFileValue(
-        RootedPath.toRootedPath(lastPackagePath, PathFragment.EMPTY_FRAGMENT),
-        env,
-        Label.EXTERNAL_PACKAGE_IDENTIFIER);
+    Root lastPackagePath = packagePathEntries.get(packagePathEntries.size() - 1);
+    FileValue lastPackagePackagePathFileValue =
+        getFileValue(
+            RootedPath.toRootedPath(lastPackagePath, PathFragment.EMPTY_FRAGMENT),
+            env,
+            LabelConstants.EXTERNAL_PACKAGE_IDENTIFIER);
     if (lastPackagePackagePathFileValue == null) {
       return null;
     }
@@ -313,13 +341,16 @@ public class PackageLookupFunction implements SkyFunction {
       if (repositoryValue == null) {
         return null;
       }
-    } catch (NoSuchPackageException | IOException | EvalException e) {
+    } catch (NoSuchPackageException e) {
       throw new PackageLookupFunctionException(new BuildFileNotFoundException(id, e.getMessage()),
           Transience.PERSISTENT);
+    } catch (IOException | EvalException e) {
+      throw new PackageLookupFunctionException(
+          new RepositoryFetchException(id, e.getMessage()), Transience.PERSISTENT);
     }
     if (!repositoryValue.repositoryExists()) {
       // TODO(ulfjack): Maybe propagate the error message from the repository delegator function?
-      return PackageLookupValue.NO_SUCH_REPOSITORY_VALUE;
+      return new PackageLookupValue.NoRepositoryPackageLookupValue(id.getRepository().getName());
     }
 
     // This checks for the build file names in the correct precedence order.
@@ -327,14 +358,15 @@ public class PackageLookupFunction implements SkyFunction {
       PathFragment buildFileFragment =
           id.getPackageFragment().getRelative(buildFileName.getFilenameFragment());
       RootedPath buildFileRootedPath =
-          RootedPath.toRootedPath(repositoryValue.getPath(), buildFileFragment);
+          RootedPath.toRootedPath(Root.fromPath(repositoryValue.getPath()), buildFileFragment);
       FileValue fileValue = getFileValue(buildFileRootedPath, env, packageIdentifier);
       if (fileValue == null) {
         return null;
       }
 
       if (fileValue.isFile()) {
-        return PackageLookupValue.success(repositoryValue.getPath(), buildFileName);
+        return PackageLookupValue.success(
+            repositoryValue, Root.fromPath(repositoryValue.getPath()), buildFileName);
       }
     }
 
@@ -347,6 +379,10 @@ public class PackageLookupFunction implements SkyFunction {
    */
   private static final class PackageLookupFunctionException extends SkyFunctionException {
     public PackageLookupFunctionException(BuildFileNotFoundException e, Transience transience) {
+      super(e, transience);
+    }
+
+    public PackageLookupFunctionException(RepositoryFetchException e, Transience transience) {
       super(e, transience);
     }
 

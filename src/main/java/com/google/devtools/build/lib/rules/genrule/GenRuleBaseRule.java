@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.genrule;
 
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
 import static com.google.devtools.build.lib.packages.BuildType.LICENSE;
@@ -22,21 +21,15 @@ import static com.google.devtools.build.lib.syntax.Type.BOOLEAN;
 import static com.google.devtools.build.lib.syntax.Type.STRING;
 
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
-import com.google.devtools.build.lib.analysis.MakeVariableInfo;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
-import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.analysis.config.ExecutionTransitionFactory;
+import com.google.devtools.build.lib.analysis.config.HostTransition;
 import com.google.devtools.build.lib.packages.Attribute;
-import com.google.devtools.build.lib.packages.Attribute.ComputedDefault;
-import com.google.devtools.build.lib.packages.Attribute.LateBoundDefault;
 import com.google.devtools.build.lib.packages.AttributeMap;
 import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
-import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
-import com.google.devtools.build.lib.rules.cpp.CppHelper;
-import com.google.devtools.build.lib.rules.cpp.CppRuleClasses;
-import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileTypeSet;
 
 /**
@@ -45,34 +38,6 @@ import com.google.devtools.build.lib.util.FileTypeSet;
  * as a setup script target.
  */
 public class GenRuleBaseRule implements RuleDefinition {
-  /**
-   * Late-bound dependency on the C++ toolchain <i>iff</i> the genrule has make variables that need
-   * that toolchain.
-   */
-  public static LateBoundDefault<?, Label> ccToolchainAttribute(RuleDefinitionEnvironment env) {
-    return LateBoundDefault.fromTargetConfiguration(
-        CppConfiguration.class,
-        env.getToolsLabel(CppRuleClasses.CROSSTOOL_LABEL),
-        // null guards are needed for LateBoundAttributeTest
-        (rule, attributes, cppConfig) ->
-            attributes != null
-                    && attributes.get("cmd", Type.STRING) != null
-                    && GenRuleBase.requiresCrosstool(attributes.get("cmd", Type.STRING))
-                ? CppRuleClasses.ccToolchainAttribute(env).resolve(rule, attributes, cppConfig)
-                : null);
-  }
-
-  /** Computed dependency on the C++ toolchain type. */
-  public static ComputedDefault ccToolchainTypeAttribute(RuleDefinitionEnvironment env) {
-    return new ComputedDefault("cmd") {
-      @Override
-      public Object getDefault(AttributeMap rule) {
-        return GenRuleBase.requiresCrosstool(rule.get("cmd", Type.STRING))
-            ? CppHelper.getCcToolchainType(env.getToolsRepository())
-            : null;
-      }
-    };
-  }
 
   @Override
   public RuleClass build(
@@ -116,12 +81,33 @@ public class GenRuleBaseRule implements RuleDefinition {
           list, not in <code>srcs</code>, to ensure they are built in the correct configuration.
         </p>
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
-        .add(attr("tools", LABEL_LIST).cfg(HOST).allowedFileTypes(FileTypeSet.ANY_FILE))
         .add(
-            attr("toolchains", LABEL_LIST)
-                .allowedFileTypes(FileTypeSet.NO_FILE)
-                .mandatoryProviders(MakeVariableInfo.PROVIDER.id())
-        )
+            attr("tools", LABEL_LIST)
+                .cfg(HostTransition.createFactory())
+                .allowedFileTypes(FileTypeSet.ANY_FILE))
+
+        /* <!-- #BLAZE_RULE(genrule).ATTRIBUTE(exec_tools) -->
+        A list of <i>tool</i> dependencies for this rule. This behaves exactly like the
+        <a href="#genrule.tools"><code>tools</code></a> attribute, except that these dependencies
+        will be configured for the rule's execution platform instead of the host configuration.
+        This means that dependencies in <code>exec_tools</code> are not subject to the same
+        limitations as dependencies in <code>tools</code>. In particular, they are not required to
+        use the host configuration for their own transitive dependencies. See
+        <a href="#genrule.tools"><code>tools</code></a> for further details.
+
+        <p>
+          Note that eventually the host configuration will be replaced by the execution
+          configuration. When that happens, this attribute will be deprecated in favor of
+          <code>tools</code>. Until then, this attribute allows users to selectively migrate
+          dependencies to the execution configuration.
+        </p>
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(
+            attr("exec_tools", LABEL_LIST)
+                .cfg(new ExecutionTransitionFactory())
+                .allowedFileTypes(FileTypeSet.ANY_FILE)
+                .dontCheckConstraints())
+
         /* <!-- #BLAZE_RULE(genrule).ATTRIBUTE(outs) -->
         A list of files generated by this rule.
         <p>
@@ -149,8 +135,8 @@ public class GenRuleBaseRule implements RuleDefinition {
             <p>
               Note that <code>outs</code> are <i>not</i> included in this substitution. Output files
               are always generated into a predictable location (available via <code>$(@D)</code>,
-              <code>$@</code>, <code>$(OUTS)</code> or <code>$(location <i>output_name</i>)</code>;
-              see below).
+              <code>$@</code>, <code>$(OUTS)</code> or <code>$(RULEDIR)</code> or
+              <code>$(location <i>output_name</i>)</code>; see below).
             </p>
           </li>
           <li>
@@ -271,7 +257,7 @@ public class GenRuleBaseRule implements RuleDefinition {
     return RuleDefinition.Metadata.builder()
         .name("$genrule_base")
         .type(RuleClassType.ABSTRACT)
-        .ancestors(BaseRuleClasses.RuleBase.class)
+        .ancestors(BaseRuleClasses.RuleBase.class, BaseRuleClasses.MakeVariableExpandingRule.class)
         .build();
   }
 }

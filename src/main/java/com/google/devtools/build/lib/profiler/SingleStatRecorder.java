@@ -13,11 +13,11 @@
 // limitations under the License.
 package com.google.devtools.build.lib.profiler;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Range;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.profiler.MetricData.HistogramElement;
-import com.google.devtools.build.lib.util.Preconditions;
 
 /**
  * A stat recorder that can record time histograms, count of calls, average time, Std. Deviation
@@ -42,7 +42,7 @@ public class SingleStatRecorder implements StatRecorder {
     histogram = new int[buckets];
   }
 
-  /** Create an snapshot of the the stats recorded up to now. */
+  /** Create an snapshot of the stats recorded up to now. */
   public MetricData snapshot() {
     synchronized (this) {
       ImmutableList.Builder<HistogramElement> result = ImmutableList.builder();

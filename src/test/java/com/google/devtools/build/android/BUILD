@@ -13,11 +13,41 @@ filegroup(
 )
 
 java_test(
+    name = "AarGeneratorActionTest",
+    size = "small",
+    srcs = ["AarGeneratorActionTest.java"],
+    deps = [
+        ":test_utils",
+        "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
+        "//src/main/java/com/google/devtools/common/options",
+        "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
+        "//third_party:android_common_25_0_0",
+        "//third_party:guava",
+        "//third_party:junit4",
+        "//third_party:truth",
+    ],
+)
+
+java_test(
     name = "AndroidResourceOutputsTest",
     size = "small",
     srcs = ["AndroidResourceOutputsTest.java"],
     deps = [
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
+        "//third_party:jimfs",
+        "//third_party:junit4",
+        "//third_party:truth",
+    ],
+)
+
+java_test(
+    name = "AndroidManifestTest",
+    size = "small",
+    srcs = ["AndroidManifestTest.java"],
+    deps = [
+        ":test_utils",
+        "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
+        "//third_party:guava",
         "//third_party:jimfs",
         "//third_party:junit4",
         "//third_party:truth",
@@ -101,6 +131,7 @@ java_test(
     deps = [
         ":test_utils",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
+        "//src/tools/android/java/com/google/devtools/build/android/resources",
         "//third_party:guava",
         "//third_party:jimfs",
         "//third_party:junit4",
@@ -141,6 +172,7 @@ java_test(
     size = "small",
     srcs = ["DensitySpecificManifestProcessorTest.java"],
     deps = [
+        "//src/test/java/com/google/devtools/build/lib:testutil",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:guava",
         "//third_party:jimfs",
@@ -154,6 +186,7 @@ java_test(
     size = "small",
     srcs = ["DensitySpecificResourceFilterTest.java"],
     deps = [
+        "//src/test/java/com/google/devtools/build/lib:testutil",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:guava",
         "//third_party:junit4",
@@ -166,6 +199,7 @@ java_test(
     size = "small",
     srcs = ["DependencyAndroidDataTest.java"],
     deps = [
+        "//src/test/java/com/google/devtools/build/lib:testutil",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:guava",
         "//third_party:jimfs",
@@ -180,9 +214,6 @@ java_test(
     srcs = ["ManifestMergerActionTest.java"],
     data = [
         "//src/test/java/com/google/devtools/build/android/testing/manifestmerge:test_data",
-    ],
-    jvm_flags = [
-        "-Dtestdatadir=io_bazel/src/test/java/com/google/devtools/build/android/testing/manifestmerge",
     ],
     deps = [
         ":test_utils",
@@ -200,6 +231,7 @@ java_test(
     srcs = ["ParsedAndroidDataTest.java"],
     deps = [
         ":test_utils",
+        "//src/test/java/com/google/devtools/build/lib:testutil",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:android_common_25_0_0",
         "//third_party:guava",
@@ -214,6 +246,7 @@ java_test(
     size = "small",
     srcs = ["SerializedAndroidDataTest.java"],
     deps = [
+        "//src/test/java/com/google/devtools/build/lib:testutil",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:guava",
         "//third_party:jimfs",
@@ -241,6 +274,7 @@ java_test(
     size = "small",
     srcs = ["UnvalidatedAndroidDataTest.java"],
     deps = [
+        "//src/test/java/com/google/devtools/build/lib:testutil",
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:guava",
         "//third_party:jimfs",
@@ -257,6 +291,19 @@ java_test(
         "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
         "//third_party:guava",
         "//third_party:jimfs",
+        "//third_party:junit4",
+        "//third_party:truth",
+    ],
+)
+
+java_test(
+    name = "ZipFilterActionTest",
+    size = "small",
+    srcs = ["ZipFilterActionTest.java"],
+    deps = [
+        "//src/java_tools/singlejar/java/com/google/devtools/build/singlejar:libSingleJar",
+        "//src/tools/android/java/com/google/devtools/build/android:android_builder_lib",
+        "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
     ],

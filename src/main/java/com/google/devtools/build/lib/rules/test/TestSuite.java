@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.rules.test;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
@@ -38,7 +39,8 @@ import java.util.List;
 public class TestSuite implements RuleConfiguredTargetFactory {
 
   @Override
-  public ConfiguredTarget create(RuleContext ruleContext) throws RuleErrorException {
+  public ConfiguredTarget create(RuleContext ruleContext)
+      throws InterruptedException, RuleErrorException, ActionConflictException {
     checkTestsAndSuites(ruleContext, "tests");
     if (ruleContext.hasErrors()) {
       return null;
@@ -50,6 +52,7 @@ public class TestSuite implements RuleConfiguredTargetFactory {
 
     List<String> tagsAttribute = new ArrayList<>(
         ruleContext.attributes().get("tags", Type.STRING_LIST));
+    // TODO(ulfjack): This is inconsistent with the other places that do test_suite expansion.
     tagsAttribute.remove("manual");
     Pair<Collection<String>, Collection<String>> requiredExcluded =
         TestTargetUtils.sortTagsBySense(tagsAttribute);
@@ -64,9 +67,10 @@ public class TestSuite implements RuleConfiguredTargetFactory {
               getPrerequisites(ruleContext, "tests"),
               getPrerequisites(ruleContext, "$implicit_tests"))) {
       if (dep.getProvider(TestProvider.class) != null) {
+        // getTestTags maps to Rule.getRuleTags.
         List<String> tags = dep.getProvider(TestProvider.class).getTestTags();
         if (!TestTargetUtils.testMatchesFilters(
-            tags, requiredExcluded.first, requiredExcluded.second, true)) {
+            tags, requiredExcluded.first, requiredExcluded.second)) {
           // This test does not match our filter. Ignore it.
           continue;
         }

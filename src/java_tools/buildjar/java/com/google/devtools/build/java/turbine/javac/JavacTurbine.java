@@ -18,21 +18,18 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.devtools.build.buildjar.JarOwner;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.buildjar.javac.JavacOptions;
 import com.google.devtools.build.buildjar.javac.plugins.dependency.DependencyModule;
-import com.google.devtools.build.buildjar.javac.plugins.dependency.DependencyModule.StrictJavaDeps;
 import com.google.devtools.build.buildjar.javac.plugins.dependency.StrictJavaDepsPlugin;
-import com.google.turbine.binder.ClassPathBinder;
 import com.google.turbine.options.TurbineOptions;
 import com.google.turbine.options.TurbineOptionsParser;
 import com.sun.tools.javac.util.Context;
 import java.io.BufferedOutputStream;
 import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
@@ -47,9 +44,10 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
+import java.util.jar.Attributes;
+import java.util.jar.JarFile;
+import java.util.jar.Manifest;
 import java.util.zip.ZipOutputStream;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
@@ -66,19 +64,121 @@ import org.objectweb.asm.Opcodes;
  */
 public class JavacTurbine implements AutoCloseable {
 
-  private static final Splitter SPACE_SPLITTER = Splitter.on(' ');
+  // These attributes are used by JavaBuilder, Turbine, and ijar.
+  // They must all be kept in sync.
+  static final String MANIFEST_DIR = "META-INF/";
+  static final String MANIFEST_NAME = JarFile.MANIFEST_NAME;
+  static final Attributes.Name TARGET_LABEL = new Attributes.Name("Target-Label");
+  static final Attributes.Name INJECTING_RULE_KIND = new Attributes.Name("Injecting-Rule-Kind");
+
+  /**
+   * The prefix for repackaged transitive dependencies; see {@link
+   * com.google.turbine.deps.Transitive}.
+   */
+  public static final String TRANSITIVE_PREFIX = "META-INF/TRANSITIVE/";
 
   public static void main(String[] args) throws IOException {
     System.exit(compile(TurbineOptionsParser.parse(Arrays.asList(args))).exitCode());
   }
 
   public static Result compile(TurbineOptions turbineOptions) throws IOException {
-    try (JavacTurbine turbine =
-        new JavacTurbine(
-            new PrintWriter(new BufferedWriter(new OutputStreamWriter(System.err, UTF_8))),
-            turbineOptions)) {
+    return compile(
+        turbineOptions,
+        new PrintWriter(new BufferedWriter(new OutputStreamWriter(System.err, UTF_8)), true));
+  }
+
+  public static Result compile(TurbineOptions turbineOptions, PrintWriter out) throws IOException {
+    try (JavacTurbine turbine = new JavacTurbine(out, turbineOptions)) {
       return turbine.compile();
     }
+  }
+
+  Result compile() throws IOException {
+
+    ImmutableList<String> javacopts = processJavacopts(turbineOptions);
+
+    ImmutableList<Path> processorpath =
+        !turbineOptions.processors().isEmpty()
+            ? asPaths(turbineOptions.processorPath())
+            : ImmutableList.of();
+
+    ImmutableList<Path> sources =
+        ImmutableList.<Path>builder()
+            .addAll(asPaths(turbineOptions.sources()))
+            .addAll(getSourceJarEntries(turbineOptions))
+            .build();
+
+    JavacTurbineCompileRequest.Builder requestBuilder =
+        JavacTurbineCompileRequest.builder()
+            .setSources(sources)
+            .setJavacOptions(javacopts)
+            .setBootClassPath(asPaths(turbineOptions.bootClassPath()))
+            .setProcessorClassPath(processorpath);
+
+    // JavaBuilder exempts some annotation processors from Strict Java Deps enforcement.
+    // To avoid having to apply the same exemptions here, we just ignore strict deps errors
+    // and leave enforcement to JavaBuilder.
+    ImmutableSet<Path> platformJars = ImmutableSet.copyOf(asPaths(turbineOptions.bootClassPath()));
+    DependencyModule dependencyModule = buildDependencyModule(turbineOptions, platformJars);
+
+    if (sources.isEmpty()) {
+      // accept compilations with an empty source list for compatibility with JavaBuilder
+      emitClassJar(
+          turbineOptions, /* files= */ ImmutableMap.of(), /* transitive= */ ImmutableMap.of());
+      dependencyModule.emitDependencyInformation(
+          /*classpath=*/ ImmutableList.of(), /*successful=*/ true, /*requiresFallback=*/ false);
+      return Result.OK_WITH_REDUCED_CLASSPATH;
+    }
+
+    Result result = Result.ERROR;
+    JavacTurbineCompileResult compileResult = null;
+    ImmutableList<Path> actualClasspath = ImmutableList.of();
+
+    ImmutableList<Path> originalClasspath = asPaths(turbineOptions.classPath());
+    ImmutableList<Path> compressedClasspath =
+        dependencyModule.computeStrictClasspath(originalClasspath);
+
+    requestBuilder.setStrictDepsPlugin(new StrictJavaDepsPlugin(dependencyModule));
+
+    JavacTransitive transitive = new JavacTransitive(platformJars);
+    requestBuilder.setTransitivePlugin(transitive);
+
+    if (turbineOptions.shouldReduceClassPath()) {
+      // compile with reduced classpath
+      actualClasspath = compressedClasspath;
+      requestBuilder.setClassPath(actualClasspath);
+      compileResult = JavacTurbineCompiler.compile(requestBuilder.build());
+      if (compileResult.success()) {
+        result = Result.OK_WITH_REDUCED_CLASSPATH;
+        context = compileResult.context();
+      }
+    }
+
+    if (compileResult == null || shouldFallBack(compileResult)) {
+      // fall back to transitive classpath
+      actualClasspath = originalClasspath;
+      // reset SJD plugin
+      requestBuilder.setStrictDepsPlugin(new StrictJavaDepsPlugin(dependencyModule));
+      requestBuilder.setClassPath(actualClasspath);
+      compileResult = JavacTurbineCompiler.compile(requestBuilder.build());
+      if (compileResult.success()) {
+        result = Result.OK_WITH_FULL_CLASSPATH;
+        context = compileResult.context();
+      }
+    }
+
+    if (result.ok()) {
+      emitClassJar(
+          turbineOptions, compileResult.files(), transitive.collectTransitiveDependencies());
+      dependencyModule.emitDependencyInformation(
+          actualClasspath, compileResult.success(), /*requiresFallback=*/ false);
+    } else {
+      for (FormattedDiagnostic diagnostic : compileResult.diagnostics()) {
+        out.println(diagnostic.message());
+      }
+      out.print(compileResult.output());
+    }
+    return result;
   }
 
   /** A header compilation result. */
@@ -109,7 +209,6 @@ public class JavacTurbine implements AutoCloseable {
 
   private static final int ZIPFILE_BUFFER_SIZE = 1024 * 16;
 
-
   private final PrintWriter out;
   private final TurbineOptions turbineOptions;
   @VisibleForTesting Context context;
@@ -122,164 +221,93 @@ public class JavacTurbine implements AutoCloseable {
     this.turbineOptions = turbineOptions;
   }
 
-  Result compile() throws IOException {
-    ImmutableList.Builder<String> argbuilder = ImmutableList.builder();
+  /** Creates the compilation javacopts from {@link TurbineOptions}. */
+  @VisibleForTesting
+  static ImmutableList<String> processJavacopts(TurbineOptions turbineOptions) {
+    ImmutableList<String> javacopts =
+        JavacOptions.removeBazelSpecificFlags(
+            JavacOptions.normalizeOptionsWithNormalizers(
+                turbineOptions.javacOpts(), new JavacOptions.ReleaseOptionNormalizer()));
 
-    argbuilder.addAll(JavacOptions.removeBazelSpecificFlags(turbineOptions.javacOpts()));
+    ImmutableList.Builder<String> builder = ImmutableList.builder();
+    builder.addAll(javacopts);
 
     // Disable compilation of implicit source files.
     // This is insurance: the sourcepath is empty, so we don't expect implicit sources.
-    argbuilder.add("-implicit:none");
+    builder.add("-implicit:none");
 
     // Disable debug info
-    argbuilder.add("-g:none");
+    builder.add("-g:none");
 
     // Enable MethodParameters
-    argbuilder.add("-parameters");
+    builder.add("-parameters");
 
     // Compile-time jars always use Java 8
-    argbuilder.add("-source");
-    argbuilder.add("8");
-    argbuilder.add("-target");
-    argbuilder.add("8");
+    if (javacopts.contains("--release")) {
+      // javac doesn't allow mixing -source and --release, so use --release if it's already present
+      // in javacopts.
+      builder.add("--release");
+      builder.add("8");
+    } else {
+      builder.add("-source");
+      builder.add("8");
+      builder.add("-target");
+      builder.add("8");
+    }
 
-    ImmutableList<Path> processorpath;
     if (!turbineOptions.processors().isEmpty()) {
-      argbuilder.add("-processor");
-      argbuilder.add(Joiner.on(',').join(turbineOptions.processors()));
-      processorpath = asPaths(turbineOptions.processorPath());
-    } else {
-      processorpath = ImmutableList.of();
+      builder.add("-processor");
+      builder.add(Joiner.on(',').join(turbineOptions.processors()));
     }
 
-    ImmutableList<Path> sources =
-        ImmutableList.<Path>builder()
-            .addAll(asPaths(turbineOptions.sources()))
-            .addAll(getSourceJarEntries(turbineOptions))
-            .build();
-
-    JavacTurbineCompileRequest.Builder requestBuilder =
-        JavacTurbineCompileRequest.builder()
-            .setSources(sources)
-            .setJavacOptions(argbuilder.build())
-            .setBootClassPath(asPaths(turbineOptions.bootClassPath()))
-            .setProcessorClassPath(processorpath);
-
-    // JavaBuilder exempts some annotation processors from Strict Java Deps enforcement.
-    // To avoid having to apply the same exemptions here, we just ignore strict deps errors
-    // and leave enforcement to JavaBuilder.
-    DependencyModule dependencyModule = buildDependencyModule(turbineOptions, StrictJavaDeps.WARN);
-
-    if (sources.isEmpty()) {
-      // accept compilations with an empty source list for compatibility with JavaBuilder
-      emitClassJar(
-          Paths.get(turbineOptions.outputFile()),
-          /* files= */ ImmutableMap.of(),
-          /* transitive= */ ImmutableMap.of());
-      dependencyModule.emitDependencyInformation(
-          /*classpath=*/ ImmutableList.of(), /*successful=*/ true);
-      return Result.OK_WITH_REDUCED_CLASSPATH;
-    }
-
-    Result result = Result.ERROR;
-    JavacTurbineCompileResult compileResult = null;
-    ImmutableList<String> actualClasspath = ImmutableList.of();
-
-    ImmutableList<String> originalClasspath = turbineOptions.classPath();
-    ImmutableList<String> compressedClasspath =
-        dependencyModule.computeStrictClasspath(turbineOptions.classPath());
-
-    requestBuilder.setStrictDepsPlugin(new StrictJavaDepsPlugin(dependencyModule));
-
-    JavacTransitive transitive = new JavacTransitive(turbineOptions.bootClassPath());
-    requestBuilder.setTransitivePlugin(transitive);
-
-    if (turbineOptions.shouldReduceClassPath()) {
-      // compile with reduced classpath
-      actualClasspath = compressedClasspath;
-      requestBuilder.setClassPath(asPaths(actualClasspath));
-      compileResult = JavacTurbineCompiler.compile(requestBuilder.build());
-      if (compileResult.success()) {
-        result = Result.OK_WITH_REDUCED_CLASSPATH;
-        context = compileResult.context();
-      }
-    }
-
-    if (compileResult == null
-        || (!compileResult.success() && hasRecognizedError(compileResult.output()))) {
-      // fall back to transitive classpath
-      actualClasspath = originalClasspath;
-      requestBuilder.setClassPath(asPaths(actualClasspath));
-      compileResult = JavacTurbineCompiler.compile(requestBuilder.build());
-      if (compileResult.success()) {
-        result = Result.OK_WITH_FULL_CLASSPATH;
-        context = compileResult.context();
-      }
-    }
-
-    if (result.ok()) {
-      emitClassJar(
-          Paths.get(turbineOptions.outputFile()),
-          compileResult.files(),
-          transitive.collectTransitiveDependencies());
-      dependencyModule.emitDependencyInformation(actualClasspath, compileResult.success());
-    } else {
-      out.print(compileResult.output());
-    }
-    return result;
+    return builder.build();
   }
 
   private static DependencyModule buildDependencyModule(
-      TurbineOptions turbineOptions, StrictJavaDeps strictDepsMode) {
+      TurbineOptions turbineOptions,
+      ImmutableSet<Path> platformJars) {
     DependencyModule.Builder dependencyModuleBuilder =
         new DependencyModule.Builder()
             .setReduceClasspath()
-            .setTargetLabel(turbineOptions.targetLabel().orNull())
-            .addDepsArtifacts(turbineOptions.depsArtifacts())
-            .setPlatformJars(turbineOptions.bootClassPath())
-            .setStrictJavaDeps(strictDepsMode.toString())
-            .addDirectMappings(parseJarsToTargets(turbineOptions.directJarsToTargets()))
-            .addIndirectMappings(parseJarsToTargets(turbineOptions.indirectJarsToTargets()));
-
+            .setTargetLabel(getTargetLabel(turbineOptions.targetLabel()))
+            .addDepsArtifacts(asPaths(turbineOptions.depsArtifacts()))
+            .setPlatformJars(platformJars);
+    ImmutableSet.Builder<Path> directJars = ImmutableSet.builder();
+    for (String path : turbineOptions.directJars()) {
+      directJars.add(Paths.get(path));
+    }
+    dependencyModuleBuilder.setDirectJars(directJars.build());
     if (turbineOptions.outputDeps().isPresent()) {
-      dependencyModuleBuilder.setOutputDepsProtoFile(turbineOptions.outputDeps().get());
+      dependencyModuleBuilder.setOutputDepsProtoFile(Paths.get(turbineOptions.outputDeps().get()));
     }
 
     return dependencyModuleBuilder.build();
   }
 
-  private static ImmutableMap<String, JarOwner> parseJarsToTargets(
-      ImmutableMap<String, String> input) {
-    ImmutableMap.Builder<String, JarOwner> result = ImmutableMap.builder();
-    for (Map.Entry<String, String> entry : input.entrySet()) {
-      result.put(entry.getKey(), parseJarOwner(entry.getKey()));
+  // TODO(cushon): remove this after the next turbine release
+  @SuppressWarnings("unchecked")
+  private static String getTargetLabel(Object targetLabel) {
+    if (targetLabel instanceof java.util.Optional) {
+      return ((java.util.Optional<String>) targetLabel).orElse(null);
     }
-    return result.build();
-  }
-
-  private static JarOwner parseJarOwner(String line) {
-    List<String> ownerStringParts = SPACE_SPLITTER.splitToList(line);
-    JarOwner owner;
-    Preconditions.checkState(ownerStringParts.size() == 1 || ownerStringParts.size() == 2);
-    if (ownerStringParts.size() == 1) {
-      owner = JarOwner.create(ownerStringParts.get(0));
-    } else {
-      owner = JarOwner.create(ownerStringParts.get(0), ownerStringParts.get(1));
+    if (targetLabel instanceof com.google.common.base.Optional) {
+      return ((com.google.common.base.Optional<String>) targetLabel).orNull();
     }
-    return owner;
+    throw new AssertionError(targetLabel);
   }
 
   /** Write the class output from a successful compilation to the output jar. */
   private static void emitClassJar(
-      Path outputJar, Map<String, byte[]> files, Map<String, byte[]> transitive)
+      TurbineOptions turbineOptions, Map<String, byte[]> files, Map<String, byte[]> transitive)
       throws IOException {
+    Path outputJar = Paths.get(turbineOptions.outputFile());
     try (OutputStream fos = Files.newOutputStream(outputJar);
         ZipOutputStream zipOut =
             new ZipOutputStream(new BufferedOutputStream(fos, ZIPFILE_BUFFER_SIZE))) {
       for (Map.Entry<String, byte[]> entry : transitive.entrySet()) {
         String name = entry.getKey();
         byte[] bytes = entry.getValue();
-        ZipUtil.storeEntry(ClassPathBinder.TRANSITIVE_PREFIX + name + ".class", bytes, zipOut);
+        ZipUtil.storeEntry(TRANSITIVE_PREFIX + name + ".class", bytes, zipOut);
       }
       for (Map.Entry<String, byte[]> entry : files.entrySet()) {
         String name = entry.getKey();
@@ -292,7 +320,31 @@ public class JavacTurbine implements AutoCloseable {
         }
         ZipUtil.storeEntry(name, bytes, zipOut);
       }
+
+      if (turbineOptions.targetLabel().isPresent()) {
+        ZipUtil.storeEntry(MANIFEST_DIR, new byte[] {}, zipOut);
+        ZipUtil.storeEntry(MANIFEST_NAME, manifestContent(turbineOptions), zipOut);
+      }
     }
+  }
+
+  private static byte[] manifestContent(TurbineOptions turbineOptions) throws IOException {
+    Manifest manifest = new Manifest();
+    Attributes attributes = manifest.getMainAttributes();
+    attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+    Attributes.Name createdBy = new Attributes.Name("Created-By");
+    if (attributes.getValue(createdBy) == null) {
+      attributes.put(createdBy, "bazel");
+    }
+    if (turbineOptions.targetLabel().isPresent()) {
+      attributes.put(TARGET_LABEL, turbineOptions.targetLabel().get());
+    }
+    if (turbineOptions.injectingRuleKind().isPresent()) {
+      attributes.put(INJECTING_RULE_KIND, turbineOptions.injectingRuleKind().get());
+    }
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    manifest.write(out);
+    return out.toByteArray();
   }
 
   /**
@@ -326,7 +378,7 @@ public class JavacTurbine implements AutoCloseable {
    */
   static class PrivateMemberPruner extends ClassVisitor {
     public PrivateMemberPruner(ClassVisitor cv) {
-      super(Opcodes.ASM5, cv);
+      super(Opcodes.ASM7, cv);
     }
 
     @Override
@@ -397,21 +449,33 @@ public class JavacTurbine implements AutoCloseable {
     return fs;
   }
 
-  private static final Pattern MISSING_PACKAGE =
-      Pattern.compile("error: package ([\\p{javaJavaIdentifierPart}\\.]+) does not exist");
-
   /**
    * The compilation failed with an error that may indicate that the reduced class path was too
    * aggressive.
    *
    * <p>WARNING: keep in sync with ReducedClasspathJavaLibraryBuilder.
    */
-  // TODO(cushon): use a diagnostic listener and match known codes instead
-  private static boolean hasRecognizedError(String javacOutput) {
-    return javacOutput.contains("error: cannot access")
-        || javacOutput.contains("error: cannot find symbol")
-        || javacOutput.contains("com.sun.tools.javac.code.Symbol$CompletionFailure")
-        || MISSING_PACKAGE.matcher(javacOutput).find();
+  private static boolean shouldFallBack(JavacTurbineCompileResult result) {
+    if (result.success()) {
+      return false;
+    }
+    for (FormattedDiagnostic diagnostic : result.diagnostics()) {
+      String code = diagnostic.diagnostic().getCode();
+      if (code.contains("doesnt.exist")
+          || code.contains("cant.resolve")
+          || code.contains("cant.access")) {
+        return true;
+      }
+      // handle -Xdoclint:reference errors, which don't have a diagnostic code
+      // TODO(cushon): this is locale-dependent
+      if (diagnostic.message().contains("error: reference not found")) {
+        return true;
+      }
+    }
+    if (result.output().contains("com.sun.tools.javac.code.Symbol$CompletionFailure")) {
+      return true;
+    }
+    return false;
   }
 
   @Override

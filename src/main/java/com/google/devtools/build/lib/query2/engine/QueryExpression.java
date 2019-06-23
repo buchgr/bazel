@@ -62,18 +62,14 @@ public abstract class QueryExpression {
    * specified environment, notifying the callback with a result. Note that it is allowed to notify
    * the callback with partial results instead of just one final result.
    *
-   * <p>Failures resulting from evaluation of an ill-formed query cause
-   * QueryException to be thrown.
+   * <p>Failures resulting from evaluation of an ill-formed query cause QueryException to be thrown.
    *
-   * <p>The reporting of failures arising from errors in BUILD files depends on
-   * the --keep_going flag.  If enabled (the default), then QueryException is
-   * thrown.  If disabled, evaluation will stumble on to produce a (possibly
-   * inaccurate) result, but a result nonetheless.
+   * <p>The reporting of failures arising from errors in BUILD files depends on the --keep_going
+   * flag. If enabled (the default), then QueryException is thrown. If disabled, evaluation will
+   * stumble on to produce a (possibly inaccurate) result, but a result nonetheless.
    */
   public abstract <T> QueryTaskFuture<Void> eval(
-      QueryEnvironment<T> env,
-      VariableContext<T> context,
-      Callback<T> callback);
+      QueryEnvironment<T> env, QueryExpressionContext<T> context, Callback<T> callback);
 
   /**
    * Collects all target patterns that are referenced anywhere within this query expression and adds
@@ -81,8 +77,12 @@ public abstract class QueryExpression {
    */
   public abstract void collectTargetPatterns(Collection<String> literals);
 
-  /* Implementations should just be {@code return visitor.visit(this)}. */
-  public abstract <T> T accept(QueryExpressionVisitor<T> visitor);
+  /* Implementations should just be {@code return visitor.visit(this, context)}. */
+  public abstract <T, C> T accept(QueryExpressionVisitor<T, C> visitor, C context);
+
+  public final <T> T accept(QueryExpressionVisitor<T, Void> visitor) {
+    return accept(visitor, /*context=*/ null);
+  }
 
   /**
    * Returns this query expression pretty-printed.

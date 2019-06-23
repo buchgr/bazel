@@ -14,8 +14,7 @@
 
 package com.google.devtools.build.lib.actions;
 
-import com.google.common.eventbus.EventBus;
-import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.vfs.Path;
 
 /**
@@ -24,18 +23,13 @@ import com.google.devtools.build.lib.vfs.Path;
  * Use should be rare, as the action graph is a functional model.
  */
 public interface NotifyOnActionCacheHit extends Action {
-  /**
-   * A custom interface similar to {@link ActionExecutionContext}, but specific to cache hits.
-   */
-  public interface ActionCachedContext {
+  /** A custom interface similar to {@link ActionExecutionContext}, but specific to cache hits. */
+  interface ActionCachedContext {
     /**
-     * An event listener to report messages to. Errors that signal a action failure should
-     * use ActionExecutionException.
+     * An event listener to report messages to. Errors that signal an action failure should use
+     * ActionExecutionException.
      */
-    EventHandler getEventHandler();
-
-    /** The EventBus for the current build. */
-    EventBus getEventBus();
+    ExtendedEventHandler getEventHandler();
 
     /**
      * Returns the execution root. This is the directory underneath which Blaze builds its entire

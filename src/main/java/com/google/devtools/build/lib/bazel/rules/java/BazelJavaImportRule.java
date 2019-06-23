@@ -21,13 +21,11 @@ import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
-import com.google.devtools.build.lib.bazel.rules.java.BazelJavaRuleClasses.IjarBaseRule;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.rules.java.JavaImportBaseRule;
+import com.google.devtools.build.lib.rules.java.JavaRuleClasses.IjarBaseRule;
 import com.google.devtools.build.lib.rules.java.JavaSemantics;
 import com.google.devtools.build.lib.rules.java.JavaSourceInfoProvider;
-
 
 /**
  * Rule definition for the java_import rule.
@@ -38,7 +36,7 @@ public final class BazelJavaImportRule implements RuleDefinition {
       ImmutableSet.of("java_library", "java_import", "cc_library", "cc_binary");
 
   @Override
-  public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+  public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
     return builder
         /* <!-- #BLAZE_RULE(java_import).ATTRIBUTE(deps) -->
         The list of other libraries to be linked in to the target.

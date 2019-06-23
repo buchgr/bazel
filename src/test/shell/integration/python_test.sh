@@ -15,12 +15,63 @@
 # limitations under the License.
 #
 
-# Load the test setup defined in the parent directory
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${CURRENT_DIR}/../integration_test_setup.sh" \
+# --- begin runfiles.bash initialization ---
+set -euo pipefail
+if [[ ! -d "${RUNFILES_DIR:-/dev/null}" && ! -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+  if [[ -f "$0.runfiles_manifest" ]]; then
+    export RUNFILES_MANIFEST_FILE="$0.runfiles_manifest"
+  elif [[ -f "$0.runfiles/MANIFEST" ]]; then
+    export RUNFILES_MANIFEST_FILE="$0.runfiles/MANIFEST"
+  elif [[ -f "$0.runfiles/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+    export RUNFILES_DIR="$0.runfiles"
+  fi
+fi
+if [[ -f "${RUNFILES_DIR:-/dev/null}/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+  source "${RUNFILES_DIR}/bazel_tools/tools/bash/runfiles/runfiles.bash"
+elif [[ -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+  source "$(grep -m1 "^bazel_tools/tools/bash/runfiles/runfiles.bash " \
+            "$RUNFILES_MANIFEST_FILE" | cut -d ' ' -f 2-)"
+else
+  echo >&2 "ERROR: cannot find @bazel_tools//tools/bash/runfiles:runfiles.bash"
+  exit 1
+fi
+# --- end runfiles.bash initialization ---
+
+source "$(rlocation "io_bazel/src/test/shell/integration_test_setup.sh")" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
-set -eu
+case "$(uname -s | tr [:upper:] [:lower:])" in
+msys*|mingw*|cygwin*)
+  declare -r is_windows=true
+  ;;
+*)
+  declare -r is_windows=false
+  ;;
+esac
+
+if "$is_windows"; then
+  export MSYS_NO_PATHCONV=1
+  export MSYS2_ARG_CONV_EXCL="*"
+  declare -r EXE_EXT=".exe"
+else
+  declare -r EXE_EXT=""
+fi
+
+#### TESTS #############################################################
+
+# Tests in this file cannot invoke a real Python 3 runtime. This is because this
+# file is shared by both Bazel's public test suite and Google's internal tests,
+# and the internal tests do not have a Python 3 environment.
+#
+#   - If you only need a real Python 2 environment and do not use Python 3 at
+#     all, you can place your test in this file.
+#
+#   - If you need to check Bazel's behavior concerning the *selection* of a
+#     Python 2 or 3 runtime, but do not actually need the runtime itself, then
+#     you may put your test in python_stub_test.sh (in this directory) instead.
+#
+#   - Otherwise, put your test in //src/test/shell/bazel. That suite can invoke
+#     actual Python 2 and 3 interpreters.
 
 function test_python_binary_empty_files_in_runfiles_are_regular_files() {
   mkdir -p test/mypackage
@@ -35,29 +86,30 @@ py_test(
 )
 EOF
   cat >test/a.py <<'EOF'
+from __future__ import print_function
 import os.path
 import sys
 
-print "This is my name: %s" % __file__
-print "This is my working directory: %s" % os.getcwd()
+print("This is my name: %s" % __file__)
+print("This is my working directory: %s" % os.getcwd())
 os.chdir(os.path.dirname(__file__))
-print "This is my new working directory: %s" % os.getcwd()
+print("This is my new working directory: %s" % os.getcwd())
 
 file_to_check = "mypackage/__init__.py"
 
 if not os.path.exists(file_to_check):
-  print "mypackage/__init__.py does not exist"
+  print("mypackage/__init__.py does not exist")
   sys.exit(1)
 
 if os.path.islink(file_to_check):
-  print "mypackage/__init__.py is a symlink, expected a regular file"
+  print("mypackage/__init__.py is a symlink, expected a regular file")
   sys.exit(1)
 
 if not os.path.isfile(file_to_check):
-  print "mypackage/__init__.py is not a regular file"
+  print("mypackage/__init__.py is not a regular file")
   sys.exit(1)
 
-print "OK"
+print("OK")
 EOF
   touch test/mypackage/b.py
 
@@ -65,9 +117,9 @@ EOF
 }
 
 function test_building_transitive_py_binary_runfiles_trees() {
-    touch main.py script.sh
-    chmod u+x script.sh
-    cat > BUILD <<'EOF'
+  touch main.py script.sh
+  chmod u+x script.sh
+  cat > BUILD <<'EOF'
 py_binary(
     name = 'py-tool',
     srcs = ['main.py'],
@@ -80,11 +132,11 @@ sh_binary(
     data = [':py-tool'],
 )
 EOF
-    bazel build --experimental_build_transitive_python_runfiles :sh-tool
-    [ -d 'bazel-bin/py-tool.runfiles' ] || fail "py_binary runfiles tree not built"
-    bazel clean
-    bazel build --noexperimental_build_transitive_python_runfiles :sh-tool
-    [ ! -e 'bazel-bin/py-tool.runfiles' ] || fail "py_binary runfiles tree built"
+  bazel build --experimental_build_transitive_python_runfiles :sh-tool
+  [ -d "bazel-bin/py-tool${EXE_EXT}.runfiles" ] || fail "py_binary runfiles tree not built"
+  bazel clean
+  bazel build --noexperimental_build_transitive_python_runfiles :sh-tool
+  [ ! -e "bazel-bin/py-tool${EXE_EXT}.runfiles" ] || fail "py_binary runfiles tree built"
 }
 
 run_suite "Tests for the Python rules"

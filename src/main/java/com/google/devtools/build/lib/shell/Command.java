@@ -46,7 +46,7 @@ import javax.annotation.Nullable;
  * <p>The most basic use-case for this class is as follows:
  * <pre>
  *   String[] args = { "/bin/du", "-s", directory };
- *   CommandResult result = new Command(args).execute();
+ *   BlazeCommandResult result = new Command(args).execute();
  *   String output = new String(result.getStdout());
  * </pre>
  * which writes the output of the {@code du(1)} command into {@code output}. More complex cases
@@ -78,7 +78,7 @@ import javax.annotation.Nullable;
  * <p>To execute a shell command directly, use the following pattern:
  * <pre>
  *   String[] args = { "/bin/sh", "-c", shellCommand };
- *   CommandResult result = new Command(args).execute();
+ *   BlazeCommandResult result = new Command(args).execute();
  * </pre>
  * {@code shellCommand} is a complete Bourne shell program, possibly containing all kinds of
  * unescaped metacharacters.  For example, here's a shell command that enumerates the working
@@ -151,23 +151,24 @@ public final class Command {
    * Creates a new {@link Command} for the given command line elements. The command line is executed
    * without a shell.
    *
-   * <p>The given environment variables and working directory are used in subsequent calls to
-   * {@link #execute()}.
+   * <p>The given environment variables and working directory are used in subsequent calls to {@link
+   * #execute()}.
    *
-   * <p>This command treats the  0-th element of {@code commandLineElement} (the name of an
+   * <p>This command treats the 0-th element of {@code commandLineElement} (the name of an
    * executable to run) specially.
+   *
    * <ul>
-   *  <li>If it is an absolute path, it is used as it</li>
-   *  <li>If it is a single file name, the PATH lookup is performed</li>
-   *  <li>If it is a relative path that is not a single file name, the command will attempt to
-   *       execute the the binary at that path relative to {@code workingDirectory}.</li>
+   *   <li>If it is an absolute path, it is used as it
+   *   <li>If it is a single file name, the PATH lookup is performed
+   *   <li>If it is a relative path that is not a single file name, the command will attempt to
+   *       execute the binary at that path relative to {@code workingDirectory}.
    * </ul>
    *
    * @param commandLineElements elements of raw command line to execute
    * @param environmentVariables environment variables to replace JVM's environment variables; may
-   *    be null
+   *     be null
    * @param workingDirectory working directory for execution; if null, the VM's current working
-   *    directory is used
+   *     directory is used
    * @param timeout timeout; a value less than or equal to 0 is treated as no timeout
    * @throws IllegalArgumentException if commandLine is null or empty
    */

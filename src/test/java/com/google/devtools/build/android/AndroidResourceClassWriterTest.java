@@ -19,8 +19,8 @@ import static com.google.common.truth.Truth.assertThat;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.jimfs.Jimfs;
-import com.google.common.truth.FailureStrategy;
-import com.google.common.truth.SubjectFactory;
+import com.google.common.truth.Subject;
+import com.google.devtools.build.android.resources.JavaIdentifierValidator.InvalidJavaIdentifier;
 import java.io.IOException;
 import java.nio.file.FileSystem;
 import java.nio.file.Files;
@@ -34,16 +34,13 @@ import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Tests for {@link AndroidResourceClassWriter}.
- */
+/** Tests for {@link AndroidResourceClassWriter}. */
 @RunWith(JUnit4.class)
 public class AndroidResourceClassWriterTest {
 
   private FileSystem fs;
 
-  @Rule
-  public final ExpectedException thrown = ExpectedException.none();
+  @Rule public final ExpectedException thrown = ExpectedException.none();
 
   private static final AndroidFrameworkAttrIdProvider mockAndroidFrameworkIds =
       new MockAndroidFrameworkAttrIdProvider(ImmutableMap.<String, Integer>of());
@@ -77,8 +74,7 @@ public class AndroidResourceClassWriterTest {
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
         UnwrittenMergedAndroidData.of(
             source.resolve("AndroidManifest.xml"), direct, ParsedAndroidDataBuilder.empty());
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
+    unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter);
 
     assertAbout(paths)
         .that(target.resolve("com/carroll/lewis/R.java"))
@@ -92,8 +88,7 @@ public class AndroidResourceClassWriterTest {
             "public static final class layout {",
             "public static int some_layout = 0x7f020000;",
             "}",
-            "}"
-        );
+            "}");
     assertAbout(paths)
         .that(target)
         .withClass("com.carroll.lewis.R$id")
@@ -102,16 +97,14 @@ public class AndroidResourceClassWriterTest {
                 "AdiosButton", 0x7f030000,
                 "HelloView", 0x7f030001),
             ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+            false);
     assertAbout(paths)
         .that(target)
         .withClass("com.carroll.lewis.R$layout")
         .classContentsIsEqualTo(
             ImmutableMap.of("some_layout", 0x7f020000),
             ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+            false);
   }
 
   @Test
@@ -124,19 +117,14 @@ public class AndroidResourceClassWriterTest {
         AndroidResourceClassWriter.of(mockAndroidFrameworkIds, target, "com.boop");
     ParsedAndroidData direct =
         AndroidDataBuilder.of(source)
-            .addResourceBinary(
-                drawable,
-                Files.createFile(fs.getPath("lightbringer.png")))
-            .addResourceBinary(
-                ninePatch,
-                Files.createFile(fs.getPath("patchface.9.png")))
+            .addResourceBinary(drawable, Files.createFile(fs.getPath("lightbringer.png")))
+            .addResourceBinary(ninePatch, Files.createFile(fs.getPath("patchface.9.png")))
             .createManifest("AndroidManifest.xml", "com.boop", "")
             .buildParsed();
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
         UnwrittenMergedAndroidData.of(
             source.resolve("AndroidManifest.xml"), direct, ParsedAndroidDataBuilder.empty());
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
+    unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter);
     assertAbout(paths)
         .that(target.resolve("com/boop/R.java"))
         .javaContentsIsEqualTo(
@@ -146,8 +134,7 @@ public class AndroidResourceClassWriterTest {
             "public static int light = 0x7f020000;",
             "public static int patchface = 0x7f020001;",
             "}",
-            "}"
-        );
+            "}");
     assertAbout(paths)
         .that(target)
         .withClass("com.boop.R$drawable")
@@ -156,8 +143,7 @@ public class AndroidResourceClassWriterTest {
                 "light", 0x7f020000,
                 "patchface", 0x7f020001),
             ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+            false);
   }
 
   @Test
@@ -184,8 +170,7 @@ public class AndroidResourceClassWriterTest {
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
         UnwrittenMergedAndroidData.of(
             source.resolve("AndroidManifest.xml"), direct, ParsedAndroidDataBuilder.empty());
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
+    unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter);
     assertAbout(paths)
         .that(target.resolve("com/boop/R.java"))
         .javaContentsIsEqualTo(
@@ -197,8 +182,7 @@ public class AndroidResourceClassWriterTest {
             "public static int light19 = 0x7f020002;",
             "public static int light20 = 0x7f020003;",
             "}",
-            "}"
-        );
+            "}");
     assertAbout(paths)
         .that(target)
         .withClass("com.boop.R$drawable")
@@ -209,8 +193,7 @@ public class AndroidResourceClassWriterTest {
                 "light19", 0x7f020002,
                 "light20", 0x7f020003),
             ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+            false);
   }
 
   @Test
@@ -229,8 +212,7 @@ public class AndroidResourceClassWriterTest {
                 "values/attr.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
                 "<attr name=\"y_color\" format=\"color\" />",
-                "<attr name=\"z_color\" format=\"color\" />"
-            )
+                "<attr name=\"z_color\" format=\"color\" />")
             .addResource(
                 "values/style.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
@@ -239,8 +221,7 @@ public class AndroidResourceClassWriterTest {
                 "</style>",
                 "<style name=\"ZStyle.ABC\" parent=\"YStyle\">",
                 "  <item name=\"z_color\">#00FFFF00</item>",
-                "</style>"
-            )
+                "</style>")
             .addResource(
                 "values/styleable.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
@@ -248,8 +229,7 @@ public class AndroidResourceClassWriterTest {
                 "  <attr name=\"y_color\"/>",
                 "  <attr name=\"z_color\"/>",
                 "  <attr name=\"x_color\"/>",
-                "</declare-styleable>"
-            )
+                "</declare-styleable>")
             .createManifest("AndroidManifest.xml", "com.carroll.lewis", "")
             .buildParsed();
 
@@ -258,8 +238,7 @@ public class AndroidResourceClassWriterTest {
             .addResource(
                 "values/attr.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
-                "<attr name=\"x_color\" format=\"color\" />"
-            )
+                "<attr name=\"x_color\" format=\"color\" />")
             .addResource(
                 "values/styleable.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
@@ -267,18 +246,13 @@ public class AndroidResourceClassWriterTest {
                 "  <attr name=\"z_color\"/>",
                 "  <attr name=\"x_color\"/>",
                 "  <attr name=\"y_color\"/>",
-                "</declare-styleable>"
-            )
+                "</declare-styleable>")
             .createManifest("AndroidManifest.xml", "com.library", "")
             .buildParsed();
 
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
-        UnwrittenMergedAndroidData.of(
-            source.resolve("AndroidManifest.xml"),
-            direct,
-            transitiveDep);
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
+        UnwrittenMergedAndroidData.of(source.resolve("AndroidManifest.xml"), direct, transitiveDep);
+    unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter);
 
     assertAbout(paths)
         .that(target.resolve("com/carroll/lewis/R.java"))
@@ -305,8 +279,7 @@ public class AndroidResourceClassWriterTest {
             "public static int com_google_android_Swirls_Fancy_y_color = 0x1;",
             "public static int com_google_android_Swirls_Fancy_z_color = 0x2;",
             "}",
-            "}"
-        );
+            "}");
     assertAbout(paths)
         .that(target)
         .withClass("com.carroll.lewis.R$attr")
@@ -316,8 +289,7 @@ public class AndroidResourceClassWriterTest {
                 "y_color", 0x7f010001,
                 "z_color", 0x7f010002),
             ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+            false);
     assertAbout(paths)
         .that(target)
         .withClass("com.carroll.lewis.R$style")
@@ -326,8 +298,7 @@ public class AndroidResourceClassWriterTest {
                 "YStyle", 0x7f020000,
                 "ZStyle_ABC", 0x7f020001),
             ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+            false);
     assertAbout(paths)
         .that(target)
         .withClass("com.carroll.lewis.R$styleable")
@@ -344,10 +315,8 @@ public class AndroidResourceClassWriterTest {
                 "com_google_android_Dots",
                 ImmutableList.of(0x7f010000, 0x7f010001, 0x7f010002),
                 "com_google_android_Swirls_Fancy",
-                ImmutableList.of(0x7f010000, 0x7f010001, 0x7f010002)
-            ),
-            false
-        );
+                ImmutableList.of(0x7f010000, 0x7f010001, 0x7f010002)),
+            false);
   }
 
   @Test
@@ -371,8 +340,7 @@ public class AndroidResourceClassWriterTest {
                 "values/attr.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
                 "<attr name=\"aaa\" format=\"boolean\" />",
-                "<attr name=\"zzz\" format=\"boolean\" />"
-            )
+                "<attr name=\"zzz\" format=\"boolean\" />")
             .addResource(
                 "values/style.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
@@ -391,15 +359,13 @@ public class AndroidResourceClassWriterTest {
                 // after the "aaa" attribute.
                 "  <attr name=\"android:textSize\"/>",
                 "  <attr name=\"android:textColor\"/>",
-                "</declare-styleable>"
-            )
+                "</declare-styleable>")
             .createManifest("AndroidManifest.xml", "com.carroll.lewis", "")
             .buildParsed();
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
         UnwrittenMergedAndroidData.of(
             source.resolve("AndroidManifest.xml"), direct, ParsedAndroidDataBuilder.empty());
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
+    unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter);
 
     assertAbout(paths)
         .that(target.resolve("com/carroll/lewis/R.java"))
@@ -421,8 +387,7 @@ public class AndroidResourceClassWriterTest {
             "public static int com_google_android_Dots_aaa = 0x2;",
             "public static int com_google_android_Dots_zzz = 0x3;",
             "}",
-            "}"
-        );
+            "}");
     assertAbout(paths)
         .that(target)
         .withClass("com.carroll.lewis.R$attr")
@@ -431,17 +396,12 @@ public class AndroidResourceClassWriterTest {
                 "aaa", 0x7f010000,
                 "zzz", 0x7f010001),
             ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+            false);
     assertAbout(paths)
         .that(target)
         .withClass("com.carroll.lewis.R$style")
         .classContentsIsEqualTo(
-            ImmutableMap.of(
-                "YStyle", 0x7f020000),
-            ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+            ImmutableMap.of("YStyle", 0x7f020000), ImmutableMap.<String, List<Integer>>of(), false);
     assertAbout(paths)
         .that(target)
         .withClass("com.carroll.lewis.R$styleable")
@@ -450,14 +410,11 @@ public class AndroidResourceClassWriterTest {
                 "com_google_android_Dots_android_textColor", 0,
                 "com_google_android_Dots_android_textSize", 1,
                 "com_google_android_Dots_aaa", 2,
-                "com_google_android_Dots_zzz", 3
-            ),
+                "com_google_android_Dots_zzz", 3),
             ImmutableMap.<String, List<Integer>>of(
                 "com_google_android_Dots",
-                ImmutableList.of(0x01000000, 0x01000010, 0x7f010000, 0x7f010001)
-            ),
-            false
-        );
+                ImmutableList.of(0x01000000, 0x01000010, 0x7f010000, 0x7f010001)),
+            false);
   }
 
   @Test
@@ -474,16 +431,14 @@ public class AndroidResourceClassWriterTest {
             .addResource(
                 "values/attr.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
-                "<attr name=\"aaazzz\" format=\"boolean\" />"
-            )
+                "<attr name=\"aaazzz\" format=\"boolean\" />")
             .addResource(
                 "values/styleable.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
                 "<declare-styleable name=\"com.google.android.Dots\">",
                 "  <attr name=\"aaazzz\"/>",
                 "  <attr name=\"android:aaazzz\"/>",
-                "</declare-styleable>"
-            )
+                "</declare-styleable>")
             .createManifest("AndroidManifest.xml", "com.carroll.lewis", "")
             .buildParsed();
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
@@ -491,8 +446,7 @@ public class AndroidResourceClassWriterTest {
             source.resolve("AndroidManifest.xml"), direct, ParsedAndroidDataBuilder.empty());
     thrown.expect(IOException.class);
     thrown.expectMessage("Android attribute not found: aaazzz");
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
+    unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter);
   }
 
   @Test
@@ -511,8 +465,7 @@ public class AndroidResourceClassWriterTest {
                 AndroidDataBuilder.ResourceType.VALUE,
                 "<declare-styleable name=\"com.google.android.Dots\">",
                 "  <attr name=\"aaazzz\"/>",
-                "</declare-styleable>"
-            )
+                "</declare-styleable>")
             .createManifest("AndroidManifest.xml", "com.carroll.lewis", "")
             .buildParsed();
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
@@ -520,8 +473,7 @@ public class AndroidResourceClassWriterTest {
             source.resolve("AndroidManifest.xml"), direct, ParsedAndroidDataBuilder.empty());
     thrown.expect(IOException.class);
     thrown.expectMessage("App attribute not found: aaazzz");
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
+    unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter);
   }
 
   /**
@@ -529,10 +481,10 @@ public class AndroidResourceClassWriterTest {
    * we start the field name with a number, which is not legal according to {@link
    * Character#isJavaIdentifierStart}.
    *
-   * See: {@link com.android.ide.common.res2.FileResourceNameValidator}, and {@link
+   * <p>See: {@link com.android.ide.common.res2.FileResourceNameValidator}, and {@link
    * com.android.ide.common.res2.ValueResourceNameValidator}.
    *
-   * AAPT seems to miss out on checking this case (it only checks for [a-z0-9_.], but isn't
+   * <p>AAPT seems to miss out on checking this case (it only checks for [a-z0-9_.], but isn't
    * position-sensitive).
    */
   @Test
@@ -545,34 +497,27 @@ public class AndroidResourceClassWriterTest {
         AndroidResourceClassWriter.of(mockAndroidFrameworkIds, target, "com.boop");
     ParsedAndroidData direct =
         AndroidDataBuilder.of(source)
-            .addResourceBinary(
-                drawable,
-                Files.createFile(fs.getPath("1.png")))
+            .addResourceBinary(drawable, Files.createFile(fs.getPath("1.png")))
             .createManifest("AndroidManifest.xml", "com.boop", "")
             .buildParsed();
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
         UnwrittenMergedAndroidData.of(
             source.resolve("AndroidManifest.xml"), direct, ParsedAndroidDataBuilder.empty());
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
-    assertAbout(paths)
-        .that(target.resolve("com/boop/R.java"))
-        .javaContentsIsEqualTo(
-            "package com.boop;",
-            "public final class R {",
-            "public static final class drawable {",
-            "public static int 1 = 0x7f020000;",
-            "}",
-            "}"
-        );
-    assertAbout(paths)
-        .that(target)
-        .withClass("com.boop.R$drawable")
-        .classContentsIsEqualTo(
-            ImmutableMap.of("1", 0x7f020000),
-            ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+    assertThrows(
+        InvalidJavaIdentifier.class,
+        () -> unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter));
+  }
+
+  interface CheckedRunnable {
+    void run() throws Throwable;
+  }
+
+  static void assertThrows(Class<? extends Throwable> expectedException, CheckedRunnable test) {
+    try {
+      test.run();
+    } catch (Throwable e) {
+      assertThat(e.getClass()).isAssignableTo(expectedException);
+    }
   }
 
   /**
@@ -591,34 +536,15 @@ public class AndroidResourceClassWriterTest {
         AndroidResourceClassWriter.of(mockAndroidFrameworkIds, target, "com.boop");
     ParsedAndroidData direct =
         AndroidDataBuilder.of(source)
-            .addResourceBinary(
-                drawable,
-                Files.createFile(fs.getPath("phone#.png")))
+            .addResourceBinary(drawable, Files.createFile(fs.getPath("phone#.png")))
             .createManifest("AndroidManifest.xml", "com.boop", "")
             .buildParsed();
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
         UnwrittenMergedAndroidData.of(
             source.resolve("AndroidManifest.xml"), direct, ParsedAndroidDataBuilder.empty());
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
-    assertAbout(paths)
-        .that(target.resolve("com/boop/R.java"))
-        .javaContentsIsEqualTo(
-            "package com.boop;",
-            "public final class R {",
-            "public static final class drawable {",
-            "public static int c++ = 0x7f020000;",
-            "}",
-            "}"
-        );
-    assertAbout(paths)
-        .that(target)
-        .withClass("com.boop.R$drawable")
-        .classContentsIsEqualTo(
-            ImmutableMap.of("c++", 0x7f020000),
-            ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+    assertThrows(
+        InvalidJavaIdentifier.class,
+        () -> unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter));
   }
 
   /**
@@ -639,33 +565,16 @@ public class AndroidResourceClassWriterTest {
             .addResource(
                 "values/integers.xml",
                 AndroidDataBuilder.ResourceType.VALUE,
-                "<integer name=\"c++\">0xd</integer>"
-            )
+                "<integer name=\"c++\">0xd</integer>")
             .createManifest("AndroidManifest.xml", "com.boop", "")
             .buildParsed();
     UnwrittenMergedAndroidData unwrittenMergedAndroidData =
         UnwrittenMergedAndroidData.of(
             source.resolve("AndroidManifest.xml"), direct, ParsedAndroidDataBuilder.empty());
-    unwrittenMergedAndroidData
-        .writeResourceClass(resourceClassWriter);
-    assertAbout(paths)
-        .that(target.resolve("com/boop/R.java"))
-        .javaContentsIsEqualTo(
-            "package com.boop;",
-            "public final class R {",
-            "public static final class integer {",
-            "public static int c++ = 0x7f020000;",
-            "}",
-            "}"
-        );
-    assertAbout(paths)
-        .that(target)
-        .withClass("com.boop.R$integer")
-        .classContentsIsEqualTo(
-            ImmutableMap.of("c++", 0x7f020000),
-            ImmutableMap.<String, List<Integer>>of(),
-            false
-        );
+
+    assertThrows(
+        InvalidJavaIdentifier.class,
+        () -> unwrittenMergedAndroidData.writeResourceClass(resourceClassWriter));
   }
 
   private static class MockAndroidFrameworkAttrIdProvider
@@ -686,11 +595,5 @@ public class AndroidResourceClassWriterTest {
     }
   }
 
-  private static final SubjectFactory<ClassPathsSubject, Path> paths =
-      new SubjectFactory<ClassPathsSubject, Path>() {
-        @Override
-        public ClassPathsSubject getSubject(FailureStrategy failureStrategy, Path path) {
-          return new ClassPathsSubject(failureStrategy, path);
-        }
-      };
+  private static final Subject.Factory<ClassPathsSubject, Path> paths = ClassPathsSubject::new;
 }

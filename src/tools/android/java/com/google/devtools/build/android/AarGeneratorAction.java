@@ -13,6 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import com.android.builder.core.VariantType;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
@@ -39,6 +41,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedList;
@@ -53,6 +57,7 @@ import java.util.zip.ZipOutputStream;
  * Action to generate an AAR archive for an Android library.
  *
  * <p>
+ *
  * <pre>
  * Example Usage:
  *   java/com/google/build/android/AarGeneratorAction\
@@ -64,7 +69,11 @@ import java.util.zip.ZipOutputStream;
  * </pre>
  */
 public class AarGeneratorAction {
-  private static final Long EPOCH = 0L;
+  public static final long DEFAULT_TIMESTAMP =
+      LocalDateTime.of(2010, 1, 1, 0, 0, 0)
+          .atZone(ZoneId.systemDefault())
+          .toInstant()
+          .toEpochMilli();
 
   private static final Logger logger = Logger.getLogger(AarGeneratorAction.class.getName());
 
@@ -118,6 +127,18 @@ public class AarGeneratorAction {
     public Path classes;
 
     @Option(
+      name = "proguardSpec",
+      defaultValue = "",
+      converter = ExistingPathConverter.class,
+      allowMultiple = true,
+      category = "input",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help = "Path to proguard spec file."
+    )
+    public List<Path> proguardSpecs;
+
+    @Option(
       name = "aarOutput",
       defaultValue = "null",
       converter = PathConverter.class,
@@ -128,20 +149,24 @@ public class AarGeneratorAction {
     )
     public Path aarOutput;
 
-    @Option(name = "throwOnResourceConflict",
-        defaultValue = "false",
-        category = "config",
-        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-        effectTags = {OptionEffectTag.UNKNOWN},
-        help = "If passed, resource merge conflicts will be treated as errors instead of warnings")
+    @Option(
+      name = "throwOnResourceConflict",
+      defaultValue = "false",
+      category = "config",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help = "If passed, resource merge conflicts will be treated as errors instead of warnings"
+    )
     public boolean throwOnResourceConflict;
   }
 
   public static void main(String[] args) {
     Stopwatch timer = Stopwatch.createStarted();
-    OptionsParser optionsParser = OptionsParser.newOptionsParser(AarGeneratorOptions.class);
-    optionsParser.enableParamsFileSupport(
-        new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()));
+    OptionsParser optionsParser =
+        OptionsParser.builder()
+            .optionsClasses(AarGeneratorOptions.class)
+            .argsPreProcessor(new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()))
+            .build();
     optionsParser.parseAndExitUponError(args);
     AarGeneratorOptions options = optionsParser.getOptions(AarGeneratorOptions.class);
 
@@ -157,7 +182,7 @@ public class AarGeneratorAction {
       // There aren't any dependencies, but we merge to combine primary resources from different
       // res/assets directories into a single res and single assets directory.
       MergedAndroidData mergedData =
-          AndroidResourceMerger.mergeData(
+          AndroidResourceMerger.mergeDataAndWrite(
               options.mainData,
               ImmutableList.<DependencyAndroidData>of(),
               ImmutableList.<DependencyAndroidData>of(),
@@ -167,11 +192,16 @@ public class AarGeneratorAction {
               VariantType.LIBRARY,
               null,
               /* filteredResources= */ ImmutableList.<String>of(),
-              options.throwOnResourceConflict
-          );
+              options.throwOnResourceConflict);
       logger.fine(String.format("Merging finished at %dms", timer.elapsed(TimeUnit.MILLISECONDS)));
 
-      writeAar(options.aarOutput, mergedData, options.manifest, options.rtxt, options.classes);
+      writeAar(
+          options.aarOutput,
+          mergedData,
+          options.manifest,
+          options.rtxt,
+          options.classes,
+          options.proguardSpecs);
       logger.fine(
           String.format("Packaging finished at %dms", timer.elapsed(TimeUnit.MILLISECONDS)));
     } catch (MergeConflictException e) {
@@ -200,25 +230,29 @@ public class AarGeneratorAction {
       throw new IllegalArgumentException(
           String.format(
               "%s must be specified. Building an .aar without %s is unsupported.",
-              Joiner.on(", ").join(nullFlags),
-              Joiner.on(", ").join(nullFlags)));
+              Joiner.on(", ").join(nullFlags), Joiner.on(", ").join(nullFlags)));
     }
   }
 
   @VisibleForTesting
   static void writeAar(
-      Path aar, final MergedAndroidData data, Path manifest, Path rtxt, Path classes)
+      Path aar,
+      final MergedAndroidData data,
+      Path manifest,
+      Path rtxt,
+      Path classes,
+      List<Path> proguardSpecs)
       throws IOException {
-    try (final ZipOutputStream zipOut = new ZipOutputStream(
-        new BufferedOutputStream(Files.newOutputStream(aar)))) {
+    try (final ZipOutputStream zipOut =
+        new ZipOutputStream(new BufferedOutputStream(Files.newOutputStream(aar)))) {
       ZipEntry manifestEntry = new ZipEntry("AndroidManifest.xml");
-      manifestEntry.setTime(EPOCH);
+      manifestEntry.setTime(DEFAULT_TIMESTAMP);
       zipOut.putNextEntry(manifestEntry);
       zipOut.write(Files.readAllBytes(manifest));
       zipOut.closeEntry();
 
       ZipEntry classJar = new ZipEntry("classes.jar");
-      classJar.setTime(EPOCH);
+      classJar.setTime(DEFAULT_TIMESTAMP);
       zipOut.putNextEntry(classJar);
       zipOut.write(Files.readAllBytes(classes));
       zipOut.closeEntry();
@@ -228,10 +262,21 @@ public class AarGeneratorAction {
       resWriter.writeEntries();
 
       ZipEntry r = new ZipEntry("R.txt");
-      r.setTime(EPOCH);
+      r.setTime(DEFAULT_TIMESTAMP);
       zipOut.putNextEntry(r);
       zipOut.write(Files.readAllBytes(rtxt));
       zipOut.closeEntry();
+
+      if (!proguardSpecs.isEmpty()) {
+        ZipEntry proguardTxt = new ZipEntry("proguard.txt");
+        proguardTxt.setTime(DEFAULT_TIMESTAMP);
+        zipOut.putNextEntry(proguardTxt);
+        for (Path proguardSpec : proguardSpecs) {
+          zipOut.write(Files.readAllBytes(proguardSpec));
+          zipOut.write("\r\n".getBytes(UTF_8));
+        }
+        zipOut.closeEntry();
+      }
 
       if (Files.exists(data.getAssetDir()) && data.getAssetDir().toFile().list().length > 0) {
         ZipDirectoryWriter assetWriter =
@@ -240,7 +285,7 @@ public class AarGeneratorAction {
         assetWriter.writeEntries();
       }
     }
-    aar.toFile().setLastModified(EPOCH);
+    aar.toFile().setLastModified(DEFAULT_TIMESTAMP);
   }
 
   private static class ZipDirectoryWriter extends SimpleFileVisitor<Path> {
@@ -280,7 +325,7 @@ public class AarGeneratorAction {
 
     private void writeFileEntry(Path file) throws IOException {
       ZipEntry entry = new ZipEntry(new File(dirName, root.relativize(file).toString()).toString());
-      entry.setTime(EPOCH);
+      entry.setTime(DEFAULT_TIMESTAMP);
       zipOut.putNextEntry(entry);
       zipOut.write(Files.readAllBytes(file));
       zipOut.closeEntry();
@@ -289,7 +334,7 @@ public class AarGeneratorAction {
     private void writeDirectoryEntry(Path dir) throws IOException {
       ZipEntry entry =
           new ZipEntry(new File(dirName, root.relativize(dir).toString()).toString() + "/");
-      entry.setTime(EPOCH);
+      entry.setTime(DEFAULT_TIMESTAMP);
       zipOut.putNextEntry(entry);
       zipOut.closeEntry();
     }

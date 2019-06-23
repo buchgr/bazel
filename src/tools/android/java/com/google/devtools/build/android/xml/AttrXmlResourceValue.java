@@ -16,6 +16,9 @@ package com.google.devtools.build.android.xml;
 import static com.google.common.base.Predicates.equalTo;
 import static com.google.common.base.Predicates.not;
 
+import com.android.aapt.Resources.Attribute;
+import com.android.aapt.Resources.Attribute.Symbol;
+import com.android.aapt.Resources.Value;
 import com.android.resources.ResourceType;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
@@ -23,7 +26,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableMap.Builder;
 import com.google.common.collect.Ordering;
 import com.google.devtools.build.android.AndroidDataWritingVisitor;
 import com.google.devtools.build.android.AndroidDataWritingVisitor.StartTag;
@@ -39,9 +41,9 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
 import javax.annotation.CheckReturnValue;
@@ -88,14 +90,16 @@ public class AttrXmlResourceValue implements XmlResourceValue {
   private static final QName TAG_ENUM = QName.valueOf(ENUM);
   private static final QName TAG_FLAG = QName.valueOf("flag");
   private final ImmutableMap<String, ResourceXmlAttrValue> formats;
+  private final boolean weak;
 
-  private AttrXmlResourceValue(ImmutableMap<String, ResourceXmlAttrValue> formats) {
+  private AttrXmlResourceValue(ImmutableMap<String, ResourceXmlAttrValue> formats, boolean weak) {
     this.formats = formats;
+    this.weak = weak;
   }
 
   private static Map<String, String> readSubValues(XMLEventReader reader, QName subTagType)
       throws XMLStreamException {
-    Builder<String, String> builder = ImmutableMap.builder();
+    ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
     while (reader.hasNext()
         && XmlResourceValues.isTag(XmlResourceValues.peekNextTag(reader), subTagType)) {
       StartElement element = reader.nextEvent().asStartElement();
@@ -117,8 +121,7 @@ public class AttrXmlResourceValue implements XmlResourceValue {
     }
   }
 
-  @VisibleForTesting
-  private static final class BuilderEntry implements Entry<String, ResourceXmlAttrValue> {
+  private static final class BuilderEntry implements Map.Entry<String, ResourceXmlAttrValue> {
     private final String name;
     private final ResourceXmlAttrValue value;
 
@@ -145,16 +148,25 @@ public class AttrXmlResourceValue implements XmlResourceValue {
 
   @SafeVarargs
   @VisibleForTesting
-  public static XmlResourceValue fromFormatEntries(Entry<String, ResourceXmlAttrValue>... entries) {
+  public static XmlResourceValue fromFormatEntries(
+      Map.Entry<String, ResourceXmlAttrValue>... entries) {
     return of(ImmutableMap.copyOf(Arrays.asList(entries)));
+  }
+
+  @SafeVarargs
+  @VisibleForTesting
+  public static XmlResourceValue weakFromFormatEntries(
+      Map.Entry<String, ResourceXmlAttrValue>... entries) {
+    return of(ImmutableMap.copyOf(Arrays.asList(entries)), true);
   }
 
   @SuppressWarnings("deprecation")
   public static XmlResourceValue from(SerializeFormat.DataValueXml proto)
       throws InvalidProtocolBufferException {
-    Builder<String, ResourceXmlAttrValue> formats =
+    ImmutableMap.Builder<String, ResourceXmlAttrValue> formats =
         ImmutableMap.<String, AttrXmlResourceValue.ResourceXmlAttrValue>builder();
-    for (Entry<String, SerializeFormat.DataValueXml> entry : proto.getMappedXmlValue().entrySet()) {
+    for (Map.Entry<String, SerializeFormat.DataValueXml> entry :
+        proto.getMappedXmlValue().entrySet()) {
       switch (entry.getKey()) {
         case FLAGS:
           formats.put(
@@ -195,9 +207,65 @@ public class AttrXmlResourceValue implements XmlResourceValue {
     return of(formats.build());
   }
 
-  /**
-   * Creates a new {@link AttrXmlResourceValue}. Returns null if there are no formats.
-   */
+  public static XmlResourceValue from(Value proto) throws InvalidProtocolBufferException {
+    ImmutableMap.Builder<String, ResourceXmlAttrValue> formats = ImmutableMap.builder();
+
+    Attribute attribute = proto.getCompoundValue().getAttr();
+    int formatFlags = attribute.getFormatFlags();
+
+    if (formatFlags != 0xFFFF) {
+      // These flags are defined in AOSP in ResourceTypes.h:ResTable_map
+      if ((formatFlags & 1 << 0) != 0) {
+        formats.put("reference", ReferenceResourceXmlAttrValue.of());
+      }
+      if ((formatFlags & 1 << 1) != 0) {
+        formats.put("string", StringResourceXmlAttrValue.of());
+      }
+      if ((formatFlags & 1 << 2) != 0) {
+        formats.put("integer", IntegerResourceXmlAttrValue.of());
+      }
+      if ((formatFlags & 1 << 3) != 0) {
+        formats.put("boolean", BooleanResourceXmlAttrValue.of());
+      }
+      if ((formatFlags & 1 << 4) != 0) {
+        formats.put("color", ColorResourceXmlAttrValue.of());
+      }
+      if ((formatFlags & 1 << 5) != 0) {
+        formats.put("float", FloatResourceXmlAttrValue.of());
+      }
+      if ((formatFlags & 1 << 6) != 0) {
+        formats.put("dimension", DimensionResourceXmlAttrValue.of());
+      }
+      if ((formatFlags & 1 << 7) != 0) {
+        formats.put("fraction", FractionResourceXmlAttrValue.of());
+      }
+      if ((formatFlags & 1 << 16) != 0) {
+        Map<String, String> enums = new HashMap<>();
+
+        for (Symbol attrSymbol : attribute.getSymbolList()) {
+          String name = attrSymbol.getName().getName().replaceFirst("id/", "");
+          enums.put(name, Integer.toString(attrSymbol.getValue()));
+        }
+
+        formats.put("enum", EnumResourceXmlAttrValue.of(enums));
+      }
+      if ((formatFlags & 1 << 17) != 0) {
+        Map<String, String> flags = new HashMap<>();
+        for (Symbol attrSymbol : attribute.getSymbolList()) {
+          String name = attrSymbol.getName().getName().replaceFirst("id/", "");
+          flags.put(name, Integer.toString(attrSymbol.getValue()));
+        }
+
+        formats.put("flags", FlagResourceXmlAttrValue.of(flags));
+      }
+      if ((formatFlags & 0xFFFCFF00) != 0) {
+        throw new InvalidProtocolBufferException("Unexpected format flags: " + formatFlags);
+      }
+    }
+    return of(formats.build(), proto.getWeak());
+  }
+
+  /** Creates a new {@link AttrXmlResourceValue}. Returns null if there are no formats. */
   @Nullable
   public static XmlResourceValue from(
       StartElement attr, @Nullable String format, XMLEventReader eventReader)
@@ -216,7 +284,7 @@ public class AttrXmlResourceValue implements XmlResourceValue {
       }
     }
 
-    Builder<String, ResourceXmlAttrValue> formats = ImmutableMap.builder();
+    ImmutableMap.Builder<String, ResourceXmlAttrValue> formats = ImmutableMap.builder();
     for (String formatName : formatNames) {
       switch (formatName) {
         case FLAGS:
@@ -262,7 +330,12 @@ public class AttrXmlResourceValue implements XmlResourceValue {
   }
 
   public static XmlResourceValue of(ImmutableMap<String, ResourceXmlAttrValue> formats) {
-    return new AttrXmlResourceValue(formats);
+    return new AttrXmlResourceValue(formats, /* weak= */ false);
+  }
+
+  public static XmlResourceValue of(
+      ImmutableMap<String, ResourceXmlAttrValue> formats, boolean weak) {
+    return new AttrXmlResourceValue(formats, weak);
   }
 
   @Override
@@ -274,17 +347,17 @@ public class AttrXmlResourceValue implements XmlResourceValue {
       return false;
     }
     AttrXmlResourceValue other = (AttrXmlResourceValue) o;
-    return Objects.equals(formats, other.formats);
+    return Objects.equals(formats, other.formats) && weak == other.weak;
   }
 
   @Override
   public int hashCode() {
-    return formats.hashCode();
+    return Objects.hash(formats, weak);
   }
 
   @Override
   public String toString() {
-    return MoreObjects.toStringHelper(this).add("formats", formats).toString();
+    return MoreObjects.toStringHelper(this).add("formats", formats).add("weak", weak).toString();
   }
 
   @Override
@@ -351,7 +424,7 @@ public class AttrXmlResourceValue implements XmlResourceValue {
     xmlValueBuilder
         .setType(SerializeFormat.DataValueXml.XmlType.ATTR)
         .putAllNamespace(namespaces.asMap());
-    for (Entry<String, ResourceXmlAttrValue> entry : formats.entrySet()) {
+    for (Map.Entry<String, ResourceXmlAttrValue> entry : formats.entrySet()) {
       xmlValueBuilder.putMappedXmlValue(
           entry.getKey(), entry.getValue().appendTo(builder.getXmlValueBuilder()));
     }
@@ -362,6 +435,32 @@ public class AttrXmlResourceValue implements XmlResourceValue {
   @Override
   public XmlResourceValue combineWith(XmlResourceValue value) {
     throw new IllegalArgumentException(this + " is not a combinable resource.");
+  }
+
+  @Override
+  public int compareMergePriorityTo(XmlResourceValue value) {
+    Preconditions.checkNotNull(value);
+    if (!(value instanceof AttrXmlResourceValue)) {
+      // NOTE(bcsf): I don't think this can happen. The resource type makes up part of the DataKey,
+      // so there would never be a collision between resources of different types.
+      throw new IllegalArgumentException(
+          String.format(
+              "Can only compare priority with another %s, but was given a %s",
+              AttrXmlResourceValue.class.getSimpleName(), value.getClass().getSimpleName()));
+    }
+    AttrXmlResourceValue that = (AttrXmlResourceValue) value;
+    if (!weak && that.weak && (that.formats.isEmpty() || formats.equals(that.formats))) {
+      return 1;
+    } else if (!that.weak && weak && (formats.isEmpty() || formats.equals(that.formats))) {
+      return -1;
+    } else if (weak && that.weak) {
+      if (!formats.isEmpty() && that.formats.isEmpty()) {
+        return 1;
+      } else if (formats.isEmpty() && !that.formats.isEmpty()) {
+        return -1;
+      }
+    }
+    return 0;
   }
 
   /** Represents the xml value for an attr definition. */
@@ -388,10 +487,10 @@ public class AttrXmlResourceValue implements XmlResourceValue {
     }
 
     @VisibleForTesting
-    public static Entry<String, ResourceXmlAttrValue> asEntryOf(String... keyThenValue) {
+    public static Map.Entry<String, ResourceXmlAttrValue> asEntryOf(String... keyThenValue) {
       Preconditions.checkArgument(keyThenValue.length > 0);
       Preconditions.checkArgument(keyThenValue.length % 2 == 0);
-      Builder<String, String> builder = ImmutableMap.builder();
+      ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
       for (int i = 0; i < keyThenValue.length; i += 2) {
         builder.put(keyThenValue[i], keyThenValue[i + 1]);
       }
@@ -428,7 +527,7 @@ public class AttrXmlResourceValue implements XmlResourceValue {
 
     @Override
     public ValuesResourceDefinition writeTo(ValuesResourceDefinition writer) {
-      for (Entry<String, String> entry : values.entrySet()) {
+      for (Map.Entry<String, String> entry : values.entrySet()) {
         writer =
             writer
                 .startTag("enum")
@@ -466,8 +565,8 @@ public class AttrXmlResourceValue implements XmlResourceValue {
     }
 
     @VisibleForTesting
-    public static Entry<String, ResourceXmlAttrValue> asEntryOf(String... keyThenValue) {
-      Builder<String, String> builder = ImmutableMap.builder();
+    public static Map.Entry<String, ResourceXmlAttrValue> asEntryOf(String... keyThenValue) {
+      ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
       Preconditions.checkArgument(keyThenValue.length > 0);
       Preconditions.checkArgument(keyThenValue.length % 2 == 0);
       for (int i = 0; i < keyThenValue.length; i += 2) {
@@ -502,7 +601,7 @@ public class AttrXmlResourceValue implements XmlResourceValue {
 
     @Override
     public ValuesResourceDefinition writeTo(ValuesResourceDefinition writer) {
-      for (Entry<String, String> entry : values.entrySet()) {
+      for (Map.Entry<String, String> entry : values.entrySet()) {
         writer =
             writer
                 .startTag("flag")
@@ -751,6 +850,8 @@ public class AttrXmlResourceValue implements XmlResourceValue {
 
   @Override
   public String asConflictStringWith(DataSource source) {
-    return source.asConflictString();
+    return String.format(
+        "%s [format(s): %s], [weak: %s]",
+        source.asConflictString(), String.join("|", this.formats.keySet()), weak);
   }
 }

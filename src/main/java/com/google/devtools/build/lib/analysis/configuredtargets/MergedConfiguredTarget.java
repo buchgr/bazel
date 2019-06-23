@@ -13,19 +13,22 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis.configuredtargets;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.analysis.AnalysisUtils;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ExtraActionArtifactsProvider;
-import com.google.devtools.build.lib.analysis.OutputGroupProvider;
+import com.google.devtools.build.lib.analysis.OutputGroupInfo;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProviderMap;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProviderMapBuilder;
-import com.google.devtools.build.lib.packages.Info;
+import com.google.devtools.build.lib.packages.InfoInterface;
 import com.google.devtools.build.lib.packages.Provider;
 import com.google.devtools.build.lib.packages.Provider.Key;
+import com.google.devtools.build.lib.skylarkbuildapi.ActionApi;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,6 +42,7 @@ import java.util.function.Consumer;
  */
 public final class MergedConfiguredTarget extends AbstractConfiguredTarget {
   private final ConfiguredTarget base;
+  private final ImmutableList<ConfiguredAspect> aspects;
   private final TransitiveInfoProviderMap providers;
 
   /**
@@ -52,9 +56,13 @@ public final class MergedConfiguredTarget extends AbstractConfiguredTarget {
     }
   }
 
-  private MergedConfiguredTarget(ConfiguredTarget base, TransitiveInfoProviderMap providers) {
-    super(base.getTarget(), base.getConfiguration());
+  private MergedConfiguredTarget(
+      ConfiguredTarget base,
+      Iterable<ConfiguredAspect> aspects,
+      TransitiveInfoProviderMap providers) {
+    super(base.getLabel(), base.getConfigurationKey());
     this.base = base;
+    this.aspects = ImmutableList.copyOf(aspects);
     this.providers = providers;
   }
 
@@ -81,11 +89,12 @@ public final class MergedConfiguredTarget extends AbstractConfiguredTarget {
         result.accept((String) classAt);
       }
     }
+    result.accept(RuleConfiguredTarget.ACTIONS_FIELD_NAME);
   }
 
   @Override
-  protected Info rawGetSkylarkProvider(Provider.Key providerKey) {
-    Info provider = providers.getProvider(providerKey);
+  protected InfoInterface rawGetSkylarkProvider(Provider.Key providerKey) {
+    InfoInterface provider = providers.get(providerKey);
     if (provider == null) {
       provider = base.get(providerKey);
     }
@@ -94,7 +103,22 @@ public final class MergedConfiguredTarget extends AbstractConfiguredTarget {
 
   @Override
   protected Object rawGetSkylarkProvider(String providerKey) {
-    Object provider = providers.getProvider(providerKey);
+    if (providerKey.equals(RuleConfiguredTarget.ACTIONS_FIELD_NAME)) {
+      ImmutableList.Builder<ActionAnalysisMetadata> actions = ImmutableList.builder();
+      // Only expose actions which are SkylarkValues.
+      // TODO(cparsons): Expose all actions to Starlark.
+      for (ConfiguredAspect aspect : aspects) {
+        actions.addAll(
+            aspect.getActions().stream().filter(action -> action instanceof ActionApi).iterator());
+      }
+      if (base instanceof RuleConfiguredTarget) {
+        actions.addAll(
+            ((RuleConfiguredTarget) base)
+                .getActions().stream().filter(action -> action instanceof ActionApi).iterator());
+      }
+      return actions.build();
+    }
+    Object provider = providers.get(providerKey);
     if (provider == null) {
       provider = base.get(providerKey);
     }
@@ -110,16 +134,16 @@ public final class MergedConfiguredTarget extends AbstractConfiguredTarget {
     }
 
     // Merge output group providers.
-    OutputGroupProvider mergedOutputGroupProvider =
-        OutputGroupProvider.merge(getAllOutputGroupProviders(base, aspects));
+    OutputGroupInfo mergedOutputGroupInfo =
+        OutputGroupInfo.merge(getAllOutputGroupProviders(base, aspects));
 
     // Merge extra-actions provider.
     ExtraActionArtifactsProvider mergedExtraActionProviders = ExtraActionArtifactsProvider.merge(
         getAllProviders(base, aspects, ExtraActionArtifactsProvider.class));
 
     TransitiveInfoProviderMapBuilder aspectProviders = new TransitiveInfoProviderMapBuilder();
-    if (mergedOutputGroupProvider != null) {
-      aspectProviders.put(mergedOutputGroupProvider);
+    if (mergedOutputGroupInfo != null) {
+      aspectProviders.put(mergedOutputGroupInfo);
     }
     if (mergedExtraActionProviders != null) {
       aspectProviders.add(mergedExtraActionProviders);
@@ -129,7 +153,7 @@ public final class MergedConfiguredTarget extends AbstractConfiguredTarget {
       TransitiveInfoProviderMap providers = aspect.getProviders();
       for (int i = 0; i < providers.getProviderCount(); ++i) {
         Object providerKey = providers.getProviderKeyAt(i);
-        if (OutputGroupProvider.SKYLARK_CONSTRUCTOR.getKey().equals(providerKey)
+        if (OutputGroupInfo.SKYLARK_CONSTRUCTOR.getKey().equals(providerKey)
             || ExtraActionArtifactsProvider.class.equals(providerKey)) {
           continue;
         }
@@ -155,23 +179,23 @@ public final class MergedConfiguredTarget extends AbstractConfiguredTarget {
           if (base.get(key) != null || aspectProviders.contains(key)) {
             throw new DuplicateException("Provider " + key + " provided twice");
           }
-          aspectProviders.put((Info) providers.getProviderInstanceAt(i));
+          aspectProviders.put((InfoInterface) providers.getProviderInstanceAt(i));
         }
       }
     }
-    return new MergedConfiguredTarget(base, aspectProviders.build());
+    return new MergedConfiguredTarget(base, aspects, aspectProviders.build());
   }
 
-  private static ImmutableList<OutputGroupProvider> getAllOutputGroupProviders(
+  private static ImmutableList<OutputGroupInfo> getAllOutputGroupProviders(
       ConfiguredTarget base, Iterable<ConfiguredAspect> aspects) {
-    OutputGroupProvider baseProvider = OutputGroupProvider.get(base);
-    ImmutableList.Builder<OutputGroupProvider> providers = ImmutableList.builder();
+    OutputGroupInfo baseProvider = OutputGroupInfo.get(base);
+    ImmutableList.Builder<OutputGroupInfo> providers = ImmutableList.builder();
     if (baseProvider != null) {
       providers.add(baseProvider);
     }
 
     for (ConfiguredAspect configuredAspect : aspects) {
-      OutputGroupProvider aspectProvider = OutputGroupProvider.get(configuredAspect);
+      OutputGroupInfo aspectProvider = OutputGroupInfo.get(configuredAspect);
       if (aspectProvider == null) {
         continue;
       }
@@ -201,5 +225,10 @@ public final class MergedConfiguredTarget extends AbstractConfiguredTarget {
   @Override
   public void repr(SkylarkPrinter printer) {
     printer.append("<merged target " + getLabel() + ">");
+  }
+
+  @VisibleForTesting
+  public ConfiguredTarget getBaseConfiguredTargetForTesting() {
+    return base;
   }
 }

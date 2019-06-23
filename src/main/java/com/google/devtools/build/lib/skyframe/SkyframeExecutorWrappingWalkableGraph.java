@@ -26,14 +26,14 @@ import javax.annotation.Nullable;
 /** {@link WalkableGraph} backed by a {@link SkyframeExecutor}. */
 public class SkyframeExecutorWrappingWalkableGraph extends DelegatingWalkableGraph {
 
-  public SkyframeExecutorWrappingWalkableGraph(MemoizingEvaluator evaluator) {
+  private SkyframeExecutorWrappingWalkableGraph(MemoizingEvaluator evaluator) {
     super(
         new QueryableGraph() {
           @Nullable
           @Override
           public NodeEntry get(@Nullable SkyKey requestor, Reason reason, SkyKey key)
               throws InterruptedException {
-            return evaluator.getGraphMap().get(key);
+            return evaluator.getExistingEntryAtLatestVersion(key);
           }
 
           @Override
@@ -50,10 +50,6 @@ public class SkyframeExecutorWrappingWalkableGraph extends DelegatingWalkableGra
             return result;
           }
 
-          @Override
-          public Iterable<SkyKey> getCurrentlyAvailableNodes(Iterable<SkyKey> keys, Reason reason) {
-            return keys;
-          }
         });
   }
 

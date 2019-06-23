@@ -48,7 +48,7 @@ public class SetExpression extends QueryExpression {
 
   @Override
   public <T> QueryTaskFuture<Void> eval(
-      QueryEnvironment<T> env, VariableContext<T> context, Callback<T> callback) {
+      QueryEnvironment<T> env, QueryExpressionContext<T> context, Callback<T> callback) {
     ArrayList<QueryTaskFuture<Void>> queryTasks = new ArrayList<>(words.size());
     for (TargetLiteral expr : words) {
       queryTasks.add(env.eval(expr, context, callback));
@@ -64,12 +64,12 @@ public class SetExpression extends QueryExpression {
   }
 
   @Override
-  public <T> T accept(QueryExpressionVisitor<T> visitor) {
-    return visitor.visit(this);
+  public <T, C> T accept(QueryExpressionVisitor<T, C> visitor, C context) {
+    return visitor.visit(this, context);
   }
 
   /** Gets the list of {@link TargetLiteral}s contained in the expression. */
-  List<TargetLiteral> getWords() {
+  public List<TargetLiteral> getWords() {
     return words;
   }
 

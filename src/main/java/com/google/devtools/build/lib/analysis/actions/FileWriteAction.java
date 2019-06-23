@@ -18,10 +18,12 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.util.LazyString;
 import java.io.ByteArrayInputStream;
@@ -39,6 +41,7 @@ import java.util.zip.GZIPOutputStream;
  * <p>TODO(bazel-team): Choose a better name to distinguish this class from {@link
  * BinaryFileWriteAction}.
  */
+@AutoCodec
 @Immutable // if fileContents is immutable
 public final class FileWriteAction extends AbstractFileWriteAction {
 
@@ -83,12 +86,27 @@ public final class FileWriteAction extends AbstractFileWriteAction {
       CharSequence fileContents,
       boolean makeExecutable,
       Compression allowCompression) {
-    super(owner, inputs, output, makeExecutable);
-    if (allowCompression == Compression.ALLOW
-        && fileContents instanceof String
-        && fileContents.length() > COMPRESS_CHARS_THRESHOLD) {
-      fileContents = new CompressedString((String) fileContents);
-    }
+    this(
+        owner,
+        inputs,
+        output,
+        allowCompression == Compression.ALLOW
+                && fileContents instanceof String
+                && fileContents.length() > COMPRESS_CHARS_THRESHOLD
+            ? new CompressedString((String) fileContents)
+            : fileContents,
+        makeExecutable);
+  }
+
+  @AutoCodec.VisibleForSerialization
+  @AutoCodec.Instantiator
+  FileWriteAction(
+      ActionOwner owner,
+      Iterable<Artifact> inputs,
+      Artifact primaryOutput,
+      CharSequence fileContents,
+      boolean makeExecutable) {
+    super(owner, inputs, primaryOutput, makeExecutable);
     this.fileContents = fileContents;
   }
 
@@ -131,16 +149,19 @@ public final class FileWriteAction extends AbstractFileWriteAction {
    * Creates a new FileWriteAction instance.
    *
    * <p>There are no inputs. Transparent compression is controlled by the {@code
-   * --experimental_transparent_compression} flag. No reference to the {@link RuleContext} will be
-   * maintained.
+   * --experimental_transparent_compression} flag. No reference to the {@link
+   * ActionConstructionContext} will be maintained.
    *
-   * @param context the rule context
+   * @param context the action construction context
    * @param output the Artifact that will be created by executing this Action
    * @param fileContents the contents to be written to the file
    * @param makeExecutable whether the output file is made executable
    */
   public static FileWriteAction create(
-      RuleContext context, Artifact output, CharSequence fileContents, boolean makeExecutable) {
+      ActionConstructionContext context,
+      Artifact output,
+      CharSequence fileContents,
+      boolean makeExecutable) {
     return new FileWriteAction(
         context.getActionOwner(),
         Artifact.NO_ARTIFACTS,
@@ -224,17 +245,12 @@ public final class FileWriteAction extends AbstractFileWriteAction {
     };
   }
 
-  /**
-   * Computes the Action key for this action by computing the fingerprint for
-   * the file contents.
-   */
+  /** Computes the Action key for this action by computing the fingerprint for the file contents. */
   @Override
-  protected String computeKey() {
-    Fingerprint f = new Fingerprint();
-    f.addString(GUID);
-    f.addString(String.valueOf(makeExecutable));
-    f.addString(getFileContents());
-    return f.hexDigestAndReset();
+  protected void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp) {
+    fp.addString(GUID);
+    fp.addString(String.valueOf(makeExecutable));
+    fp.addString(getFileContents());
   }
 
   /**

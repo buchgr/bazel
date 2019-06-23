@@ -1,4 +1,4 @@
-#!/bin/bash --posix
+#!/usr/bin/env bash
 # Copyright 2014 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,6 +43,8 @@
 #                       line flag, otherwise it creates a classpath jar.
 #
 # The remainder of the command line is passed to the program.
+
+set -o posix
 
 # Make it easy to insert 'set -x' or similar commands when debugging problems with this script.
 eval "$JAVA_STUB_DEBUG"
@@ -99,7 +101,7 @@ for ARG in "$@"; do
   if [[ "$ARG" == --wrapper_script_flag=* ]]; then
     process_wrapper_argument "${ARG#--wrapper_script_flag=}" \
       || die "invalid wrapper argument '%s'" "$ARG"
-  elif [[ "${#ARGS}" > 0 ]] || ! process_wrapper_argument "$ARG"; then
+  elif [[ "${#ARGS}" -gt 0 ]] || ! process_wrapper_argument "$ARG"; then
     ARGS+=( "$ARG" )
   fi
 done
@@ -119,7 +121,8 @@ done
 #
 # For case 1, $0 will be a regular file, and the runfiles tree will be
 # at $0.runfiles.
-# For case 2 or 3, $0 will be a symlink to the file seen in case 1.
+# For case 2, $0 will be a symlink to the file seen in case 1.
+# For case 3, we use Y's runfiles tree, which will be a superset of X's.
 # For case 4, $JAVA_RUNFILES and $TEST_SRCDIR should already be set.
 # Case 5 is handled like case 1.
 # Case 6 is handled like case 3.
@@ -145,7 +148,7 @@ if [[ "$SINGLEJAR" != 1 || "%needs_runfiles%" == 1 ]]; then
       fi
       if [[ $self == *.runfiles/* ]]; then
         JAVA_RUNFILES="${self%.runfiles/*}.runfiles"
-        # don't break; this value is only a last resort for case 6b
+        break
       fi
       if [[ ! -L "$self" ]]; then
         break
@@ -254,6 +257,9 @@ export CLASSLOADER_PREFIX_PATH="${RUNPATH}"
 # We need to make the metadata jar with uninstrumented classes available for generating
 # the lcov-compatible coverage report, and we don't want it on the classpath.
 %set_jacoco_metadata%
+%set_jacoco_main_class%
+%set_jacoco_java_runfiles_root%
+%set_java_coverage_new_implementation%
 
 if [[ -n "$JVM_DEBUG_PORT" ]]; then
   JVM_DEBUG_SUSPEND=${DEFAULT_JVM_DEBUG_SUSPEND:-"y"}
@@ -300,25 +306,28 @@ function create_and_run_classpath_jar() {
   done
   unset IFS
 
-  RAND_ID=$(cat /dev/urandom | head -c 128 | md5func)
   # Create manifest file
-  MANIFEST_FILE="${self}-${RAND_ID}.jar_manifest"
+  MANIFEST_FILE="$(mktemp -t XXXXXXXX.jar_manifest)"
 
-  echo "Manifest-Version: 1.0" >$MANIFEST_FILE
-  CLASSPATH_LINE="Class-Path:$MANIFEST_CLASSPATH"
-  # No line in the MANIFEST.MF file may be longer than 72 bytes.
-  # A space prefix indicates the line is still the content of the last attribute.
-  for i in `seq 0 71 ${#CLASSPATH_LINE}`; do
-    PREFIX=" "
-    if (($i == 0)); then
-      PREFIX=""
-    fi
-    echo "$PREFIX${CLASSPATH_LINE:$i:71}" >>$MANIFEST_FILE
-  done
-  echo "Created-By: Bazel" >>$MANIFEST_FILE
+  (
+    echo "Manifest-Version: 1.0"
+    CLASSPATH_LINE="Class-Path:$MANIFEST_CLASSPATH"
+    # No line in the MANIFEST.MF file may be longer than 72 bytes.
+    # A space prefix indicates the line is still the content of the last attribute.
+    IFS=$'\n'
+    WRAPPED_LINES=($(echo "$CLASSPATH_LINE" | fold -w 71))
+    for ((i = 0; i < "${#WRAPPED_LINES[*]}"; i += 1)); do
+      PREFIX=" "
+      if ((i == 0)); then
+        PREFIX=""
+      fi
+      echo "$PREFIX${WRAPPED_LINES[$i]}"
+    done
+    echo "Created-By: Bazel"
+  ) >$MANIFEST_FILE
 
   # Create classpath JAR file
-  MANIFEST_JAR_FILE="${self}-${RAND_ID}-classpath.jar"
+  MANIFEST_JAR_FILE="$(mktemp -t XXXXXXXX-classpath.jar)"
   if is_windows; then
     MANIFEST_JAR_FILE="$(cygpath --windows "$MANIFEST_JAR_FILE")"
     MANIFEST_FILE="$(cygpath --windows "$MANIFEST_FILE")"

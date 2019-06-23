@@ -16,6 +16,12 @@ $text-color: #444;
 
 $vpad: 20px;
 
+$table-bg: #fff;
+$table-cell-padding: 5px;
+$table-border-color: $bazel-green;
+$text-muted: $color-on-bazel-green;
+$line-height-base: 20px;
+$line-height-computed: 20px;
 
 html {
   position: relative;
@@ -48,7 +54,7 @@ h4,
 h5,
 h6 {
   color: $text-color;
-  font-weight: 300;
+  font-weight: 400;
   margin-top: 30px;
   margin-bottom: 15px;
 }
@@ -114,7 +120,7 @@ code {
 }
 
 
-// Immitate material design buttons
+// Imitate material design buttons
 .btn-lg {
   font-size: 14px;
   text-transform: uppercase;
@@ -165,4 +171,12 @@ $md-shadow-3: rgba(0, 0, 0, .12);
     -moz-box-sizing: content-box !important;
     box-sizing: content-box !important;
   }
+}
+
+// Used for the Command-line Reference flag anchors. Linkifying the flag name
+// causes it to turn $link-color (green), but we turn it red here to be consistent
+// with the rest of the code block.
+dd > code > a,
+dl > dt > code > a {
+  color: #c7254e;
 }

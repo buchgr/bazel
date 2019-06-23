@@ -13,10 +13,10 @@
 // limitations under the License.
 package com.google.devtools.build.skyframe;
 
-import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import java.util.Set;
+import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
 /**
@@ -25,7 +25,7 @@ import javax.annotation.Nullable;
  */
 public class DirtyTrackingProgressReceiver implements EvaluationProgressReceiver {
 
-  @Nullable private final EvaluationProgressReceiver progressReceiver;
+  @Nullable protected final EvaluationProgressReceiver progressReceiver;
   private final Set<SkyKey> dirtyKeys = Sets.newConcurrentHashSet();
   private Set<SkyKey> inflightKeys = Sets.newConcurrentHashSet();
 
@@ -64,14 +64,6 @@ public class DirtyTrackingProgressReceiver implements EvaluationProgressReceiver
     enqueueing(skyKey, false);
   }
 
-  /**
-   * Called when a node was requested to be enqueued but wasn't because either an interrupt or
-   * an error (in nokeep_going mode) had occurred.
-   */
-  protected void enqueueAfterError(SkyKey skyKey) {
-    enqueueing(skyKey, true);
-  }
-
   private void enqueueing(SkyKey skyKey, boolean afterError) {
     // We unconditionally add the key to the set of in-flight nodes even if evaluation is never
     // scheduled, because we still want to remove the previously created NodeEntry from the graph.
@@ -91,25 +83,36 @@ public class DirtyTrackingProgressReceiver implements EvaluationProgressReceiver
     }
   }
 
+  /**
+   * Called when a node was requested to be enqueued but wasn't because either an interrupt or an
+   * error (in nokeep_going mode) had occurred.
+   */
+  protected void enqueueAfterError(SkyKey skyKey) {
+    enqueueing(skyKey, true);
+  }
+
   @Override
-  public void computing(SkyKey skyKey) {
+  public void stateStarting(SkyKey skyKey, NodeState nodeState) {
     if (progressReceiver != null) {
-      progressReceiver.computing(skyKey);
+      progressReceiver.stateStarting(skyKey, nodeState);
     }
   }
 
   @Override
-  public void computed(SkyKey skyKey, long elapsedTimeNanos) {
+  public void stateEnding(SkyKey skyKey, NodeState nodeState, long elapsedTimeNanos) {
     if (progressReceiver != null) {
-      progressReceiver.computed(skyKey, elapsedTimeNanos);
+      progressReceiver.stateEnding(skyKey, nodeState, elapsedTimeNanos);
     }
   }
 
   @Override
-  public void evaluated(SkyKey skyKey, Supplier<SkyValue> valueSupplier,
+  public void evaluated(
+      SkyKey skyKey,
+      @Nullable SkyValue value,
+      Supplier<EvaluationSuccessState> evaluationSuccessState,
       EvaluationState state) {
     if (progressReceiver != null) {
-      progressReceiver.evaluated(skyKey, valueSupplier, state);
+      progressReceiver.evaluated(skyKey, value, evaluationSuccessState, state);
     }
 
     // This key was either built or marked clean, so we can remove it from both the dirty and

@@ -13,17 +13,15 @@
 // limitations under the License.
 package com.google.devtools.build.lib.bazel.rules.sh;
 
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
+import com.google.devtools.build.lib.analysis.config.HostTransition;
 import com.google.devtools.build.lib.bazel.rules.sh.BazelShRuleClasses.ShRule;
-import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
 
 /**
@@ -31,11 +29,21 @@ import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
  */
 public final class BazelShTestRule implements RuleDefinition {
   @Override
-  public RuleClass build(Builder builder, RuleDefinitionEnvironment environment) {
-    Label launcher = environment.getLauncherLabel();
-    if (launcher != null) {
-      builder.add(attr("$launcher", LABEL).cfg(HOST).value(launcher));
-    }
+  public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment environment) {
+    // TODO(bazel-team): Add :lcov_merger to every test rule as opposed to particular rules.
+    builder
+        .add(attr(":lcov_merger", LABEL).value(BaseRuleClasses.getCoverageOutputGeneratorLabel()))
+        .add(
+            attr("$launcher", LABEL)
+                .cfg(HostTransition.createFactory())
+                .value(environment.getToolsLabel("//tools/launcher:launcher")))
+        // Add the script as an attribute in order for sh_test to output code coverage results for
+        // code covered by CC binaries invocations.
+        .add(
+            attr("$collect_cc_coverage", LABEL)
+                .cfg(HostTransition.createFactory())
+                .singleArtifact()
+                .value(environment.getToolsLabel("//tools/test:collect_cc_coverage")));
     return builder.build();
   }
 

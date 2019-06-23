@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.syntax;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Ordering;
@@ -21,9 +22,7 @@ import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkSignature;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
 import com.google.devtools.build.lib.syntax.SkylarkList.Tuple;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -33,22 +32,20 @@ import javax.annotation.Nullable;
 /**
  * A base class for Skylark functions, whether builtin or user-defined.
  *
- * <p>Nomenclature:
- * We call "Parameters" the formal parameters of a function definition.
- * We call "Arguments" the actual values supplied at the call site.
+ * <p>Nomenclature: We call "Parameters" the formal parameters of a function definition. We call
+ * "Arguments" the actual values supplied at the call site.
  *
- * <p>The outer calling convention is like that of python3,
- * with named parameters that can be mandatory or optional, and also be positional or named-only,
- * and rest parameters for extra positional and keyword arguments.
- * Callers supply a {@code List<Object>} args for positional arguments
- * and a {@code Map<String, Object>} for keyword arguments,
- * where positional arguments will be resolved first, then keyword arguments,
- * with errors for a clash between the two, for missing mandatory parameter,
- * or for unexpected extra positional or keyword argument in absence of rest parameter.
+ * <p>The outer calling convention is like that of python3, with named parameters that can be
+ * mandatory or optional, and also be positional or named-only, and rest parameters for extra
+ * positional and keyword arguments. Callers supply a {@code List<Object>} args for positional
+ * arguments and a {@code Map<String, Object>} for keyword arguments, where positional arguments
+ * will be resolved first, then keyword arguments, with errors for a clash between the two, for
+ * missing mandatory parameter, or for unexpected extra positional or keyword argument in absence of
+ * rest parameter.
  *
- * <p>The inner calling convention is to pass the underlying method
- * an {@code Object[]} of the type-checked argument values, one per expected parameter,
- * parameters being sorted as documented in {@link FunctionSignature}.
+ * <p>The inner calling convention is to pass the underlying method an {@code Object[]} of the
+ * type-checked argument values, one per expected parameter, parameters being sorted as documented
+ * in {@link FunctionSignature}.
  *
  * <p>The function may provide default values for optional parameters not provided by the caller.
  * These default values can be null if there are no optional parameters or for builtin functions,
@@ -58,16 +55,22 @@ import javax.annotation.Nullable;
 // Provide optimized argument frobbing depending of FunctionSignature and CallerSignature
 // (that FuncallExpression must supply), optimizing for the all-positional and all-keyword cases.
 // Also, use better pure maps to minimize map O(n) re-creation events when processing keyword maps.
-public abstract class BaseFunction implements SkylarkValue {
+public abstract class BaseFunction implements StarlarkFunction {
 
-  // The name of the function
-  private final String name;
+  /**
+   * The name of the function.
+   *
+   * <p>For safe extensibility, this class only retrieves name via the accessor {@link #getName}.
+   * This field must be null iff {@link #getName} is overridden.
+   */
+  @Nullable private final String name;
 
   // A function signature, including defaults and types
   // never null after it is configured
   @Nullable protected FunctionSignature.WithValues<Object, SkylarkType> signature;
 
   // Location of the function definition, or null for builtin functions
+  // TODO(bazel-team): Or make non-nullable, and use Location.BUILTIN for builtin functions?
   @Nullable protected Location location;
 
   // Some functions are also Namespaces or other Skylark entities.
@@ -96,8 +99,13 @@ public abstract class BaseFunction implements SkylarkValue {
   // We trust the user not to modify the list behind our back.
 
 
-  /** Returns the name of this function. */
+  /**
+   * Returns the name of this function.
+   *
+   * <p>A subclass must override this function if a null name is given to this class's constructor.
+   */
   public String getName() {
+    Preconditions.checkNotNull(name);
     return name;
   }
 
@@ -119,20 +127,22 @@ public abstract class BaseFunction implements SkylarkValue {
   /**
    * Creates an unconfigured BaseFunction with the given name.
    *
-   * @param name the function name
+   * <p>The name must be null if called from a subclass constructor where the subclass overrides
+   * {@link #getName}; otherwise it must be non-null.
    */
-  public BaseFunction(String name) {
+  public BaseFunction(@Nullable String name) {
     this.name = name;
   }
 
   /**
    * Constructs a BaseFunction with a given name, signature and location.
    *
-   * @param name the function name
+   * @param name the function name; null iff this is a subclass overriding {@link #getName}
    * @param signature the signature with default values and types
    * @param location the location of function definition
    */
-  public BaseFunction(String name,
+  public BaseFunction(
+      @Nullable String name,
       @Nullable FunctionSignature.WithValues<Object, SkylarkType> signature,
       @Nullable Location location) {
     this(name);
@@ -143,10 +153,11 @@ public abstract class BaseFunction implements SkylarkValue {
   /**
    * Constructs a BaseFunction with a given name, signature.
    *
-   * @param name the function name
+   * @param name the function name; null iff this is a subclass overriding {@link #getName}
    * @param signature the signature, with default values and types
    */
-  public BaseFunction(String name,
+  public BaseFunction(
+      @Nullable String name,
       @Nullable FunctionSignature.WithValues<Object, SkylarkType> signature) {
     this(name, signature, null);
   }
@@ -154,20 +165,20 @@ public abstract class BaseFunction implements SkylarkValue {
   /**
    * Constructs a BaseFunction with a given name and signature without default values or types.
    *
-   * @param name the function name
+   * @param name the function name; null iff this is a subclass overriding {@link #getName}
    * @param signature the signature, without default values or types
    */
-  public BaseFunction(String name, FunctionSignature signature) {
+  public BaseFunction(@Nullable String name, FunctionSignature signature) {
     this(name, FunctionSignature.WithValues.create(signature), null);
   }
 
   /**
    * Constructs a BaseFunction with a given name and list of unconfigured defaults.
    *
-   * @param name the function name
+   * @param name the function name; null iff this is a subclass overriding {@link #getName}
    * @param defaultValues a list of default values for the optional arguments to be configured.
    */
-  public BaseFunction(String name, @Nullable Iterable<Object> defaultValues) {
+  public BaseFunction(@Nullable String name, @Nullable Iterable<Object> defaultValues) {
     this(name);
     this.unconfiguredDefaultValues = defaultValues;
   }
@@ -379,12 +390,12 @@ public abstract class BaseFunction implements SkylarkValue {
     if (types == null) {
       return;
     }
-    List<String> names = signature.getSignature().getNames();
     int length = types.size();
     for (int i = 0; i < length; i++) {
       Object value = arguments[i];
       SkylarkType type = types.get(i);
       if (value != null && type != null && !type.contains(value)) {
+        List<String> names = signature.getSignature().getNames();
         throw new EvalException(loc,
             String.format("expected %s for '%s' while calling %s but got %s instead: %s",
                 type, names.get(i), getName(), EvalUtils.getDataTypeName(value, true), value));
@@ -423,14 +434,7 @@ public abstract class BaseFunction implements SkylarkValue {
     Location loc = ast == null ? Location.BUILTIN : ast.getLocation();
 
     Object[] arguments = processArguments(args, kwargs, loc, env);
-    canonicalizeArguments(arguments, loc);
-
-    try {
-      Callstack.push(this);
-      return call(arguments, ast, env);
-    } finally {
-      Callstack.pop();
-    }
+    return callWithArgArray(arguments, ast, env, location);
   }
 
   /**
@@ -442,11 +446,38 @@ public abstract class BaseFunction implements SkylarkValue {
    * @throws InterruptedException may be thrown in the function implementations.
    */
   // Don't make it abstract, so that subclasses may be defined that @Override the outer call() only.
-  protected Object call(Object[] args, @Nullable FuncallExpression ast, @Nullable Environment env)
+  protected Object call(Object[] args, @Nullable FuncallExpression ast, Environment env)
       throws EvalException, InterruptedException {
     throw new EvalException(
         (ast == null) ? Location.BUILTIN : ast.getLocation(),
         String.format("function %s not implemented", getName()));
+  }
+
+  /**
+   * The outer calling convention to a BaseFunction. This function expects all arguments to have
+   * been resolved into positional ones.
+   *
+   * @param ast the expression for this function's definition
+   * @param env the Environment in the function is called
+   * @return the value resulting from evaluating the function with the given arguments
+   * @throws EvalException-s containing source information.
+   */
+  public Object callWithArgArray(
+      Object[] arguments, @Nullable FuncallExpression ast, Environment env, Location loc)
+      throws EvalException, InterruptedException {
+    Preconditions.checkState(isConfigured(), "Function %s was not configured", getName());
+    canonicalizeArguments(arguments, loc);
+
+    try {
+      if (Callstack.enabled) {
+        Callstack.push(this);
+      }
+      return call(arguments, ast, env);
+    } finally {
+      if (Callstack.enabled) {
+        Callstack.pop();
+      }
+    }
   }
 
   /**
@@ -469,7 +500,7 @@ public abstract class BaseFunction implements SkylarkValue {
     Preconditions.checkState(!isConfigured()); // must not be configured yet
 
     this.paramDoc = new ArrayList<>();
-    this.signature = SkylarkSignatureProcessor.getSignature(
+    this.signature = SkylarkSignatureProcessor.getSignatureForCallable(
         getName(), annotation, unconfiguredDefaultValues, paramDoc, getEnforcedArgumentTypes());
     this.objectType = annotation.objectType().equals(Object.class)
         ? null : annotation.objectType();
@@ -550,14 +581,15 @@ public abstract class BaseFunction implements SkylarkValue {
       BaseFunction that = (BaseFunction) other;
       // In theory, the location alone unambiguously identifies a given function. However, in
       // some test cases the location might not have a valid value, thus we also check the name.
-      return Objects.equals(this.name, that.name) && Objects.equals(this.location, that.location);
+      return Objects.equals(this.getName(), that.getName())
+          && Objects.equals(this.location, that.location);
     }
     return false;
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(name, location);
+    return Objects.hash(getName(), location);
   }
 
   @Nullable

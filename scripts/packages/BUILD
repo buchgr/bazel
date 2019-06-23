@@ -15,18 +15,17 @@ filegroup(
 filegroup(
     name = "packages",
     srcs = select({
-        "//src:windows": [
+        "//src/conditions:windows": [
             ":zip-bazel-exe",
-            ":zip-bazel-exe_with_jdk",
+            ":zip-bazel-exe_nojdk",
         ],
-        "//src:windows_msvc": [],
-        "//src:freebsd": [],
-        "//src:darwin": [
+        "//src/conditions:freebsd": [],
+        "//src/conditions:darwin": [
             ":with-jdk/install.sh",
             ":without-jdk/install.sh",
             ":generate-package-info",
         ],
-        "//src:darwin_x86_64": [
+        "//src/conditions:darwin_x86_64": [
             ":with-jdk/install.sh",
             ":without-jdk/install.sh",
             ":generate-package-info",
@@ -57,7 +56,7 @@ genrule(
 
 [genrule(
     name = "zip-bazel-exe" + suffix,
-    srcs = ["//src:bazel%s.exe" % suffix],
+    srcs = ["//src:bazel-bin%s.exe" % suffix],
     outs = ["bazel%s.zip" % suffix],
     cmd = "\n".join([
         "tmpdir=$$(mktemp -d $${TMPDIR:-/tmp}/tmp.XXXXXXXX)",
@@ -68,7 +67,7 @@ genrule(
     ]),
 ) for suffix in [
     "",
-    "_with_jdk",
+    "_nojdk",
 ]]
 
 genrule(
@@ -87,14 +86,14 @@ genrule(
 
 genrule(
     name = "rename-bazel-bin",
-    srcs = ["//src:bazel_with_jdk"],
+    srcs = ["//src:bazel"],
     outs = ["with-jdk/bazel-real"],
     cmd = "mkdir -p $$(dirname $@); cp $< $@",
 )
 
 genrule(
     name = "rename-bazel-bin-without-jdk",
-    srcs = ["//src:bazel"],
+    srcs = ["//src:bazel_nojdk"],
     outs = ["without-jdk/bazel-real"],
     cmd = "mkdir -p $$(dirname $@); cp $< $@",
 )
@@ -121,6 +120,7 @@ load(":self_extract_binary.bzl", "self_extract_binary")
         ":%s/bazel-real" % kind,
         ":%s/bazel" % kind,
         "//scripts:bash_completion",
+        "//scripts/zsh_completion:_bazel",
     ],
     launcher = ":launcher_bin.sh",
 ) for kind in ("with-jdk", "without-jdk")]

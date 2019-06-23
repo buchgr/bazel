@@ -17,11 +17,13 @@ package com.google.devtools.build.lib.actions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.analysis.platform.PlatformInfo;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
 
 /** Base implementation of a Spawn. */
@@ -69,16 +71,6 @@ public class BaseSpawn implements Spawn {
   }
 
   @Override
-  public boolean hasNoSandbox() {
-    return executionInfo.containsKey("nosandbox");
-  }
-
-  @Override
-  public boolean isRemotable() {
-    return !executionInfo.containsKey("local");
-  }
-
-  @Override
   public final ImmutableMap<String, String> getExecutionInfo() {
     return executionInfo;
   }
@@ -89,15 +81,15 @@ public class BaseSpawn implements Spawn {
   }
 
   @Override
-  public ImmutableList<Artifact> getFilesetManifests() {
-    return ImmutableList.<Artifact>of();
-  }
-
-  @Override
   public ImmutableList<String> getArguments() {
     // TODO(bazel-team): this method should be final, as the correct value of the args can be
     // injected in the ctor.
     return arguments;
+  }
+
+  @Override
+  public ImmutableMap<Artifact, ImmutableList<FilesetOutputSymlink>> getFilesetMappings() {
+    return ImmutableMap.of();
   }
 
   @Override
@@ -158,29 +150,9 @@ public class BaseSpawn implements Spawn {
     return action.getMnemonic();
   }
 
-  /** A local spawn. */
-  public static class Local extends BaseSpawn {
-    public Local(
-        List<String> arguments, Map<String, String> environment, ActionExecutionMetadata action,
-        ResourceSet localResources) {
-      this(arguments, environment, ImmutableMap.<String, String>of(), action, localResources);
-    }
-
-    public Local(
-        List<String> arguments,
-        Map<String, String> environment,
-        Map<String, String> executionInfo,
-        ActionExecutionMetadata action,
-        ResourceSet localResources) {
-      super(arguments, environment, buildExecutionInfo(executionInfo), action, localResources);
-    }
-
-    private static ImmutableMap<String, String> buildExecutionInfo(
-        Map<String, String> additionalExecutionInfo) {
-      ImmutableMap.Builder<String, String> executionInfo = ImmutableMap.builder();
-      executionInfo.putAll(additionalExecutionInfo);
-      executionInfo.put("local", "");
-      return executionInfo.build();
-    }
+  @Override
+  @Nullable
+  public PlatformInfo getExecutionPlatform() {
+    return action.getExecutionPlatform();
   }
 }

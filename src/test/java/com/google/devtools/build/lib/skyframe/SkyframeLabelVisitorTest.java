@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.skyframe;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 import static org.junit.Assert.fail;
 
 import com.google.common.collect.ImmutableList;
@@ -25,7 +26,7 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.packages.ConstantRuleVisibility;
-import com.google.devtools.build.lib.packages.SkylarkSemanticsOptions;
+import com.google.devtools.build.lib.packages.StarlarkSemanticsOptions;
 import com.google.devtools.build.lib.pkgcache.PackageCacheOptions;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
@@ -34,6 +35,7 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.common.options.Options;
 import java.io.IOException;
 import java.util.Collection;
@@ -84,7 +86,7 @@ public class SkyframeLabelVisitorTest extends SkyframeLabelVisitorTestCase {
     assertThat(sym1.delete()).isTrue();
     FileSystemUtils.ensureSymbolicLink(sym1, path);
     assertThat(symlink.delete()).isTrue();
-    symlink = scratch.file("bar/BUILD", "sh_library(name = 'bar')");
+    scratch.file("bar/BUILD", "sh_library(name = 'bar')");
     syncPackages();
     assertLabelsVisited(
         ImmutableSet.of("//bar:bar"), ImmutableSet.of("//bar:bar"), !EXPECT_ERROR, !KEEP_GOING);
@@ -98,10 +100,13 @@ public class SkyframeLabelVisitorTest extends SkyframeLabelVisitorTestCase {
         scratch.file(
             "pkg/BUILD", "sh_library(name = 'x', deps = ['z', 'z'])", "sh_library(name = 'z')");
 
-    // In the first case below, we will hit see an error on "//pkg:x", and therefore
-    // not traverse into "//pkg:z" due to fail-fast.
+    // We expect an error on "//pkg:x". However, we can still finish the evaluation and also return
+    // "//pkg:z" even without keep_going.
     assertLabelsVisited(
-        ImmutableSet.of("//pkg:x"), ImmutableSet.of("//pkg:x"), EXPECT_ERROR, !KEEP_GOING);
+        ImmutableSet.of("//pkg:x", "//pkg:z"),
+        ImmutableSet.of("//pkg:x"),
+        EXPECT_ERROR,
+        !KEEP_GOING);
     assertContainsEvent("Label '//pkg:z' is duplicated in the 'deps' attribute of rule 'x'");
     assertLabelsVisitedWithErrors(
         ImmutableSet.of("//pkg:x", "//pkg:z"), ImmutableSet.of("//pkg:x"));
@@ -141,11 +146,25 @@ public class SkyframeLabelVisitorTest extends SkyframeLabelVisitorTestCase {
         "pkg/BUILD", "sh_library(name = 'x', deps = ['z', 'z'])", "sh_library(name = 'z')");
     buildFile.setLastModifiedTime(buildFile.getLastModifiedTime() + 1);
     syncPackages();
+    // We expect an error on "//pkg:x". However, we can still finish the evaluation and also return
+    // "//pkg:z" even without keep_going.
     assertLabelsVisited(
-        ImmutableSet.of("//pkg:x"), ImmutableSet.of("//pkg:x"), EXPECT_ERROR, !KEEP_GOING);
+        ImmutableSet.of("//pkg:x", "//pkg:z"),
+        ImmutableSet.of("//pkg:x"),
+        EXPECT_ERROR,
+        !KEEP_GOING);
     // Check stability (not redundant).
     assertLabelsVisited(
-        ImmutableSet.of("//pkg:x"), ImmutableSet.of("//pkg:x"), EXPECT_ERROR, !KEEP_GOING);
+        ImmutableSet.of("//pkg:x", "//pkg:z"),
+        ImmutableSet.of("//pkg:x"),
+        EXPECT_ERROR,
+        !KEEP_GOING);
+    // Also check keep-going.
+    assertLabelsVisited(
+        ImmutableSet.of("//pkg:x", "//pkg:z"),
+        ImmutableSet.of("//pkg:x"),
+        EXPECT_ERROR,
+        KEEP_GOING);
   }
 
   @Test
@@ -292,12 +311,10 @@ public class SkyframeLabelVisitorTest extends SkyframeLabelVisitorTestCase {
     scratch.file("x/BUILD");
     Thread.currentThread().interrupt();
 
-    try {
-      assertLabelsVisitedWithErrors(ImmutableSet.of("//x:x"), ImmutableSet.of("//x:BUILD"));
-      fail();
-    } catch (InterruptedException e) {
-      // Expected
-    }
+    assertThrows(
+        InterruptedException.class,
+        () ->
+            assertLabelsVisitedWithErrors(ImmutableSet.of("//x:x"), ImmutableSet.of("//x:BUILD")));
   }
 
   // Regression test for "crash when // encountered in package name".
@@ -405,14 +422,16 @@ public class SkyframeLabelVisitorTest extends SkyframeLabelVisitorTestCase {
     packageCacheOptions.globbingThreads = 7;
     getSkyframeExecutor()
         .preparePackageLoading(
-            new PathPackageLocator(outputBase, ImmutableList.of(rootDirectory)),
+            new PathPackageLocator(
+                outputBase,
+                ImmutableList.of(Root.fromPath(rootDirectory)),
+                BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY),
             packageCacheOptions,
-            Options.getDefaults(SkylarkSemanticsOptions.class),
-            loadingMock.getDefaultsPackageContent(),
+            Options.getDefaults(StarlarkSemanticsOptions.class),
             UUID.randomUUID(),
             ImmutableMap.<String, String>of(),
-            ImmutableMap.<String, String>of(),
             new TimestampGranularityMonitor(BlazeClock.instance()));
+    skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
     this.visitor = getSkyframeExecutor().pkgLoader();
     scratch.file("pkg/BUILD", "sh_library(name = 'x', deps = ['z'])", "sh_library(name = 'z')");
     assertLabelsVisited(
@@ -441,15 +460,15 @@ public class SkyframeLabelVisitorTest extends SkyframeLabelVisitorTestCase {
   @Test
   public void testRootCauseOnInconsistentFilesystem() throws Exception {
     reporter.removeHandler(failFastHandler);
+    skyframeExecutor.turnOffSyscallCacheForTesting();
     scratch.file("foo/BUILD", "sh_library(name = 'foo', deps = ['//bar:baz/fizz'])");
     Path barBuildFile = scratch.file("bar/BUILD", "sh_library(name = 'bar/baz')");
-    Path bazDir = barBuildFile.getParentDirectory().getRelative("baz");
     scratch.file("bar/baz/BUILD");
-    FileStatus inconsistentParentFileStatus =
+    FileStatus inconsistentFileStatus =
         new FileStatus() {
           @Override
           public boolean isFile() {
-            return true;
+            return false;
           }
 
           @Override
@@ -487,8 +506,8 @@ public class SkyframeLabelVisitorTest extends SkyframeLabelVisitorTestCase {
             return 0;
           }
         };
-    fs.stubStat(bazDir, inconsistentParentFileStatus);
-    Set<Label> labels = ImmutableSet.of(Label.parseAbsolute("//foo:foo"));
+    fs.stubStat(barBuildFile, inconsistentFileStatus);
+    Set<Label> labels = ImmutableSet.of(Label.parseAbsolute("//bar:baz", ImmutableMap.of()));
     getSkyframeExecutor()
         .getPackageManager()
         .newTransitiveLoader()

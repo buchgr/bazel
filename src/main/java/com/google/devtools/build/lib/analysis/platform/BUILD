@@ -21,7 +21,12 @@ java_library(
     deps = [
         "//src/main/java/com/google/devtools/build/lib:packages",
         "//src/main/java/com/google/devtools/build/lib:skylarkinterface",
+        "//src/main/java/com/google/devtools/build/lib:string_util",
         "//src/main/java/com/google/devtools/build/lib:transitive-info-provider",
+        "//src/main/java/com/google/devtools/build/lib/concurrent",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
+        "//src/main/java/com/google/devtools/build/lib/skylarkbuildapi/platform",
         "//third_party:auto_value",
         "//third_party:guava",
     ],
@@ -32,8 +37,7 @@ java_library(
     srcs = UTIL_SRCS,
     deps = [
         ":platform",
-        "//src/main/java/com/google/devtools/build/lib:preconditions",
-        "//src/main/java/com/google/devtools/build/lib:skylark-provider-collection",
+        "//src/main/java/com/google/devtools/build/lib:provider-collection",
         "//third_party:guava",
     ],
 )

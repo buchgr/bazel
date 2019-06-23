@@ -14,10 +14,9 @@
 package com.google.devtools.build.android;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableList.Builder;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.android.AndroidResourceMerger.MergingException;
 import java.io.IOException;
@@ -130,13 +129,13 @@ public class DensitySpecificResourceFilterTest {
   }
 
   @Test public void testUnknownDensityFails() {
-    try {
-      checkTransformedResources(
-          ImmutableList.<String>of(), ImmutableList.<String>of(),
-          ImmutableList.of("xxhdpi", "322dpi"));
-      fail("expected MergingException");
-    } catch (MergingException expected) {
-    }
+    assertThrows(
+        MergingException.class,
+        () ->
+            checkTransformedResources(
+                ImmutableList.<String>of(),
+                ImmutableList.<String>of(),
+                ImmutableList.of("xxhdpi", "322dpi")));
   }
 
   @Test public void testPrefersHigherQualityWhenAffinityExact() throws Exception {
@@ -254,7 +253,7 @@ public class DensitySpecificResourceFilterTest {
   }
 
   private ImmutableList <Path> createFiles(String... pathStrings) throws IOException {
-    Builder<Path> paths = ImmutableList.builder();
+    ImmutableList.Builder<Path> paths = ImmutableList.builder();
     for (String pathString : pathStrings) {
       final Path path = tmp.resolve(pathString);
       Files.createDirectories(path.getParent());

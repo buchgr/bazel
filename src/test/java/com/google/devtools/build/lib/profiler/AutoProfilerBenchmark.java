@@ -15,23 +15,32 @@ package com.google.devtools.build.lib.profiler;
 
 import com.google.caliper.BeforeExperiment;
 import com.google.caliper.Benchmark;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.clock.BlazeClock;
-import com.google.devtools.build.lib.profiler.Profiler.ProfiledTaskKinds;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
+import java.util.UUID;
 
 /**
  * Microbenchmarks for the overhead of {@link AutoProfiler} over using {@link Profiler} manually.
  */
 public class AutoProfilerBenchmark {
-
-  private final Object obj = new Object();
-  private final ProfilerTask profilerTaskType = ProfilerTask.TEST;
+  private final ProfilerTask profilerTaskType = ProfilerTask.INFO;
 
   @BeforeExperiment
   void startProfiler() throws Exception {
-    Profiler.instance().start(ProfiledTaskKinds.ALL,
-        new InMemoryFileSystem().getPath("/out.dat").getOutputStream(), "benchmark", false,
-        BlazeClock.instance(), BlazeClock.instance().nanoTime());
+    Profiler.instance()
+        .start(
+            ImmutableSet.copyOf(ProfilerTask.values()),
+            new InMemoryFileSystem().getPath("/out.dat").getOutputStream(),
+            Profiler.Format.BINARY_BAZEL_FORMAT,
+            "benchmark",
+            "dummy_output_base",
+            UUID.randomUUID(),
+            false,
+            BlazeClock.instance(),
+            BlazeClock.instance().nanoTime(),
+            /* enabledCpuUsageProfiling= */ false,
+            /* slimProfile= */ false);
   }
 
   @BeforeExperiment
@@ -42,8 +51,7 @@ public class AutoProfilerBenchmark {
   @Benchmark
   void profiledWithAutoProfiler(int reps) {
     for (int i = 0; i < reps; i++) {
-      try (AutoProfiler p = AutoProfiler.profiled(obj, profilerTaskType)) {
-      }
+      try (AutoProfiler p = AutoProfiler.profiled("profiling", profilerTaskType)) {}
     }
   }
 
@@ -51,7 +59,7 @@ public class AutoProfilerBenchmark {
   void profiledManually(int reps) {
     for (int i = 0; i < reps; i++) {
       long startTime = Profiler.nanoTimeMaybe();
-      Profiler.instance().logSimpleTask(startTime, profilerTaskType, obj);
+      Profiler.instance().logSimpleTask(startTime, profilerTaskType, "description");
     }
   }
 }

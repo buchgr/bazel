@@ -18,7 +18,9 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
 import com.google.common.collect.Ordering;
+import com.google.devtools.build.android.aapt2.ResourceCompiler;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
@@ -30,20 +32,22 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collection;
 import java.util.GregorianCalendar;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.jar.Attributes;
-import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import javax.annotation.Nullable;
 
 /** Collects all the functionationality for an action to create the final output artifacts. */
 public class AndroidResourceOutputs {
@@ -56,7 +60,7 @@ public class AndroidResourceOutputs {
 
     // The earliest date representable in a zip file, 1-1-1980 (the DOS epoch).
     private static final long ZIP_EPOCH =
-        new GregorianCalendar(1980, 01, 01, 0, 0).getTimeInMillis();
+        new GregorianCalendar(1980, Calendar.JANUARY, 01, 0, 0).getTimeInMillis();
 
     private final ZipOutputStream zip;
 
@@ -86,7 +90,19 @@ public class AndroidResourceOutputs {
       }
     }
 
+    protected void addEntry(ZipEntry entry, byte[] content) throws IOException {
+      // Create a new ZipEntry because there are occasional discrepancies
+      // between the metadata and written content.
+      addEntry(entry.getName(), content, entry.getMethod());
+    }
+
     protected void addEntry(String rawName, byte[] content, int storageMethod) throws IOException {
+      addEntry(rawName, content, storageMethod, null);
+    }
+
+    protected void addEntry(
+        String rawName, byte[] content, int storageMethod, @Nullable String comment)
+        throws IOException {
       // Fix the path for windows.
       String relativeName = rawName.replace('\\', '/');
       // Make sure the zip entry is not absolute.
@@ -99,6 +115,9 @@ public class AndroidResourceOutputs {
       CRC32 crc32 = new CRC32();
       crc32.update(content);
       entry.setCrc(crc32.getValue());
+      if (!Strings.isNullOrEmpty(comment)) {
+        entry.setComment(comment);
+      }
 
       zip.putNextEntry(entry);
       zip.write(content);
@@ -111,6 +130,42 @@ public class AndroidResourceOutputs {
     }
   }
 
+  /** A ZipBuilder that avoids adding the same entry twice, storing only the first occurrence. */
+  public static class UniqueZipBuilder extends ZipBuilder {
+
+    /** A set of all entry names (e.g. "foo/bar.txt") that have been added to the underlying zip. */
+    private final Set<String> addedEntryNames = new HashSet<>();
+
+    private UniqueZipBuilder(ZipOutputStream zip) {
+      super(zip);
+    }
+
+    public static UniqueZipBuilder createFor(Path archivePath) throws IOException {
+      return new UniqueZipBuilder(
+          new ZipOutputStream(new BufferedOutputStream(Files.newOutputStream(archivePath))));
+    }
+
+    @Override
+    public void addEntry(ZipEntry entry, byte[] content) throws IOException {
+      addEntry(entry.getName(), content, entry.getMethod());
+    }
+
+    @Override
+    public void addEntry(String rawName, byte[] content, int storageMethod) throws IOException {
+      // Fix the path for Windows (required to ensure entry name isn't duplicated by call to super).
+      String relativeName = rawName.replace('\\', '/');
+      if (!addedEntryNames.add(relativeName)) {
+        return;
+      }
+      super.addEntry(relativeName, content, storageMethod);
+    }
+
+    public void addDirEntry(String rawName) throws IOException {
+      String dirName = rawName + (rawName.endsWith("/") ? "" : "/");
+      addEntry(dirName, new byte[0], ZipEntry.STORED);
+    }
+  }
+
   /** A FileVisitor that will add all R class files to be stored in a zip archive. */
   static final class ClassJarBuildingVisitor extends ZipBuilderVisitor {
 
@@ -118,7 +173,8 @@ public class AndroidResourceOutputs {
       super(zip, root, null);
     }
 
-    private byte[] manifestContent() throws IOException {
+    private byte[] manifestContent(@Nullable String targetLabel, @Nullable String injectingRuleKind)
+        throws IOException {
       Manifest manifest = new Manifest();
       Attributes attributes = manifest.getMainAttributes();
       attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
@@ -126,13 +182,21 @@ public class AndroidResourceOutputs {
       if (attributes.getValue(createdBy) == null) {
         attributes.put(createdBy, "bazel");
       }
+      if (targetLabel != null) {
+        // Enable add_deps support. add_deps expects this attribute in the jar manifest.
+        attributes.putValue("Target-Label", targetLabel);
+      }
+      if (injectingRuleKind != null) {
+        // add_deps support for aspects. Usually null.
+        attributes.putValue("Injecting-Rule-Kind", injectingRuleKind);
+      }
       ByteArrayOutputStream out = new ByteArrayOutputStream();
       manifest.write(out);
       return out.toByteArray();
     }
 
     @Override
-    protected void writeFileEntry(Path file) throws IOException {
+    protected void writeEntry(Path file) throws IOException {
       Path filename = file.getFileName();
       String name = filename.toString();
       if (name.endsWith(".class")) {
@@ -141,8 +205,10 @@ public class AndroidResourceOutputs {
       }
     }
 
-    void writeManifestContent() throws IOException {
-      addEntry(root.resolve(JarFile.MANIFEST_NAME), manifestContent());
+    void writeManifestContent(@Nullable String targetLabel, @Nullable String injectingRuleKind)
+        throws IOException {
+      addEntry("META-INF/", new byte[] {});
+      addEntry("META-INF/MANIFEST.MF", manifestContent(targetLabel, injectingRuleKind));
     }
   }
 
@@ -192,7 +258,7 @@ public class AndroidResourceOutputs {
     }
 
     @Override
-    protected void writeFileEntry(Path file) throws IOException {
+    protected void writeEntry(Path file) throws IOException {
       if (file.getFileName().endsWith("R.java")) {
         byte[] content = Files.readAllBytes(file);
         if (staticIds) {
@@ -205,11 +271,24 @@ public class AndroidResourceOutputs {
     }
   }
 
+  /** A FileVisitor that will add all files and dirents to be stored in a zip archive. */
+  static final class ZipBuilderVisitorWithDirectories extends ZipBuilderVisitor {
+    ZipBuilderVisitorWithDirectories(ZipBuilder zipBuilder, Path root, String directory) {
+      super(zipBuilder, root, directory);
+    }
+
+    @Override
+    public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
+      paths.add(dir);
+      return FileVisitResult.CONTINUE;
+    }
+  }
+
   /** A FileVisitor that will add all files to be stored in a zip archive. */
   static class ZipBuilderVisitor extends SimpleFileVisitor<Path> {
 
     protected final String directoryPrefix;
-    private final Collection<Path> paths = new ArrayList<>();
+    protected final Collection<Path> paths = new ArrayList<>();
     protected final Path root;
     private int storageMethod = ZipEntry.STORED;
     private ZipBuilder zipBuilder;
@@ -223,6 +302,19 @@ public class AndroidResourceOutputs {
     protected void addEntry(Path file, byte[] content) throws IOException {
       Preconditions.checkArgument(file.startsWith(root), "%s does not start with %s", file, root);
       zipBuilder.addEntry(directoryPrefix + root.relativize(file), content, storageMethod);
+    }
+
+    protected void addEntry(String entry, byte[] content) throws IOException {
+      zipBuilder.addEntry(entry, content, storageMethod);
+    }
+
+    protected void addDirEntry(Path file) throws IOException {
+      Preconditions.checkArgument(file.startsWith(root), "%s does not start with %s", file, root);
+      String entryName = directoryPrefix + root.relativize(file);
+      if (!entryName.endsWith("/")) {
+        entryName += "/";
+      }
+      zipBuilder.addEntry(entryName, new byte[0], storageMethod);
     }
 
     public void setCompress(boolean compress) {
@@ -242,13 +334,17 @@ public class AndroidResourceOutputs {
      */
     void writeEntries() throws IOException {
       for (Path path : Ordering.natural().immutableSortedCopy(paths)) {
-        writeFileEntry(path);
+        writeEntry(path);
       }
     }
 
-    protected void writeFileEntry(Path file) throws IOException {
-      byte[] content = Files.readAllBytes(file);
-      addEntry(file, content);
+    protected void writeEntry(Path file) throws IOException {
+      if (Files.isDirectory(file)) {
+        addDirEntry(file);
+      } else {
+        byte[] content = Files.readAllBytes(file);
+        addEntry(file, content);
+      }
     }
   }
 
@@ -264,8 +360,6 @@ public class AndroidResourceOutputs {
     try {
       Files.createDirectories(manifestOut.getParent());
       Files.copy(provider.getManifest(), manifestOut);
-      // Set to the epoch for caching purposes.
-      Files.setLastModifiedTime(manifestOut, FileTime.fromMillis(0L));
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
@@ -297,25 +391,25 @@ public class AndroidResourceOutputs {
         // outputs. This state occurs when there are no resource directories.
         Files.createFile(rOutput);
       }
-      // Set to the epoch for caching purposes.
-      Files.setLastModifiedTime(rOutput, FileTime.fromMillis(0L));
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
   }
 
   /** Creates a zip archive from all found R.class (and inner class) files. */
-  public static void createClassJar(Path generatedClassesRoot, Path classJar) {
+  public static void createClassJar(
+      Path generatedClassesRoot,
+      Path classJar,
+      @Nullable String targetLabel,
+      @Nullable String injectingRuleKind) {
     try {
       Files.createDirectories(classJar.getParent());
       try (final ZipBuilder zip = ZipBuilder.createFor(classJar)) {
         ClassJarBuildingVisitor visitor = new ClassJarBuildingVisitor(zip, generatedClassesRoot);
         Files.walkFileTree(generatedClassesRoot, visitor);
+        visitor.writeManifestContent(targetLabel, injectingRuleKind);
         visitor.writeEntries();
-        visitor.writeManifestContent();
       }
-      // Set to the epoch for caching purposes.
-      Files.setLastModifiedTime(classJar, FileTime.fromMillis(0L));
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
@@ -331,8 +425,6 @@ public class AndroidResourceOutputs {
         Files.walkFileTree(root, visitor);
         visitor.writeEntries();
       }
-      // Set to the epoch for caching purposes.
-      Files.setLastModifiedTime(archive, FileTime.fromMillis(0L));
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
@@ -348,8 +440,6 @@ public class AndroidResourceOutputs {
         Files.walkFileTree(generatedSourcesRoot, visitor);
         visitor.writeEntries();
       }
-      // Set to the epoch for caching purposes.
-      Files.setLastModifiedTime(srcJar, FileTime.fromMillis(0L));
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
@@ -368,6 +458,7 @@ public class AndroidResourceOutputs {
     try (ZipBuilder builder = ZipBuilder.createFor(archiveOut)) {
       for (Path artifact : compiledArtifacts) {
         Path relativeName = artifact;
+
         // remove compiled resources prefix
         if (artifact.startsWith(compiledRoot)) {
           relativeName = compiledRoot.relativize(relativeName);
@@ -380,7 +471,11 @@ public class AndroidResourceOutputs {
                   relativeName.getNameCount());
         }
 
-        builder.addEntry(relativeName.toString(), Files.readAllBytes(artifact), ZipEntry.STORED);
+        builder.addEntry(
+            relativeName.toString(),
+            Files.readAllBytes(artifact),
+            ZipEntry.STORED,
+            ResourceCompiler.getCompiledType(relativeName.toString()).asComment());
       }
     }
     return archiveOut;

@@ -14,38 +14,29 @@
 
 package com.google.devtools.build.lib.skyframe;
 
-import com.google.common.collect.ImmutableList;
-import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
-import com.google.devtools.build.lib.actions.ActionLookupValue;
-import com.google.devtools.build.lib.actions.ArtifactOwner;
-import com.google.devtools.build.skyframe.LegacySkyKey;
+import com.google.devtools.build.lib.actions.Actions.GeneratingActions;
+import com.google.devtools.build.lib.actions.BasicActionLookupValue;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.skyframe.SkyFunctionName;
-import com.google.devtools.build.skyframe.SkyKey;
 
 /**
  * A SkyValue to store the coverage report Action and Artifacts.
  */
-public class CoverageReportValue extends ActionLookupValue {
+public class CoverageReportValue extends BasicActionLookupValue {
 
   // There should only ever be one CoverageReportValue value in the graph.
-  public static final ArtifactOwner ARTIFACT_OWNER = new CoverageReportKey();
-  static final SkyKey SKY_KEY = LegacySkyKey.create(SkyFunctions.COVERAGE_REPORT, ARTIFACT_OWNER);
+  @AutoCodec public static final CoverageReportKey COVERAGE_REPORT_KEY = new CoverageReportKey();
 
-  CoverageReportValue(
-      ImmutableList<ActionAnalysisMetadata> coverageReportActions,
-      boolean removeActionsAfterEvaluation) {
-    super(coverageReportActions, removeActionsAfterEvaluation);
+  CoverageReportValue(GeneratingActions generatingActions) {
+    super(generatingActions, /*nonceVersion=*/ null);
   }
 
-  private static class CoverageReportKey extends ActionLookupKey {
-    @Override
-    protected SkyFunctionName getType() {
-      throw new UnsupportedOperationException();
-    }
+  static class CoverageReportKey extends ActionLookupKey {
+    private CoverageReportKey() {}
 
     @Override
-    protected SkyKey getSkyKeyInternal() {
-      return SKY_KEY;
+    public SkyFunctionName functionName() {
+      return SkyFunctions.COVERAGE_REPORT;
     }
   }
 }

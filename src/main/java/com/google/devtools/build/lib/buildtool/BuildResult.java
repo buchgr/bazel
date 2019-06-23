@@ -16,14 +16,21 @@ package com.google.devtools.build.lib.buildtool;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
+import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection;
+import com.google.devtools.build.lib.buildeventstream.BuildEvent.LocalFile.LocalFileType;
+import com.google.devtools.build.lib.buildeventstream.BuildToolLogs;
+import com.google.devtools.build.lib.buildeventstream.BuildToolLogs.LogFileEntry;
+import com.google.devtools.build.lib.skyframe.AspectValue;
 import com.google.devtools.build.lib.util.ExitCode;
-import com.google.devtools.build.lib.util.Preconditions;
-
+import com.google.devtools.build.lib.util.Pair;
+import com.google.devtools.build.lib.vfs.Path;
+import com.google.protobuf.ByteString;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-
+import java.util.List;
 import javax.annotation.Nullable;
 
 /**
@@ -44,6 +51,9 @@ public final class BuildResult {
   private Collection<ConfiguredTarget> testTargets;
   private Collection<ConfiguredTarget> successfulTargets;
   private Collection<ConfiguredTarget> skippedTargets;
+  private Collection<AspectValue> successfulAspects;
+
+  private final BuildToolLogCollection buildToolLogCollection = new BuildToolLogCollection();
 
   public BuildResult(long startTimeMillis) {
     this.startTimeMillis = startTimeMillis;
@@ -196,17 +206,33 @@ public final class BuildResult {
     this.successfulTargets = successfulTargets;
   }
 
+  /** @see #getSuccessfulAspects */
+  void setSuccessfulAspects(Collection<AspectValue> successfulAspects) {
+    this.successfulAspects = successfulAspects;
+  }
+
   /**
-   * Returns the set of targets which successfully built.  This value
-   * is set at the end of the build, after the target patterns have been parsed
-   * and resolved and after attempting to build the targets.  If --keep_going
-   * is specified, this set may exclude targets that could not be found or
-   * successfully analyzed, or could not be built.  It may be examined after
-   * the build.  May be null if the execution phase was not attempted, as
-   * may happen if there are errors in the loading phase, for example.
+   * Returns the set of targets that were successfully built. This value is set at the end of the
+   * build, after the target patterns have been parsed and resolved and after attempting to build
+   * the targets. If --keep_going is specified, this set may exclude targets that could not be found
+   * or successfully analyzed, or could not be built. It may be examined after the build. May be
+   * null if the execution phase was not attempted, as may happen if there are errors in the loading
+   * phase, for example.
    */
   public Collection<ConfiguredTarget> getSuccessfulTargets() {
     return successfulTargets;
+  }
+
+  /**
+   * Returns the set of aspects that were successfully built. This value is set at the end of the
+   * build, after the target patterns have been parsed and resolved and after attempting to build
+   * the targets. If --keep_going is specified, this set may exclude targets that could not be found
+   * or successfully analyzed, or could not be built. It may be examined after the build. May be
+   * null if the execution phase was not attempted, as may happen if there are errors in the loading
+   * phase, for example.
+   */
+  public Collection<AspectValue> getSuccessfulAspects() {
+    return successfulAspects;
   }
 
   /**
@@ -225,6 +251,15 @@ public final class BuildResult {
     return skippedTargets;
   }
 
+  /**
+   * Collection of data for the build tool logs event. This may only be modified until the
+   * BuildCompleteEvent is posted; any changes after that event is handled will not be included in
+   * the build tool logs event.
+   */
+  public BuildToolLogCollection getBuildToolLogCollection() {
+    return buildToolLogCollection;
+  }
+
   /** For debugging. */
   @Override
   public String toString() {
@@ -237,6 +272,65 @@ public final class BuildResult {
         .add("actualTargets", actualTargets)
         .add("testTargets", testTargets)
         .add("successfulTargets", successfulTargets)
+        .add("buildToolLogCollection", buildToolLogCollection)
         .toString();
+  }
+
+  /**
+   * Collection of data for the build tool logs event. See {@link BuildToolLogs} for details.
+   */
+  public static final class BuildToolLogCollection {
+    private final List<Pair<String, ByteString>> directValues = new ArrayList<>();
+    private final List<Pair<String, String>> directUris = new ArrayList<>();
+    private final List<LogFileEntry> localFiles = new ArrayList<>();
+    private boolean frozen;
+
+    public BuildToolLogCollection freeze() {
+      frozen = true;
+      return this;
+    }
+
+    @VisibleForTesting
+    public List<LogFileEntry> getLocalFiles() {
+      return localFiles;
+    }
+
+    public BuildToolLogCollection addDirectValue(String name, byte[] data) {
+      Preconditions.checkState(!frozen);
+      this.directValues.add(Pair.of(name, ByteString.copyFrom(data)));
+      return this;
+    }
+
+    public BuildToolLogCollection addUri(String name, String uri) {
+      Preconditions.checkState(!frozen);
+      this.directUris.add(Pair.of(name, uri));
+      return this;
+    }
+
+    public BuildToolLogCollection addLocalFile(String name, Path path) {
+      return addLocalFile(name, path, LocalFileType.LOG);
+    }
+
+    public BuildToolLogCollection addLocalFile(
+        String name, Path path, LocalFileType localFileType) {
+      Preconditions.checkState(!frozen);
+      this.localFiles.add(new LogFileEntry(name, path, localFileType));
+      return this;
+    }
+
+    public BuildToolLogs toEvent() {
+      Preconditions.checkState(frozen);
+      return new BuildToolLogs(directValues, directUris, localFiles);
+    }
+
+    /** For debugging. */
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper(this)
+          .add("directValues", directValues)
+          .add("directUris", directUris)
+          .add("localFiles", localFiles)
+          .toString();
+    }
   }
 }

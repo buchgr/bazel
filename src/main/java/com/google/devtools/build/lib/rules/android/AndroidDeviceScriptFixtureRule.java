@@ -23,7 +23,6 @@ import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.util.FileType;
 
 /** Rule definition for the {@code android_device_script_fixture} rule. */
@@ -31,8 +30,14 @@ public class AndroidDeviceScriptFixtureRule implements RuleDefinition {
 
   static final FileType DEVICE_SCRIPT_FIXTURE = FileType.of(".sh");
 
+  private final Class<? extends AndroidDeviceScriptFixture> factoryClass;
+
+  public AndroidDeviceScriptFixtureRule(Class<? extends AndroidDeviceScriptFixture> factoryClass) {
+    this.factoryClass = factoryClass;
+  }
+
   @Override
-  public RuleClass build(Builder builder, RuleDefinitionEnvironment environment) {
+  public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment environment) {
     return builder
         .setUndocumented()
         .add(
@@ -55,7 +60,7 @@ public class AndroidDeviceScriptFixtureRule implements RuleDefinition {
     return RuleDefinition.Metadata.builder()
         .name("android_device_script_fixture")
         .ancestors(BaseRuleClasses.RuleBase.class)
-        .factoryClass(AndroidDeviceScriptFixture.class)
+        .factoryClass(factoryClass)
         .build();
   }
 }

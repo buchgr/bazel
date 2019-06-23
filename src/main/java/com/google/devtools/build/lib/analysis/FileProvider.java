@@ -19,9 +19,8 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skylarkbuildapi.FileProviderApi;
 
 /**
  * A representation of the concept "this transitive info provider builds these files".
@@ -29,12 +28,8 @@ import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
  * <p>Every transitive info collection contains at least this provider.
  */
 @Immutable
-@SkylarkModule(
-  name = "file_provider",
-  doc = "An interface for rules that provide files.",
-  category = SkylarkModuleCategory.PROVIDER
-)
-public final class FileProvider implements TransitiveInfoProvider {
+@AutoCodec
+public final class FileProvider implements TransitiveInfoProvider, FileProviderApi {
   public static final FileProvider EMPTY =
       new FileProvider(NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER));
 
@@ -60,7 +55,7 @@ public final class FileProvider implements TransitiveInfoProvider {
    * <p>Also, some rules may generate artifacts that are not listed here by way of defining other
    * implicit targets, for example, deploy jars.
    */
-  @SkylarkCallable(name = "files_to_build", doc = "", structField = true)
+  @Override
   public NestedSet<Artifact> getFilesToBuild() {
     return filesToBuild;
   }

@@ -14,53 +14,44 @@
 
 package com.google.devtools.build.lib.skyframe.serialization.strings;
 
+import static com.google.devtools.build.lib.skyframe.serialization.UnsafeJdk9StringCodec.canUseUnsafeCodec;
+
+import com.google.common.collect.ImmutableList;
+import com.google.devtools.build.lib.skyframe.serialization.CodecRegisterer;
 import com.google.devtools.build.lib.skyframe.serialization.ObjectCodec;
-import java.util.logging.Logger;
+import com.google.devtools.build.lib.skyframe.serialization.UnsafeJdk9StringCodec;
 
 /** Utility for accessing (potentially platform-specific) {@link String} {@link ObjectCodec}s. */
 public final class StringCodecs {
 
-  private static final Logger logger = Logger.getLogger(StringCodecs.class.getName());
+  private static final StringCodec stringCodec = new StringCodec();
 
-  private static final StringCodec stringCodec;
-  private static final ObjectCodec<String> asciiOptimized;
+  private static final UnsafeJdk9StringCodec unsafeCodec =
+      canUseUnsafeCodec() ? new UnsafeJdk9StringCodec() : null;
 
-  static {
-    stringCodec = new StringCodec();
-    if (FastStringCodec.isAvailable()) {
-      asciiOptimized = new FastStringCodec();
-    } else {
-      logger.warning("Optimized string deserialization unavailable");
-      asciiOptimized = stringCodec;
+  /**
+   * Returns optimized singleton instance, if supported. Otherwise, returns a functional, but not
+   * optimized implementation. Currently supported on JDK9.
+   */
+  public static ObjectCodec<String> asciiOptimized() {
+    return unsafeCodec != null ? unsafeCodec : stringCodec;
+  }
+
+  static class UnsafeStringCodecRegisterer implements CodecRegisterer<UnsafeJdk9StringCodec> {
+    @Override
+    public Iterable<? extends ObjectCodec<?>> getCodecsToRegister() {
+      return canUseUnsafeCodec() ? ImmutableList.of(unsafeCodec) : ImmutableList.of();
     }
   }
 
-  private StringCodecs() {}
-
-  /**
-   * Returns whether or not optimized codecs are available. Exposed so users can check at runtime
-   * if the expected optimizations are applied.
-   */
-  public static boolean supportsOptimizedAscii() {
-    return asciiOptimized instanceof FastStringCodec;
+  static class SimpleStringCodecRegisterer implements CodecRegisterer<StringCodec> {
+    @Override
+    public Iterable<StringCodec> getCodecsToRegister() {
+      return canUseUnsafeCodec() ? ImmutableList.of() : ImmutableList.of(stringCodec);
+    }
   }
 
-  /**
-   * Returns singleton instance optimized for almost-always ASCII data, if supported. Otherwise,
-   * returns a functional, but not optimized implementation. To tell if the optimized version is
-   * supported see {@link #supportsOptimizedAscii()}.
-   *
-   * <p>Note that when optimized, this instance can still serialize/deserialize UTF-8 data, but with
-   *  potentially worse performance than {@link #simple()}.
-   */
-  public static ObjectCodec<String> asciiOptimized() {
-    return asciiOptimized;
-  }
-
-  /**
-   * Returns singleton instance of basic implementation. Should be preferred over
-   * {@link #asciiOptimized()} when a sufficient amount of UTF-8 data is expected.
-   */
+  /** Returns singleton instance of basic implementation. */
   public static ObjectCodec<String> simple() {
     return stringCodec;
   }

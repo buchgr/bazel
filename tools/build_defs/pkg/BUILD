@@ -1,9 +1,10 @@
+# -*- coding: utf-8 -*-
 licenses(["notice"])  # Apache 2.0
 
 filegroup(
     name = "srcs",
     srcs = glob(["**"]),
-    visibility = ["//tools:__pkg__"],
+    visibility = ["//tools/build_defs:__pkg__"],
 )
 
 exports_files(
@@ -31,7 +32,14 @@ py_test(
         "testenv.py",
     ],
     data = [":archive_testdata"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
+    tags = [
+        # archive.py requires xzcat, which is not available by default on Mac
+        "noci",
+        # TODO(laszlocsomor): fix on Windows or describe why it cannot pass.
+        "no_windows",
+    ],
     deps = [":archive"],
 )
 
@@ -45,6 +53,7 @@ py_test(
 py_binary(
     name = "build_tar",
     srcs = ["build_tar.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     visibility = ["//visibility:public"],
     deps = [
@@ -56,6 +65,7 @@ py_binary(
 py_binary(
     name = "make_deb",
     srcs = ["make_deb.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     visibility = ["//visibility:public"],
     deps = [
@@ -68,6 +78,18 @@ py_binary(
 py_binary(
     name = "make_rpm",
     srcs = ["make_rpm.py"],
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":make_rpm_lib",
+    ],
+)
+
+py_library(
+    name = "make_rpm_lib",
+    srcs = ["make_rpm.py"],
+    srcs_version = "PY2AND3",
     visibility = ["//visibility:public"],
     deps = [
         "//third_party/py/gflags",
@@ -77,8 +99,14 @@ py_binary(
 py_test(
     name = "make_rpm_test",
     srcs = ["make_rpm_test.py"],
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    # rpmbuild is not available in windows
+    tags = [
+        "no_windows",
+    ],
     deps = [
-        ":make_rpm",
+        ":make_rpm_lib",
     ],
 )
 
@@ -92,6 +120,29 @@ genrule(
         "usr/titi",
     ],
     cmd = "for i in $(OUTS); do echo 1 >$$i; done",
+)
+
+pkg_deb(
+    name = "test-deb",
+    built_using = "some_test_data (0.1.2)",
+    conffiles = [
+        "/etc/nsswitch.conf",
+        "/etc/other",
+    ],
+    config = ":testdata/config",
+    data = ":test-tar-gz.tar.gz",
+    depends = [
+        "dep1",
+        "dep2",
+    ],
+    description = "toto ®, Й, ק ,م, ๗, あ, 叶, 葉, 말, ü and é",
+    distribution = "trusty",
+    maintainer = "soméone@somewhere.com",
+    make_deb = ":make_deb",
+    package = "titi",
+    templates = ":testdata/templates",
+    urgency = "low",
+    version = "test",
 )
 
 [pkg_tar(
@@ -172,24 +223,34 @@ pkg_tar(
     },
 )
 
-pkg_deb(
-    name = "test-deb",
-    conffiles = [
-        "/etc/nsswitch.conf",
-        "/etc/other",
+pkg_tar(
+    name = "test-tar-empty_files",
+    build_tar = ":build_tar",
+    empty_files = [
+        "/a",
+        "/b",
     ],
-    data = ":test-tar-gz.tar.gz",
-    depends = [
-        "dep1",
-        "dep2",
+    mode = "0o777",
+)
+
+pkg_tar(
+    name = "test-tar-empty_dirs",
+    build_tar = ":build_tar",
+    empty_dirs = [
+        "/tmp",
+        "/pmt",
     ],
-    description = "toto",
-    distribution = "trusty",
-    maintainer = "someone@somewhere.com",
-    make_deb = ":make_deb",
-    package = "titi",
-    urgency = "low",
-    version = "test",
+    mode = "0o777",
+)
+
+pkg_tar(
+    name = "test-tar-mtime",
+    srcs = [
+        ":etc/nsswitch.conf",
+    ],
+    build_tar = ":build_tar",
+    mtime = 946684740,  # 1999-12-31, 23:59
+    portable_mtime = False,
 )
 
 sh_test(
@@ -203,12 +264,15 @@ sh_test(
         ":test-deb.deb",
         ":test-tar-.tar",
         ":test-tar-bz2.tar.bz2",
+        ":test-tar-empty_dirs.tar",
+        ":test-tar-empty_files.tar",
         ":test-tar-files_dict.tar",
         ":test-tar-gz.tar.gz",
         ":test-tar-inclusion-.tar",
         ":test-tar-inclusion-bz2.tar",
         ":test-tar-inclusion-gz.tar",
         ":test-tar-inclusion-xz.tar",
+        ":test-tar-mtime.tar",
         ":test-tar-strip_prefix-dot.tar",
         ":test-tar-strip_prefix-empty.tar",
         ":test-tar-strip_prefix-etc.tar",
@@ -216,7 +280,28 @@ sh_test(
         ":test-tar-xz.tar.xz",
         ":titi_test_all.changes",
     ],
+    tags = [
+        # archive.py requires xzcat, which is not available by default on Mac
+        "noci",
+        # TODO(laszlocsomor): fix on Windows or describe why it cannot pass.
+        "no_windows",
+    ],
     deps = [
         "//src/test/shell:bashunit",
     ],
+)
+
+test_suite(
+    name = "windows_tests",
+    tags = [
+        "-no_windows",
+        "-slow",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+test_suite(
+    name = "all_windows_tests",
+    tests = [":windows_tests"],
+    visibility = ["//tools/build_defs:__pkg__"],
 )

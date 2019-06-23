@@ -57,7 +57,7 @@ public class AggregatingAttributeMapperTest extends AbstractAttributeMapperTest 
 
   private static Label getDefaultMallocLabel(Rule rule) {
     return Verify.verifyNotNull(
-        (Label) rule.getRuleClassObject().getAttributeByName("malloc").getDefaultValueForTesting());
+        (Label) rule.getRuleClassObject().getAttributeByName("malloc").getDefaultValueUnchecked());
   }
 
   /**
@@ -145,9 +145,7 @@ public class AggregatingAttributeMapperTest extends AbstractAttributeMapperTest 
         "              '" + BuildType.Selector.DEFAULT_CONDITION_KEY + "': ['default.sh'],",
         "          }))");
 
-    VisitationRecorder recorder = new VisitationRecorder("srcs");
-    AggregatingAttributeMapper.of(rule).visitLabels(recorder);
-    assertThat(recorder.labelsVisited)
+    assertThat(getLabelsForAttribute(AggregatingAttributeMapper.of(rule), "srcs"))
         .containsExactlyElementsIn(
             ImmutableList.of(
                 "//a:a.sh", "//a:b.sh", "//a:default.sh", "//conditions:a", "//conditions:b"));
@@ -162,9 +160,7 @@ public class AggregatingAttributeMapperTest extends AbstractAttributeMapperTest 
         "        '//conditions:a': None,",
         "    }))");
 
-    VisitationRecorder recorder = new VisitationRecorder("malloc");
-    AggregatingAttributeMapper.of(rule).visitLabels(recorder);
-    assertThat(recorder.labelsVisited)
+    assertThat(getLabelsForAttribute(AggregatingAttributeMapper.of(rule), "malloc"))
         .containsExactly("//conditions:a", getDefaultMallocLabel(rule).toString());
   }
 
@@ -272,7 +268,7 @@ public class AggregatingAttributeMapperTest extends AbstractAttributeMapperTest 
     }
 
     @Override
-    public ConfiguredTarget create(RuleContext ruleContext) throws InterruptedException {
+    public ConfiguredTarget create(RuleContext ruleContext) {
       throw new UnsupportedOperationException();
     }
   }

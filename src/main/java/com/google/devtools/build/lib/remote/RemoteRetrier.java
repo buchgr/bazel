@@ -15,43 +15,22 @@
 package com.google.devtools.build.lib.remote;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Throwables;
+import com.google.common.util.concurrent.ListeningScheduledExecutorService;
+import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
+import java.io.IOException;
 import java.time.Duration;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
-/**
- * Specific retry logic for remote execution/caching.
- *
- * <p>A call can disable retries by throwing a {@link PassThroughException}.
- * <code>
- *   RemoteRetrier r = ...;
- *   try {
- *    r.execute(() -> {
- *      // Not retried.
- *      throw PassThroughException(new IOException("fail"));
- *    }
- *   } catch (RetryException2 e) {
- *     // e.getCause() is the IOException
- *     System.out.println(e.getCause());
- *   }
- * </code>
- */
-class RemoteRetrier extends Retrier2 {
-
-  /**
-   * Wraps around an {@link Exception} to make it pass through a single layer of retries.
-   */
-  public static class PassThroughException extends Exception {
-    public PassThroughException(Exception e) {
-      super(e);
-    }
-  }
+/** Specific retry logic for remote execution/caching. */
+public class RemoteRetrier extends Retrier {
 
   public static final Predicate<? super Exception> RETRIABLE_GRPC_ERRORS =
       e -> {
@@ -75,48 +54,62 @@ class RemoteRetrier extends Retrier2 {
         }
       };
 
-  public RemoteRetrier(RemoteOptions options, Predicate<? super Exception> shouldRetry,
+  public static final Predicate<? super Exception> RETRIABLE_GRPC_EXEC_ERRORS =
+      e -> {
+        if (RETRIABLE_GRPC_ERRORS.test(e)) {
+          return true;
+        }
+        return RemoteRetrierUtils.causedByStatus(e, Status.Code.NOT_FOUND);
+      };
+
+  public RemoteRetrier(
+      RemoteOptions options,
+      Predicate<? super Exception> shouldRetry,
+      ListeningScheduledExecutorService retryScheduler,
       CircuitBreaker circuitBreaker) {
-    this(options.experimentalRemoteRetry
-        ? () -> new ExponentialBackoff(options)
-        : () -> RETRIES_DISABLED,
+    this(
+        options.remoteMaxRetryAttempts > 0
+            ? () -> new ExponentialBackoff(options)
+            : () -> RETRIES_DISABLED,
         shouldRetry,
+        retryScheduler,
         circuitBreaker);
   }
 
-  public RemoteRetrier(Supplier<Backoff> backoff, Predicate<? super Exception> shouldRetry,
+  public RemoteRetrier(
+      Supplier<Backoff> backoff,
+      Predicate<? super Exception> shouldRetry,
+      ListeningScheduledExecutorService retryScheduler,
       CircuitBreaker circuitBreaker) {
-    super(backoff, supportPassthrough(shouldRetry), circuitBreaker);
+    super(backoff, shouldRetry, retryScheduler, circuitBreaker);
   }
 
   @VisibleForTesting
-  RemoteRetrier(Supplier<Backoff> backoff, Predicate<? super Exception> shouldRetry,
-      CircuitBreaker circuitBreaker, Sleeper sleeper) {
-    super(backoff, supportPassthrough(shouldRetry), circuitBreaker, sleeper);
+  public RemoteRetrier(
+      Supplier<Backoff> backoff,
+      Predicate<? super Exception> shouldRetry,
+      ListeningScheduledExecutorService retryScheduler,
+      CircuitBreaker circuitBreaker,
+      Sleeper sleeper) {
+    super(backoff, shouldRetry, retryScheduler, circuitBreaker, sleeper);
   }
 
+  /**
+   * Execute a callable with retries. {@link IOException} and {@link InterruptedException} are
+   * propagated directly to the caller. All other exceptions are wrapped in {@link RuntimeError}.
+   */
   @Override
-  public <T> T execute(Callable<T> call) throws RetryException2, InterruptedException {
+  public <T> T execute(Callable<T> call) throws IOException, InterruptedException {
     try {
       return super.execute(call);
-    } catch (RetryException2 e) {
-      if (e.getCause() instanceof PassThroughException) {
-        PassThroughException passThrough = (PassThroughException) e.getCause();
-        throw new RetryException2("Retries aborted because of PassThroughException",
-            e.getAttempts(), (Exception) passThrough.getCause());
-      }
-      throw e;
+    } catch (Exception e) {
+      Throwables.propagateIfInstanceOf(e, IOException.class);
+      Throwables.propagateIfInstanceOf(e, InterruptedException.class);
+      throw Throwables.propagate(e);
     }
   }
 
-
-  private static Predicate<? super Exception> supportPassthrough(
-      Predicate<? super Exception> delegate) {
-    // PassThroughException is not retriable.
-    return e -> !(e instanceof PassThroughException) && delegate.test(e);
-  }
-
-  static class ExponentialBackoff implements Retrier2.Backoff {
+  static class ExponentialBackoff implements Backoff {
 
     private final long maxMillis;
     private long nextDelayMillis;
@@ -149,11 +142,12 @@ class RemoteRetrier extends Retrier2 {
     }
 
     ExponentialBackoff(RemoteOptions options) {
-      this(Duration.ofMillis(options.experimentalRemoteRetryStartDelayMillis),
-          Duration.ofMillis(options.experimentalRemoteRetryMaxDelayMillis),
-          options.experimentalRemoteRetryMultiplier,
-          options.experimentalRemoteRetryJitter,
-          options.experimentalRemoteRetryMaxAttempts);
+      this(
+          /* initial = */ Duration.ofMillis(100),
+          /* max = */ Duration.ofSeconds(5),
+          /* multiplier= */ 2,
+          /* jitter= */ 0.1,
+          options.remoteMaxRetryAttempts);
     }
 
     @Override
@@ -175,6 +169,51 @@ class RemoteRetrier extends Retrier2 {
     @Override
     public int getRetryAttempts() {
       return attempts;
+    }
+  }
+
+  static class ProgressiveBackoff implements Backoff {
+
+    private final Supplier<Backoff> backoffSupplier;
+    private Backoff currentBackoff = null;
+    private int retries = 0;
+
+    /**
+     * Creates a resettable Backoff for progressive reads. After a reset, the nextDelay returned
+     * indicates an immediate retry. Initially and after indicating an immediate retry, a delegate
+     * is generated to provide nextDelay until reset.
+     *
+     * @param backoffSupplier Delegate Backoff generator
+     */
+    ProgressiveBackoff(Supplier<Backoff> backoffSupplier) {
+      this.backoffSupplier = backoffSupplier;
+      currentBackoff = backoffSupplier.get();
+    }
+
+    public void reset() {
+      if (currentBackoff != null) {
+        retries += currentBackoff.getRetryAttempts();
+      }
+      currentBackoff = null;
+    }
+
+    @Override
+    public long nextDelayMillis() {
+      if (currentBackoff == null) {
+        currentBackoff = backoffSupplier.get();
+        retries++;
+        return 0;
+      }
+      return currentBackoff.nextDelayMillis();
+    }
+
+    @Override
+    public int getRetryAttempts() {
+      int retryAttempts = retries;
+      if (currentBackoff != null) {
+        retryAttempts += currentBackoff.getRetryAttempts();
+      }
+      return retryAttempts;
     }
   }
 }

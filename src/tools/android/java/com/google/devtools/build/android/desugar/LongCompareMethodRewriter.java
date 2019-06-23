@@ -13,12 +13,13 @@
 // limitations under the License.
 package com.google.devtools.build.android.desugar;
 
-import static org.objectweb.asm.Opcodes.ASM5;
 import static org.objectweb.asm.Opcodes.INVOKESTATIC;
 import static org.objectweb.asm.Opcodes.LCMP;
 
+import com.google.devtools.build.android.desugar.io.CoreLibraryRewriter;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
 /**
  * This class rewrites any call to Long.compare with the JVM instruction lcmp that is semantically
@@ -26,8 +27,11 @@ import org.objectweb.asm.MethodVisitor;
  */
 public class LongCompareMethodRewriter extends ClassVisitor {
 
-  public LongCompareMethodRewriter(ClassVisitor cv) {
-    super(ASM5, cv);
+  private final CoreLibraryRewriter rewriter;
+
+  public LongCompareMethodRewriter(ClassVisitor cv, CoreLibraryRewriter rewriter) {
+    super(Opcodes.ASM7, cv);
+    this.rewriter = rewriter;
   }
 
   @Override
@@ -37,22 +41,22 @@ public class LongCompareMethodRewriter extends ClassVisitor {
     return visitor == null ? visitor : new LongCompareMethodVisitor(visitor);
   }
 
-  private static class LongCompareMethodVisitor extends MethodVisitor {
+  private class LongCompareMethodVisitor extends MethodVisitor {
 
     public LongCompareMethodVisitor(MethodVisitor visitor) {
-      super(ASM5, visitor);
+      super(Opcodes.ASM7, visitor);
     }
 
     @Override
     public void visitMethodInsn(int opcode, String owner, String name, String desc, boolean itf) {
-      if (opcode != INVOKESTATIC
-          || !owner.equals("java/lang/Long")
-          || !name.equals("compare")
-          || !desc.equals("(JJ)I")) {
+      if (opcode == INVOKESTATIC
+          && rewriter.unprefix(owner).equals("java/lang/Long")
+          && name.equals("compare")
+          && desc.equals("(JJ)I")) {
+        super.visitInsn(LCMP);
+      } else {
         super.visitMethodInsn(opcode, owner, name, desc, itf);
-        return;
       }
-      super.visitInsn(LCMP);
     }
   }
 }

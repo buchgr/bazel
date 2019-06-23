@@ -13,24 +13,18 @@
 // limitations under the License.
 package com.google.devtools.build.lib.pkgcache;
 
-import com.google.common.base.Function;
-import com.google.common.base.Functions;
 import com.google.devtools.build.lib.cmdline.LabelValidator;
-import com.google.devtools.build.lib.cmdline.PackageIdentifier;
-import com.google.devtools.build.lib.cmdline.ResolvedTargets;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
-import com.google.devtools.build.lib.cmdline.TargetPatternResolver;
+import com.google.devtools.build.lib.collect.compacthashset.CompactHashSet;
 import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import java.util.Collection;
 
 /**
  * Common utility methods for target pattern resolution.
  */
 public final class TargetPatternResolverUtil {
-
-  private static final Function<Target, Target> KEEP_ORIGINAL_TARGET = Functions.identity();
-
   private TargetPatternResolverUtil() {
     // Utility class.
   }
@@ -43,38 +37,17 @@ public final class TargetPatternResolverUtil {
     }
   }
 
-  public static ResolvedTargets<Target> resolvePackageTargets(Package pkg, FilteringPolicy policy) {
-    return resolvePackageTargets(pkg, policy, KEEP_ORIGINAL_TARGET);
-  }
-
-  public static ResolvedTargets<Target> resolvePackageTargets(
-      Package pkg, FilteringPolicy policy, Function<Target, Target> convertTarget) {
-    ResolvedTargets.Builder<Target> builder = ResolvedTargets.builder();
+  public static Collection<Target> resolvePackageTargets(Package pkg, FilteringPolicy policy) {
+    if (policy == FilteringPolicies.NO_FILTER) {
+      return pkg.getTargets().values();
+    }
+    CompactHashSet<Target> builder = CompactHashSet.create();
     for (Target target : pkg.getTargets().values()) {
       if (policy.shouldRetain(target, false)) {
-        builder.add(convertTarget.apply(target));
+        builder.add(target);
       }
     }
-    return builder.build();
-  }
-
-  public static void validatePatternPackage(
-      String originalPattern, PathFragment packageNameFragment, TargetPatternResolver<?> resolver)
-      throws TargetParsingException, InterruptedException {
-    String packageName = packageNameFragment.toString();
-    // It's possible for this check to pass, but for
-    // Label.validatePackageNameFull to report an error because the
-    // package name is illegal.  That's a little weird, but we can live with
-    // that for now--see test case: testBadPackageNameButGoodEnoughForALabel.
-    if (LabelValidator.validatePackageName(packageName) != null) {
-      throw new TargetParsingException("'" + packageName + "' is not a valid package name");
-    }
-    if (!resolver.isPackage(PackageIdentifier.createInMainRepo(packageName))) {
-      throw new TargetParsingException(
-          TargetPatternResolverUtil.getParsingErrorMessage(
-              "no such package '" + packageName + "': BUILD file not found on package path",
-              originalPattern));
-    }
+    return builder;
   }
 
   public static PathFragment getPathFragment(String pathPrefix) throws TargetParsingException {

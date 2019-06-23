@@ -14,67 +14,46 @@
 
 package com.google.devtools.build.lib.buildeventstream.transports;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-
 import com.google.devtools.build.lib.buildeventstream.ArtifactGroupNamer;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent;
-import com.google.devtools.build.lib.buildeventstream.BuildEventConverters;
+import com.google.devtools.build.lib.buildeventstream.BuildEventArtifactUploader;
+import com.google.devtools.build.lib.buildeventstream.BuildEventProtocolOptions;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
 import com.google.devtools.build.lib.buildeventstream.BuildEventTransport;
-import com.google.devtools.build.lib.buildeventstream.PathConverter;
+import com.google.protobuf.CodedOutputStream;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.concurrent.Future;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  * A simple {@link BuildEventTransport} that writes a varint delimited binary representation of
  * {@link BuildEvent} protocol buffers to a file.
  */
 public final class BinaryFormatFileTransport extends FileTransport {
-
-  private static final Logger logger = Logger.getLogger(BinaryFormatFileTransport.class.getName());
-
-  private static final int MAX_VARINT_BYTES = 9;
-  private final PathConverter pathConverter;
-
-  BinaryFormatFileTransport(String path, PathConverter pathConverter) {
-    super(path);
-    this.pathConverter = pathConverter;
+  public BinaryFormatFileTransport(
+      BufferedOutputStream outputStream,
+      BuildEventProtocolOptions options,
+      BuildEventArtifactUploader uploader,
+      ArtifactGroupNamer namer) {
+    super(outputStream, options, uploader, namer);
   }
 
   @Override
   public String name() {
     return this.getClass().getSimpleName();
   }
-  
+
   @Override
-  public synchronized void sendBuildEvent(BuildEvent event, final ArtifactGroupNamer namer) {
-    BuildEventConverters converters =
-        new BuildEventConverters() {
-          @Override
-          public PathConverter pathConverter() {
-            return pathConverter;
-          }
-          @Override
-          public ArtifactGroupNamer artifactGroupNamer() {
-            return namer;
-          }
-        };
-    checkNotNull(event);
-    BuildEventStreamProtos.BuildEvent protoEvent = event.asStreamProto(converters);
-
-    int maxSerializedSize = MAX_VARINT_BYTES + protoEvent.getSerializedSize();
-    ByteArrayOutputStream out = new ByteArrayOutputStream(maxSerializedSize);
-
+  protected byte[] serializeEvent(BuildEventStreamProtos.BuildEvent buildEvent) {
+    final int size = buildEvent.getSerializedSize();
+    ByteArrayOutputStream bos =
+        new ByteArrayOutputStream(CodedOutputStream.computeUInt32SizeNoTag(size) + size);
     try {
-      protoEvent.writeDelimitedTo(out);
-      writeData(out.toByteArray());
+      buildEvent.writeDelimitedTo(bos);
     } catch (IOException e) {
-      logger.log(Level.SEVERE, e.getMessage(), e);
-      @SuppressWarnings({"unused", "nullness"})
-      Future<?> possiblyIgnoredError = close();
+      throw new RuntimeException(
+          "Unexpected error serializing protobuf to in memory outputstream.", e);
     }
+    return bos.toByteArray();
   }
 }

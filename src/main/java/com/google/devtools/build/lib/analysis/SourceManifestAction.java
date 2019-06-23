@@ -18,11 +18,15 @@ import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.analysis.actions.AbstractFileWriteAction;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.BufferedWriter;
@@ -39,15 +43,14 @@ import java.util.Map;
 import javax.annotation.Nullable;
 
 /**
- * Action to create a manifest of input files for processing by a subsequent
- * build step (e.g. runfiles symlinking or archive building).
+ * Creates a manifest file describing a symlink tree.
  *
- * <p>The manifest's format is specifiable by {@link ManifestType}, in
- * accordance with the needs of the calling functionality.
+ * <p>In addition to symlink trees (whose manifests are a tree position -> exec path map), this
+ * action can also create manifest consisting of just exec paths for historical reasons.
  *
- * <p>Note that this action carefully avoids building the manifest content in
- * memory.
+ * <p>This action carefully avoids building the manifest content in memory because it can be large.
  */
+@AutoCodec
 @Immutable // if all ManifestWriter implementations are immutable
 public final class SourceManifestAction extends AbstractFileWriteAction {
 
@@ -79,6 +82,12 @@ public final class SourceManifestAction extends AbstractFileWriteAction {
      * Fulfills {@link com.google.devtools.build.lib.actions.AbstractAction#getRawProgressMessage()}
      */
     String getRawProgressMessage();
+
+    /**
+     * Fulfills {@link AbstractFileWriteAction#isRemotable()}.
+     * @return
+     */
+    boolean isRemotable();
   }
 
   /**
@@ -92,17 +101,18 @@ public final class SourceManifestAction extends AbstractFileWriteAction {
   private final Runfiles runfiles;
 
   /**
-   * Creates a new AbstractSourceManifestAction instance using latin1 encoding
-   * to write the manifest file and with a specified root path for manifest entries.
+   * Creates a new AbstractSourceManifestAction instance using latin1 encoding to write the manifest
+   * file and with a specified root path for manifest entries.
    *
    * @param manifestWriter the strategy to use to write manifest entries
    * @param owner the action owner
-   * @param output the file to which to write the manifest
+   * @param primaryOutput the file to which to write the manifest
    * @param runfiles runfiles
    */
-  private SourceManifestAction(ManifestWriter manifestWriter, ActionOwner owner, Artifact output,
-      Runfiles runfiles) {
-    super(owner, getDependencies(runfiles), output, false);
+  @VisibleForSerialization
+  SourceManifestAction(
+      ManifestWriter manifestWriter, ActionOwner owner, Artifact primaryOutput, Runfiles runfiles) {
+    super(owner, getDependencies(runfiles), primaryOutput, false);
     this.manifestWriter = manifestWriter;
     this.runfiles = runfiles;
   }
@@ -115,26 +125,25 @@ public final class SourceManifestAction extends AbstractFileWriteAction {
   @VisibleForTesting
   public void writeOutputFile(OutputStream out, EventHandler eventHandler)
       throws IOException {
-    writeFile(out, runfiles.getRunfilesInputs(eventHandler, getOwner().getLocation()));
+    writeFile(out,
+        runfiles.getRunfilesInputs(
+            eventHandler,
+            getOwner().getLocation(),
+            ArtifactPathResolver.IDENTITY));
   }
 
   @Override
   public DeterministicWriter newDeterministicWriter(ActionExecutionContext ctx)
       throws IOException {
     final Map<PathFragment, Artifact> runfilesInputs =
-        runfiles.getRunfilesInputs(ctx.getEventHandler(), getOwner().getLocation());
-    return new DeterministicWriter() {
-      @Override
-      public void writeOutputFile(OutputStream out) throws IOException {
-        writeFile(out, runfilesInputs);
-      }
-    };
+        runfiles.getRunfilesInputs(ctx.getEventHandler(), getOwner().getLocation(),
+            ctx.getPathResolver());
+    return out -> writeFile(out, runfilesInputs);
   }
 
   @Override
   public boolean isRemotable() {
-    // There is little gain to remoting these, since they include absolute path names inline.
-    return false;
+    return manifestWriter.isRemotable();
   }
 
   /**
@@ -192,29 +201,9 @@ public final class SourceManifestAction extends AbstractFileWriteAction {
   }
 
   @Override
-  protected String computeKey() {
-    Fingerprint f = new Fingerprint();
-    f.addString(GUID);
-    f.addBoolean(runfiles.getLegacyExternalRunfiles());
-    f.addPath(runfiles.getSuffix());
-    Map<PathFragment, Artifact> symlinks = runfiles.getSymlinksAsMap(null);
-    f.addInt(symlinks.size());
-    for (Map.Entry<PathFragment, Artifact> symlink : symlinks.entrySet()) {
-      f.addPath(symlink.getKey());
-      f.addPath(symlink.getValue().getPath());
-    }
-    Map<PathFragment, Artifact> rootSymlinks = runfiles.getRootSymlinksAsMap(null);
-    f.addInt(rootSymlinks.size());
-    for (Map.Entry<PathFragment, Artifact> rootSymlink : rootSymlinks.entrySet()) {
-      f.addPath(rootSymlink.getKey());
-      f.addPath(rootSymlink.getValue().getPath());
-    }
-
-    for (Artifact artifact : runfiles.getArtifactsWithoutMiddlemen()) {
-      f.addPath(artifact.getRootRelativePath());
-      f.addPath(artifact.getPath());
-    }
-    return f.hexDigestAndReset();
+  protected void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp) {
+    fp.addString(GUID);
+    runfiles.fingerprint(fp);
   }
 
   /**
@@ -253,6 +242,12 @@ public final class SourceManifestAction extends AbstractFileWriteAction {
       public String getRawProgressMessage() {
         return "Creating source manifest";
       }
+
+      @Override
+      public boolean isRemotable() {
+        // There is little gain to remoting these, since they include absolute path names inline.
+        return false;
+      }
     },
 
     /**
@@ -282,6 +277,12 @@ public final class SourceManifestAction extends AbstractFileWriteAction {
       public String getRawProgressMessage() {
         return "Creating file sources list";
       }
+
+      @Override
+      public boolean isRemotable() {
+        // Source-only symlink manifest has root-relative paths and does not include absolute paths.
+        return true;
+      }
     }
   }
 
@@ -302,10 +303,18 @@ public final class SourceManifestAction extends AbstractFileWriteAction {
 
     public Builder(String prefix, ManifestType manifestType, ActionOwner owner, Artifact output,
                    boolean legacyExternalRunfiles) {
-      this.runfilesBuilder = new Runfiles.Builder(prefix, legacyExternalRunfiles);
-      manifestWriter = manifestType;
+      this(manifestType, owner, output, new Runfiles.Builder(prefix, legacyExternalRunfiles));
+    }
+
+    public Builder(
+        ManifestType manifestType,
+        ActionOwner owner,
+        Artifact output,
+        Runfiles.Builder runfilesBuilder) {
+      this.manifestWriter = manifestType;
       this.owner = owner;
       this.output = output;
+      this.runfilesBuilder = runfilesBuilder;
     }
 
     @VisibleForTesting  // Only used for testing.

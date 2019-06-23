@@ -32,7 +32,7 @@ function write_py_files() {
   echo "py_binary(name = 'binary', srcs = ['binary.py'])" > py/BUILD
   echo "py_test(name = 'test', srcs = ['test.py'])" >> py/BUILD
 
-  echo "print 'Hello, Python World!'" >py/py.py
+  echo "print('Hello, Python World!')" >py/py.py
   chmod +x py/py.py
 
   ln -sf py.py py/binary.py
@@ -121,6 +121,13 @@ EOF
   assert_contains "pussycat" output || fail "Output is not OK."
 }
 
+function test_run_with_no_build_runfile_manifests {
+  write_cc_source_files
+
+  bazel run --nobuild_runfile_manifests //cc:kitty >& $TEST_log && fail "should have failed"
+  expect_log_once "--nobuild_runfile_manifests is incompatible with the \"run\" command"
+}
+
 function test_script_file_generation {
   mkdir -p fubar || fail "mkdir fubar failed"
   echo 'sh_binary(name = "fubar", srcs = ["fubar.sh"])' > fubar/BUILD
@@ -168,37 +175,6 @@ function test_consistent_command_line_encoding {
     || fail "${PRODUCT_NAME} test failed (--batch)"
 }
 
-function test_interrupt_kills_child() {
-  mkdir -p foo || fail "mkdir foo failed"
-  pipe_file="${TEST_TMPDIR}/sleep-minute-pipe"
-  rm -f "$pipe_file"
-  mkfifo "$pipe_file" || fail "make pipe failed"
-  echo 'sh_binary(name = "sleep-minute", srcs = ["sleep-minute.sh"])' > foo/BUILD
-  echo -e "#!/bin/sh\n"'echo $$ >'"${pipe_file}\n"'sleep 60' > foo/sleep-minute.sh
-  chmod +x foo/sleep-minute.sh
-  # Note that if bazel info is not executed before the actual bazel run, this script would have to
-  # be run in "monitor mode" (with the command set -m) for bazel or the server to receive SIGINT.
-  local serverpid=$(bazel info server_pid)
-  if [ -z $serverpid ]; then
-    fail "Couldn't get ${PRODUCT_NAME} server PID"
-  fi
-  (bazel run //foo:sleep-minute || true) &
-  local sleeppid
-  read sleeppid <"$pipe_file"
-  if [ -z $sleeppid ]; then
-    fail "${PRODUCT_NAME} run did not invoke shell script"
-  fi
-  kill -SIGINT $serverpid
-
-  # This test is a bit flaky, so we wait a bit more when the process still runs
-  # after 0.25s.
-  for i in 0.25 0.5 1 2; do
-    sleep $i
-    kill -0 $sleeppid 2> /dev/null || return 0
-  done
-  fail "Shell script still running after SIGINT sent to server"
-}
-
 # Tests bazel run with --color=no on a failed build does not produce color.
 function test_no_color_on_failed_run() {
   mkdir -p x || fail "mkdir failed"
@@ -225,7 +201,9 @@ function test_no_ansi_stripping_in_stdout_or_stderr() {
   echo "cc_binary(name = 'x', srcs = ['x.cc'])" > x/BUILD
   cat > x/x.cc <<EOF
 #include <unistd.h>
+#include <stdio.h>
 int main(int, char**) {
+  fprintf(stderr, "\nRUN START\n");
   const char out[] = {'<', 0x1B, '[', 'a', ',', 0x1B, '[', '1', '>', 0x0A};
   const char err[] = {'<', 0x1B, '[', 'b', ',', 0x1B, '[', '2', '>', 0x0A};
   write(1, out, 10);
@@ -241,6 +219,8 @@ EOF
   err1color=$(mktemp x/XXXXXX)
   err1nocolor=$(mktemp x/XXXXXX)
   err2=$(mktemp x/XXXXXX)
+  err2raw=$(mktemp x/XXXXXX)
+
 
   # TODO(katre): Figure out why progress rate limiting is required for this on darwin.
   add_to_bazelrc common --show_progress_rate_limit=0.03
@@ -249,21 +229,26 @@ EOF
   echo >> $err1raw_color
   echo >> $err1raw_nocolor
 
-  ${PRODUCT_NAME}-bin/x/x >$out2 2>$err2
-  echo >> $err2
+  ${PRODUCT_NAME}-bin/x/x >$out2 2>$err2raw
+  echo >> $err2raw
+
+  # Remove the first newline that is printed so that the output of Bazel can be
+  # separated from the output of the test binary
+  tail -n +2 $err2raw > $err2
 
   # Extract the binary's stderr from the raw stderr, which also contains bazel's
   # stderr; if present, remove a trailing ^[[0m (reset terminal to defaults).
   bazel_stderr_line_count_color=$(cat $err1raw_color \
-    | grep -n "Running command line: .*/x/x" \
+    | grep -n 'RUN START' \
     | awk -F ':' '{print $1}')
-  start=$(($bazel_stderr_line_count_color+1))
+  start="$bazel_stderr_line_count_color"
   tail -n +$start $err1raw_color | sed -e 's/.\[0m$//' >$err1color
 
+  cat $err1raw_nocolor
   bazel_stderr_line_count_nocolor=$(cat $err1raw_nocolor \
-    | grep -n "Running command line: .*/x/x" \
+    | grep -n 'RUN START' \
     | awk -F ':' '{print $1}')
-  start=$(($bazel_stderr_line_count_nocolor+1))
+  start="$bazel_stderr_line_count_nocolor"
   tail -n +$start $err1raw_nocolor >$err1nocolor
 
   diff $out1color $out2 >&$TEST_log || fail "stdout with --color=yes differs"
@@ -328,5 +313,45 @@ EOF
   bazel run //a:b >"$TEST_log" || fail "Expected success"
   expect_log "Dancing with wolves"
 }
+
+function test_run_for_custom_executable() {
+  mkdir -p a
+  cat > a/x.bzl <<EOF
+def _impl(ctx):
+  f = ctx.actions.declare_file("x.sh")
+  ctx.actions.write(f,
+      "#!/bin/sh\n"
+      + "if [ -z \$1 ]; then\\n"
+      + "   echo Run Forest run\\n"
+      + "else\\n"
+      + "   echo Run Forest run > \$1\\n"
+      + "fi",
+      is_executable=True)
+  return [DefaultInfo(executable=f)]
+
+my_rule = rule(_impl, executable = True)
+
+def _tool_impl(ctx):
+  f = ctx.actions.declare_file("output")
+  ctx.actions.run(executable = ctx.executable.tool,
+    inputs = [],
+    outputs = [f],
+    arguments = [f.path]
+  )
+  return DefaultInfo(files = depset([f]))
+my_tool_rule = rule(_tool_impl, attrs = { 'tool' : attr.label(executable = True, cfg = "host") })
+EOF
+
+cat > a/BUILD <<EOF
+load(":x.bzl", "my_rule", "my_tool_rule")
+my_rule(name = "zzz")
+my_tool_rule(name = "kkk", tool = ":zzz")
+EOF
+  bazel run //a:zzz > "$TEST_log" || fail "Expected success"
+  expect_log "Run Forest run"
+  bazel build //a:kkk > "$TEST_log" || fail "Expected success"
+  grep "Run Forest run" bazel-bin/a/output || fail "Output file wrong"
+}
+
 
 run_suite "'${PRODUCT_NAME} run' integration tests"

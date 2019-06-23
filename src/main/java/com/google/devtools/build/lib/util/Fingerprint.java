@@ -15,53 +15,54 @@
 package com.google.devtools.build.lib.util;
 
 import com.google.common.io.ByteStreams;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.protobuf.CodedOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.DigestException;
 import java.security.DigestOutputStream;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Consumer;
 import javax.annotation.Nullable;
 
 /**
- * Simplified wrapper for MD5 message digests.
+ * Simplified wrapper for computing message digests.
  *
  * @see java.security.MessageDigest
  */
-public final class Fingerprint {
-
-  private static final MessageDigest MD5_PROTOTYPE;
-  private static final boolean MD5_PROTOTYPE_SUPPORTS_CLONE;
-
-  static {
-    MD5_PROTOTYPE = getMd5Instance();
-    MD5_PROTOTYPE_SUPPORTS_CLONE = supportsClone(MD5_PROTOTYPE);
-  }
+public final class Fingerprint implements Consumer<String> {
 
   // Make novel use of a CodedOutputStream, which is good at efficiently serializing data. By
   // flushing at the end of each digest we can continue to use the stream.
   private final CodedOutputStream codedOut;
-  private final MessageDigest md5;
+  private final MessageDigest messageDigest;
 
   /** Creates and initializes a new instance. */
-  public Fingerprint() {
-    md5 = cloneOrCreateMd5();
+  public Fingerprint(DigestHashFunction digestFunction) {
+    messageDigest = digestFunction.cloneOrCreateMessageDigest();
     // This is a lot of indirection, but CodedOutputStream does a reasonable job of converting
     // strings to bytes without creating a whole bunch of garbage, which pays off.
-    codedOut = CodedOutputStream.newInstance(
-        new DigestOutputStream(ByteStreams.nullOutputStream(), md5),
-        /*bufferSize=*/ 1024);
+    codedOut =
+        CodedOutputStream.newInstance(
+            new DigestOutputStream(ByteStreams.nullOutputStream(), messageDigest),
+            /*bufferSize=*/ 1024);
+  }
+
+  public Fingerprint() {
+    // TODO(b/112460990): Use the value from DigestHashFunction.getDefault(), but check for
+    // contention.
+    this(DigestHashFunction.MD5);
   }
 
   /**
    * Completes the hash computation by doing final operations and resets the underlying state,
    * allowing this instance to be used again.
    *
-   * @return the MD5 digest as a 16-byte array
+   * @return the digest as a 16-byte array
    * @see java.security.MessageDigest#digest()
    */
   public byte[] digestAndReset() {
@@ -70,7 +71,27 @@ public final class Fingerprint {
     } catch (IOException e) {
       throw new IllegalStateException("failed to flush", e);
     }
-    return md5.digest();
+    return messageDigest.digest();
+  }
+
+  /**
+   * Completes the hash computation by doing final operations and resets the underlying state,
+   * allowing this instance to be used again.
+   *
+   * <p>Instead of returning a digest, this method writes the digest straight into the supplied byte
+   * array, at the given offset.
+   *
+   * @see java.security.MessageDigest#digest()
+   */
+  public void digestAndReset(byte[] buf, int offset, int len) {
+    try {
+      codedOut.flush();
+      messageDigest.digest(buf, offset, len);
+    } catch (IOException e) {
+      throw new IllegalStateException("failed to flush", e);
+    } catch (DigestException e) {
+      throw new IllegalStateException("failed to digest", e);
+    }
   }
 
   /** Same as {@link #digestAndReset()}, except returns the digest in hex string form. */
@@ -99,7 +120,7 @@ public final class Fingerprint {
     try {
       codedOut.writeBoolNoTag(input);
     } catch (IOException e) {
-      throw new IllegalStateException();
+      throw new IllegalStateException(e);
     }
     return this;
   }
@@ -119,6 +140,16 @@ public final class Fingerprint {
   public Fingerprint addInt(int input) {
     try {
       codedOut.writeInt32NoTag(input);
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
+    }
+    return this;
+  }
+
+  /** Updates the digest with the signed varint representation of input. */
+  Fingerprint addSInt(int input) {
+    try {
+      codedOut.writeSInt32NoTag(input);
     } catch (IOException e) {
       throw new IllegalStateException(e);
     }
@@ -228,18 +259,6 @@ public final class Fingerprint {
     return this;
   }
 
-  private static MessageDigest cloneOrCreateMd5() {
-    if (MD5_PROTOTYPE_SUPPORTS_CLONE) {
-      try {
-        return (MessageDigest) MD5_PROTOTYPE.clone();
-      } catch (CloneNotSupportedException e) {
-        throw new IllegalStateException("Could not clone md5", e);
-      }
-    } else {
-      return getMd5Instance();
-    }
-  }
-
   private static String hexDigest(byte[] digest) {
     StringBuilder b = new StringBuilder(32);
     for (int i = 0; i < digest.length; i++) {
@@ -250,32 +269,26 @@ public final class Fingerprint {
     return b.toString();
   }
 
-  private static MessageDigest getMd5Instance() {
-    try {
-      return MessageDigest.getInstance("md5");
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("md5 not available", e);
-    }
-  }
-
-  private static boolean supportsClone(MessageDigest toCheck) {
-    try {
-      toCheck.clone();
-      return true;
-    } catch (CloneNotSupportedException e) {
-      return false;
-    }
-  }
-
   // -------- Convenience methods ----------------------------
 
   /**
-   * Computes the hex digest from a String using UTF8 encoding and returning
-   * the hexDigest().
+   * Computes the hex digest from a String using UTF8 encoding and returning the hexDigest().
    *
    * @param input the String from which to compute the digest
    */
-  public static String md5Digest(String input) {
-    return hexDigest(cloneOrCreateMd5().digest(input.getBytes(StandardCharsets.UTF_8)));
+  public static String getHexDigest(String input) {
+    // TODO(b/112460990): This convenience method, if kept should not use MD5 by default, but should
+    // use the value from DigestHashFunction.getDefault(). However, this gets called during class
+    // loading in a few places, before setDefault() has been called, so these call-sites should be
+    // removed before this can be done safely.
+    return hexDigest(
+        DigestHashFunction.MD5
+            .cloneOrCreateMessageDigest()
+            .digest(input.getBytes(StandardCharsets.UTF_8)));
+  }
+
+  @Override
+  public void accept(String s) {
+    addString(s);
   }
 }

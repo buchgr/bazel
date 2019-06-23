@@ -13,11 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis.actions;
 
+import com.google.devtools.build.lib.actions.AbstractAction;
 import com.google.devtools.build.lib.actions.ActionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ExecException;
-import com.google.devtools.build.lib.actions.SpawnResult;
-import java.util.Set;
+import com.google.devtools.build.lib.actions.SpawnContinuation;
+import com.google.devtools.build.lib.analysis.actions.AbstractFileWriteAction.DeterministicWriter;
 
 /**
  * The action context for {@link AbstractFileWriteAction} instances (technically instances of
@@ -26,11 +27,14 @@ import java.util.Set;
 public interface FileWriteActionContext extends ActionContext {
 
   /**
-   * Performs all the setup and then calls back into the action to write the data.
-   *
-   * @return a set of SpawnResults created during execution, if any
+   * Writes the output created by the {@link DeterministicWriter} to the sole output of the given
+   * action.
    */
-  Set<SpawnResult> exec(
-      AbstractFileWriteAction action, ActionExecutionContext actionExecutionContext)
+  SpawnContinuation beginWriteOutputToFile(
+      AbstractAction action,
+      ActionExecutionContext actionExecutionContext,
+      DeterministicWriter deterministicWriter,
+      boolean makeExecutable,
+      boolean isRemotable)
       throws ExecException, InterruptedException;
 }

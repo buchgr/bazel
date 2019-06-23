@@ -15,21 +15,21 @@ package com.google.devtools.build.lib.standalone;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
 import com.google.common.eventbus.EventBus;
-import com.google.devtools.build.lib.actions.ActionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
-import com.google.devtools.build.lib.actions.BaseSpawn;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ResourceManager;
 import com.google.devtools.build.lib.actions.ResourceSet;
+import com.google.devtools.build.lib.actions.SimpleSpawn;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnActionContext;
 import com.google.devtools.build.lib.actions.SpawnResult;
@@ -39,11 +39,11 @@ import com.google.devtools.build.lib.analysis.ServerDirectories;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.events.PrintingEventHandler;
 import com.google.devtools.build.lib.events.Reporter;
-import com.google.devtools.build.lib.exec.ActionContextProvider;
+import com.google.devtools.build.lib.exec.BinTools;
 import com.google.devtools.build.lib.exec.BlazeExecutor;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.exec.SingleBuildFileCache;
-import com.google.devtools.build.lib.exec.local.LocalEnvProvider;
+import com.google.devtools.build.lib.exec.SpawnActionContextMaps;
 import com.google.devtools.build.lib.exec.local.LocalExecutionOptions;
 import com.google.devtools.build.lib.exec.local.LocalSpawnRunner;
 import com.google.devtools.build.lib.integration.util.IntegrationMock;
@@ -52,15 +52,13 @@ import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.FileSystem;
-import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.util.FileSystems;
 import com.google.devtools.common.options.Options;
 import com.google.devtools.common.options.OptionsParser;
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.Collection;
-import java.util.Set;
+import java.util.List;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -89,7 +87,7 @@ public class StandaloneSpawnStrategyTest {
     fileSystem = FileSystems.getNativeFileSystem();
     Path testRoot = fileSystem.getPath(TestUtils.tmpDir());
     try {
-      FileSystemUtils.deleteTreesBelow(testRoot);
+      testRoot.deleteTreesBelow();
     } catch (IOException e) {
       System.err.println("Failed to remove directory " + testRoot + ": " + e.getMessage());
       throw e;
@@ -110,46 +108,55 @@ public class StandaloneSpawnStrategyTest {
 
     BlazeDirectories directories =
         new BlazeDirectories(
-            new ServerDirectories(outputBase, outputBase), workspaceDir, "mock-product-name");
+            new ServerDirectories(outputBase, outputBase, outputBase),
+            workspaceDir,
+            /* defaultSystemJavabase= */ null,
+            "mock-product-name");
     // This call implicitly symlinks the integration bin tools into the exec root.
-    IntegrationMock.get().getIntegrationBinTools(directories, TestConstants.WORKSPACE_NAME);
-    OptionsParser optionsParser = OptionsParser.newOptionsParser(ExecutionOptions.class);
+    IntegrationMock.get().getIntegrationBinTools(fileSystem, directories);
+    OptionsParser optionsParser =
+        OptionsParser.builder().optionsClasses(ExecutionOptions.class).build();
     optionsParser.parse("--verbose_failures");
     LocalExecutionOptions localExecutionOptions = Options.getDefaults(LocalExecutionOptions.class);
 
-    EventBus bus = new EventBus();
-
     ResourceManager resourceManager = ResourceManager.instanceForTestingOnly();
     resourceManager.setAvailableResources(
-        ResourceSet.create(/*memoryMb=*/1, /*cpuUsage=*/1, /*ioUsage=*/1, /*localTestCount=*/1));
+        ResourceSet.create(/*memoryMb=*/1, /*cpuUsage=*/1, /*localTestCount=*/1));
     Path execRoot = directories.getExecRoot(TestConstants.WORKSPACE_NAME);
     this.executor =
         new BlazeExecutor(
+            fileSystem,
             execRoot,
             reporter,
-            bus,
             BlazeClock.instance(),
             optionsParser,
-            ImmutableList.<ActionContext>of(),
-            ImmutableMap.<String, SpawnActionContext>of(
-                "",
-                new StandaloneSpawnStrategy(
-                    new LocalSpawnRunner(
-                        execRoot,
-                        localExecutionOptions,
-                        resourceManager,
-                        "mock-product-name",
-                        LocalEnvProvider.UNMODIFIED))),
-            ImmutableList.<ActionContextProvider>of());
+            SpawnActionContextMaps.createStub(
+                ImmutableList.of(),
+                ImmutableMap.of(
+                    "",
+                    ImmutableList.of(
+                        new StandaloneSpawnStrategy(
+                            execRoot,
+                            new LocalSpawnRunner(
+                                execRoot,
+                                localExecutionOptions,
+                                resourceManager,
+                                (env, unusedBinTools, unusedFallbackTempDir) -> env,
+                                BinTools.forIntegrationTesting(
+                                    directories, ImmutableList.of())))))),
+            ImmutableList.of());
 
-    executor.getExecRoot().createDirectory();
+    executor.getExecRoot().createDirectoryAndParents();
   }
 
   private Spawn createSpawn(String... arguments) {
-    return new BaseSpawn.Local(
-        Arrays.asList(arguments),
-        ImmutableMap.<String, String>of(),
+    return new SimpleSpawn(
         new ActionsTestUtil.NullAction(),
+        ImmutableList.copyOf(arguments),
+        /*environment=*/ ImmutableMap.of(),
+        /*executionInfo=*/ ImmutableMap.of(),
+        /*inputs=*/ ImmutableList.of(),
+        /*outputs=*/ ImmutableList.of(),
         ResourceSet.ZERO);
   }
 
@@ -163,14 +170,14 @@ public class StandaloneSpawnStrategyTest {
   @Test
   public void testBinTrueExecutesFine() throws Exception {
     Spawn spawn = createSpawn(getTrueCommand());
-    executor.getSpawnActionContext(spawn.getMnemonic()).exec(spawn, createContext());
+    executor.getContext(SpawnActionContext.class).exec(spawn, createContext());
 
     assertThat(out()).isEmpty();
     assertThat(err()).isEmpty();
   }
 
-  private Set<SpawnResult> run(Spawn spawn) throws Exception {
-    return executor.getSpawnActionContext(spawn.getMnemonic()).exec(spawn, createContext());
+  private List<SpawnResult> run(Spawn spawn) throws Exception {
+    return executor.getContext(SpawnActionContext.class).exec(spawn, createContext());
   }
 
   private ActionExecutionContext createContext() {
@@ -179,22 +186,23 @@ public class StandaloneSpawnStrategyTest {
         executor,
         new SingleBuildFileCache(execRoot.getPathString(), execRoot.getFileSystem()),
         ActionInputPrefetcher.NONE,
-        null,
+        new ActionKeyContext(),
+        /*metadataHandler=*/ null,
         outErr,
-        ImmutableMap.<String, String>of(),
-        SIMPLE_ARTIFACT_EXPANDER);
+        reporter,
+        /*clientEnv=*/ ImmutableMap.of(),
+        /*topLevelFilesets=*/ ImmutableMap.of(),
+        SIMPLE_ARTIFACT_EXPANDER,
+        /*actionFileSystem=*/ null,
+        /*skyframeDepsResult=*/ null);
   }
 
   @Test
   public void testBinFalseYieldsException() throws Exception {
-    try {
-      run(createSpawn(getFalseCommand()));
-      fail();
-    } catch (ExecException e) {
-      assertWithMessage("got: " + e.getMessage())
-          .that(e.getMessage().startsWith("false failed: error executing command"))
-          .isTrue();
-    }
+    ExecException e = assertThrows(ExecException.class, () -> run(createSpawn(getFalseCommand())));
+    assertWithMessage("got: " + e.getMessage())
+        .that(e.getMessage().startsWith("false failed: error executing command"))
+        .isTrue();
   }
 
   private static String getFalseCommand() {
@@ -228,10 +236,13 @@ public class StandaloneSpawnStrategyTest {
       // down where that env var is coming from.
       return;
     }
-    Spawn spawn = new BaseSpawn.Local(
-        Arrays.asList("/usr/bin/env"),
-        ImmutableMap.of("foo", "bar", "baz", "boo"),
+    Spawn spawn = new SimpleSpawn(
         new ActionsTestUtil.NullAction(),
+        ImmutableList.of("/usr/bin/env"),
+        /*environment=*/ ImmutableMap.of("foo", "bar", "baz", "boo"),
+        /*executionInfo=*/ ImmutableMap.of(),
+        /*inputs=*/ ImmutableList.of(),
+        /*outputs=*/ ImmutableList.of(),
         ResourceSet.ZERO);
     run(spawn);
     assertThat(Sets.newHashSet(out().split("\n"))).isEqualTo(Sets.newHashSet("foo=bar", "baz=boo"));

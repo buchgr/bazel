@@ -21,12 +21,11 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ParamFileInfo;
 import com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.actions.CustomCommandLine;
-import com.google.devtools.build.lib.analysis.actions.ParamFileInfo;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
-import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -44,10 +43,16 @@ public class ResourceJarActionBuilder {
   private ImmutableList<Artifact> classpathResources = ImmutableList.of();
   private List<Artifact> messages = ImmutableList.of();
   private JavaToolchainProvider javaToolchain;
-  private NestedSet<Artifact> javabase;
+  private JavaRuntimeInfo javabase;
+  private NestedSet<Artifact> additionalInputs = NestedSetBuilder.emptySet(Order.STABLE_ORDER);
 
   public ResourceJarActionBuilder setOutputJar(Artifact outputJar) {
     this.outputJar = outputJar;
+    return this;
+  }
+
+  public ResourceJarActionBuilder setAdditionalInputs(NestedSet<Artifact> additionalInputs) {
+    this.additionalInputs = additionalInputs;
     return this;
   }
 
@@ -77,8 +82,8 @@ public class ResourceJarActionBuilder {
     return this;
   }
 
-  public ResourceJarActionBuilder setJavabase(NestedSet<Artifact> javabase) {
-    this.javabase = javabase;
+  public ResourceJarActionBuilder setHostJavaRuntime(JavaRuntimeInfo javaRuntimeInfo) {
+    this.javabase = javaRuntimeInfo;
     return this;
   }
 
@@ -88,17 +93,11 @@ public class ResourceJarActionBuilder {
     checkNotNull(javaToolchain, "javaToolchain must not be null");
 
     Artifact singleJar = javaToolchain.getSingleJar();
-    if (singleJar == null) {
-      singleJar = ruleContext.getPrerequisiteArtifact("$singlejar", Mode.HOST);
-    }
     SpawnAction.Builder builder = new SpawnAction.Builder();
     if (singleJar.getFilename().endsWith(".jar")) {
       builder
-          .setJarExecutable(
-              JavaCommon.getHostJavaExecutable(ruleContext),
-              singleJar,
-              javaToolchain.getJvmOptions())
-          .addTransitiveInputs(javabase);
+          .setJarExecutable(javabase.javaBinaryExecPath(), singleJar, javaToolchain.getJvmOptions())
+          .addTransitiveInputs(javabase.javaBaseInputsMiddleman());
     } else {
       builder.setExecutable(singleJar);
     }
@@ -133,7 +132,7 @@ public class ResourceJarActionBuilder {
     // the params file in situations where it is required for --min_param_file_size.
     if (sizeGreaterThanOrEqual(
             Iterables.concat(messages, resources.values(), resourceJars, classpathResources), 10)
-        || ruleContext.getConfiguration().getMinParamFileSize() < 10000) {
+        || ruleContext.getConfiguration().getCommandLineLimits().maxLength < 10000) {
       paramFileInfo = ParamFileInfo.builder(ParameterFileType.SHELL_QUOTED).build();
     }
     ruleContext.registerAction(
@@ -142,6 +141,7 @@ public class ResourceJarActionBuilder {
             .addInputs(messages)
             .addInputs(resources.values())
             .addTransitiveInputs(resourceJars)
+            .addTransitiveInputs(additionalInputs)
             .addInputs(classpathResources)
             .addCommandLine(command.build(), paramFileInfo)
             .setProgressMessage("Building Java resource jar")

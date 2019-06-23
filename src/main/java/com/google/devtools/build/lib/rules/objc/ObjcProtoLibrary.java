@@ -16,13 +16,14 @@ package com.google.devtools.build.lib.rules.objc;
 
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.rules.proto.ProtoSourcesProvider;
+import com.google.devtools.build.lib.rules.proto.ProtoInfo;
 
 /**
  * Implementation for the "objc_proto_library" rule.
@@ -30,28 +31,28 @@ import com.google.devtools.build.lib.rules.proto.ProtoSourcesProvider;
 public class ObjcProtoLibrary implements RuleConfiguredTargetFactory {
   @Override
   public ConfiguredTarget create(final RuleContext ruleContext)
-      throws InterruptedException, RuleErrorException {
+      throws InterruptedException, RuleErrorException, ActionConflictException {
     new ProtoAttributes(ruleContext).validate();
     return createProtobufTarget(ruleContext);
   }
 
   private ConfiguredTarget createProtobufTarget(RuleContext ruleContext)
-      throws InterruptedException, RuleErrorException {
+      throws InterruptedException, RuleErrorException, ActionConflictException {
     NestedSetBuilder<Artifact> filesToBuild = NestedSetBuilder.stableOrder();
 
-    Iterable<ProtoSourcesProvider> protoProviders =
-        ruleContext.getPrerequisites("deps", Mode.TARGET, ProtoSourcesProvider.class);
+    Iterable<ProtoInfo> protoInfos =
+        ruleContext.getPrerequisites("deps", Mode.TARGET, ProtoInfo.PROVIDER);
 
     Iterable<ObjcProtoProvider> objcProtoProviders =
-        ruleContext.getPrerequisites("deps", Mode.TARGET, ObjcProtoProvider.class);
+        ruleContext.getPrerequisites("deps", Mode.TARGET, ObjcProtoProvider.SKYLARK_CONSTRUCTOR);
 
     ProtobufSupport protoSupport =
         new ProtobufSupport(
                 ruleContext,
                 ruleContext.getConfiguration(),
-                protoProviders,
+                protoInfos,
                 objcProtoProviders,
-                getPortableProtoFilters(ruleContext, objcProtoProviders, protoProviders))
+                getPortableProtoFilters(ruleContext, objcProtoProviders, protoInfos))
             .registerGenerationActions()
             .addFilesToBuild(filesToBuild);
 
@@ -63,7 +64,7 @@ public class ObjcProtoLibrary implements RuleConfiguredTargetFactory {
   private static NestedSet<Artifact> getPortableProtoFilters(
       RuleContext ruleContext,
       Iterable<ObjcProtoProvider> objcProtoProviders,
-      Iterable<ProtoSourcesProvider> protoProviders) {
+      Iterable<ProtoInfo> protoInfos) {
     ProtoAttributes attributes = new ProtoAttributes(ruleContext);
     NestedSetBuilder<Artifact> portableProtoFilters = NestedSetBuilder.stableOrder();
 
@@ -74,13 +75,11 @@ public class ObjcProtoLibrary implements RuleConfiguredTargetFactory {
     // direct proto_library targets, and generate a filter only for those files.
     if (attributes.hasPortableProtoFilters()) {
       portableProtoFilters.addAll(attributes.getPortableProtoFilters());
-    } else if (!Iterables.isEmpty(protoProviders)) {
+    } else if (!Iterables.isEmpty(protoInfos)) {
       Artifact generatedFilter = ProtobufSupport.getGeneratedPortableFilter(ruleContext,
           ruleContext.getConfiguration());
       ProtobufSupport.registerPortableFilterGenerationAction(
-          ruleContext,
-          generatedFilter,
-          protoProviders);
+          ruleContext, generatedFilter, protoInfos);
       portableProtoFilters.add(generatedFilter);
     }
 

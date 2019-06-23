@@ -14,15 +14,20 @@
 
 package com.google.devtools.build.lib.skyframe;
 
+import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.actions.FileValue;
+import com.google.devtools.build.lib.actions.InconsistentFilesystemException;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.BuildFileNotFoundException;
 import com.google.devtools.build.lib.packages.RuleClassProvider;
 import com.google.devtools.build.lib.syntax.BuildFileAST;
 import com.google.devtools.build.lib.syntax.Mutability;
 import com.google.devtools.build.lib.syntax.Runtime;
-import com.google.devtools.build.lib.syntax.SkylarkSemantics;
+import com.google.devtools.build.lib.syntax.StarlarkSemantics;
+import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
@@ -54,9 +59,10 @@ public class ASTFileLookupFunction implements SkyFunction {
     Label fileLabel = (Label) skyKey.argument();
     PathFragment filePathFragment = fileLabel.toPathFragment();
 
-    //
     // Determine whether the package designated by fileLabel exists.
-    //
+    // TODO(bazel-team): After --incompatible_disallow_load_labels_to_cross_package_boundaries is
+    // removed and the new behavior is unconditional, we can instead safely assume the package
+    // exists and pass in the Root in the SkyKey and therefore this dep can be removed.
     SkyKey pkgSkyKey = PackageLookupValue.key(fileLabel.getPackageIdentifier());
     PackageLookupValue pkgLookupValue = null;
     try {
@@ -75,39 +81,34 @@ public class ASTFileLookupFunction implements SkyFunction {
       return ASTFileLookupValue.forBadPackage(fileLabel, pkgLookupValue.getErrorMsg());
     }
 
-    //
     // Determine whether the file designated by fileLabel exists.
-    //
-    Path packageRoot = pkgLookupValue.getRoot();
+    Root packageRoot = pkgLookupValue.getRoot();
     RootedPath rootedPath = RootedPath.toRootedPath(packageRoot, filePathFragment);
     SkyKey fileSkyKey = FileValue.key(rootedPath);
     FileValue fileValue = null;
     try {
-      fileValue = (FileValue) env.getValueOrThrow(fileSkyKey, IOException.class,
-          FileSymlinkException.class, InconsistentFilesystemException.class);
-    } catch (IOException e) {
-      throw new ASTLookupFunctionException(new ErrorReadingSkylarkExtensionException(e),
-          Transience.PERSISTENT);
-    } catch (FileSymlinkException e) {
-      throw new ASTLookupFunctionException(new ErrorReadingSkylarkExtensionException(e),
-          Transience.PERSISTENT);
+      fileValue = (FileValue) env.getValueOrThrow(fileSkyKey, IOException.class);
     } catch (InconsistentFilesystemException e) {
       throw new ASTLookupFunctionException(e, Transience.PERSISTENT);
+    } catch (IOException e) {
+      throw new ASTLookupFunctionException(
+          new ErrorReadingSkylarkExtensionException(e), Transience.PERSISTENT);
     }
     if (fileValue == null) {
       return null;
     }
+    if (!fileValue.exists()) {
+      return ASTFileLookupValue.forMissingFile(fileLabel);
+    }
     if (!fileValue.isFile()) {
       return ASTFileLookupValue.forBadFile(fileLabel);
     }
-    SkylarkSemantics skylarkSemantics = PrecomputedValue.SKYLARK_SEMANTICS.get(env);
-    if (skylarkSemantics == null) {
+    StarlarkSemantics starlarkSemantics = PrecomputedValue.STARLARK_SEMANTICS.get(env);
+    if (starlarkSemantics == null) {
       return null;
     }
 
-    //
     // Both the package and the file exist; load the file and parse it as an AST.
-    //
     BuildFileAST ast = null;
     Path path = rootedPath.asPath();
     try {
@@ -118,16 +119,20 @@ public class ASTFileLookupFunction implements SkyFunction {
                 .createSkylarkRuleClassEnvironment(
                     fileLabel,
                     mutability,
-                    skylarkSemantics,
+                    starlarkSemantics,
                     env.getListener(),
-                    // the two below don't matter for extracting the ValidationEnvironment:
+                    // the three below don't matter for extracting the ValidationEnvironment:
                     /*astFileContentHashCode=*/ null,
-                    /*importMap=*/ null)
+                    /*importMap=*/ null,
+                    /*repoMapping=*/ ImmutableMap.of())
                 .setupDynamic(Runtime.PKG_NAME, Runtime.NONE)
                 .setupDynamic(Runtime.REPOSITORY_NAME, Runtime.NONE);
-          ast = BuildFileAST.parseSkylarkFile(path, astFileSize, env.getListener());
-          ast = ast.validate(validationEnv, env.getListener());
-        }
+        byte[] bytes = FileSystemUtils.readWithKnownFileSize(path, astFileSize);
+        ast =
+            BuildFileAST.parseSkylarkFile(
+                bytes, path.getDigest(), path.asFragment(), env.getListener());
+        ast = ast.validate(validationEnv, env.getListener());
+      }
     } catch (IOException e) {
       throw new ASTLookupFunctionException(new ErrorReadingSkylarkExtensionException(e),
           Transience.TRANSIENT);

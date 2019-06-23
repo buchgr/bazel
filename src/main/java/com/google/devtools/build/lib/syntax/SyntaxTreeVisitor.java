@@ -92,7 +92,9 @@ public class SyntaxTreeVisitor {
   }
 
   public void visit(LoadStatement node) {
-    visitAll(node.getSymbols());
+    for (LoadStatement.Binding binding : node.getBindings()) {
+      visit(binding.getLocalName());
+    }
   }
 
   public void visit(ListLiteral node) {
@@ -141,6 +143,8 @@ public class SyntaxTreeVisitor {
     visitBlock(node.getStatements());
   }
 
+  public void visit(PassStatement node) {}
+
   public void visit(ReturnStatement node) {
     if (node.getReturnExpression() != null) {
       visit(node.getReturnExpression());
@@ -175,9 +179,15 @@ public class SyntaxTreeVisitor {
 
   public void visit(SliceExpression node) {
     visit(node.getObject());
-    visit(node.getStart());
-    visit(node.getEnd());
-    visit(node.getStep());
+    if (node.getStart() != null) {
+      visit(node.getStart());
+    }
+    if (node.getEnd() != null) {
+      visit(node.getEnd());
+    }
+    if (node.getStep() != null) {
+      visit(node.getStep());
+    }
   }
 
   public void visit(@SuppressWarnings("unused") Comment node) {}

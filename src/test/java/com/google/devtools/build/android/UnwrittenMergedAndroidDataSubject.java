@@ -14,40 +14,35 @@
 package com.google.devtools.build.android;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
 
 import com.google.common.base.Objects;
-import com.google.common.truth.FailureStrategy;
+import com.google.common.truth.FailureMetadata;
 import com.google.common.truth.Subject;
-import com.google.common.truth.SubjectFactory;
 import javax.annotation.Nullable;
 
-class UnwrittenMergedAndroidDataSubject
-    extends Subject<UnwrittenMergedAndroidDataSubject, UnwrittenMergedAndroidData> {
+class UnwrittenMergedAndroidDataSubject extends Subject {
 
-  static final SubjectFactory<UnwrittenMergedAndroidDataSubject, UnwrittenMergedAndroidData>
-      FACTORY =
-          new SubjectFactory<UnwrittenMergedAndroidDataSubject, UnwrittenMergedAndroidData>() {
-            @Override
-            public UnwrittenMergedAndroidDataSubject getSubject(
-                FailureStrategy fs, UnwrittenMergedAndroidData that) {
-              return new UnwrittenMergedAndroidDataSubject(fs, that);
-            }
-          };
+  static final Subject.Factory<UnwrittenMergedAndroidDataSubject, UnwrittenMergedAndroidData>
+      FACTORY = UnwrittenMergedAndroidDataSubject::new;
+
+  private final UnwrittenMergedAndroidData actual;
 
   public UnwrittenMergedAndroidDataSubject(
-      FailureStrategy failureStrategy, @Nullable UnwrittenMergedAndroidData subject) {
-    super(failureStrategy, subject);
+      FailureMetadata failureMetadata, @Nullable UnwrittenMergedAndroidData subject) {
+    super(failureMetadata, subject);
+    this.actual = subject;
   }
 
   public void isEqualTo(UnwrittenMergedAndroidData expected) {
-    UnwrittenMergedAndroidData subject = getSubject();
+    UnwrittenMergedAndroidData subject = actual;
     if (!Objects.equal(subject, expected)) {
       if (subject == null) {
         assertThat(subject).isEqualTo(expected);
       }
       if (subject.getManifest() != null) {
-        assertThat(subject.getManifest().toString())
-            .named("manifest")
+        assertWithMessage("manifest")
+            .that(subject.getManifest().toString())
             .isEqualTo(expected.getManifest().toString());
       }
 
@@ -58,14 +53,14 @@ class UnwrittenMergedAndroidDataSubject
 
   private void compareDataSets(
       String identifier, ParsedAndroidData subject, ParsedAndroidData expected) {
-    assertThat(subject.getOverwritingResources())
-        .named("Overwriting " + identifier)
+    assertWithMessage("Overwriting " + identifier)
+        .that(subject.getOverwritingResources())
         .containsExactlyEntriesIn(expected.getOverwritingResources());
-    assertThat(subject.getCombiningResources())
-        .named("Combining " + identifier)
+    assertWithMessage("Combining " + identifier)
+        .that(subject.getCombiningResources())
         .containsExactlyEntriesIn(expected.getCombiningResources());
-    assertThat(subject.getAssets())
-        .named("Assets " + identifier)
+    assertWithMessage("Assets " + identifier)
+        .that(subject.getAssets())
         .containsExactlyEntriesIn(expected.getAssets());
   }
 }

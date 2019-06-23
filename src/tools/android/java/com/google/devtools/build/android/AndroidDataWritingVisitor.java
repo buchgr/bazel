@@ -20,15 +20,14 @@ import com.google.devtools.build.android.xml.StyleableXmlResourceValue;
 import java.io.Flushable;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.Map.Entry;
 import javax.annotation.CheckReturnValue;
 import javax.xml.namespace.QName;
 
 /** An interface for visiting android data for writing. */
 public interface AndroidDataWritingVisitor extends Flushable {
-  /**
-   * Copies the AndroidManifest to the destination directory.
-   */
+  /** Copies the AndroidManifest to the destination directory. */
   Path copyManifest(Path sourceManifest) throws IOException;
 
   /**
@@ -71,8 +70,7 @@ public interface AndroidDataWritingVisitor extends Flushable {
   /**
    * Provides a fluent interface to generate an xml resource for the values directory.
    *
-   * <p>Example usage: 
-   * <code>
+   * <p>Example usage: <code>
    *    writer.define(key)
    *        .derivedFrom(source)
    *        .startTag(tagName)
@@ -112,8 +110,8 @@ public interface AndroidDataWritingVisitor extends Flushable {
      * Takes another values xml resource and writes it as a child tag here.
      *
      * <p>This allows xml elements from other {@link XmlResourceValue} to be moved in the stream.
-     * Currently, this is only necessary for {@link StyleableXmlResourceValue} which can have 
-     * {@link AttrXmlResourceValue} defined as child elements (yet, they are merged and treated as
+     * Currently, this is only necessary for {@link StyleableXmlResourceValue} which can have {@link
+     * AttrXmlResourceValue} defined as child elements (yet, they are merged and treated as
      * independent resources.)
      *
      * @param fqn The {@link FullyQualifiedName} of the {@link XmlResourceValue} to be adopted. This
@@ -141,7 +139,7 @@ public interface AndroidDataWritingVisitor extends Flushable {
     /** Adds "name" attribute to the {@link StartTag}. */
     StartTag named(String key);
     /** Adds all the {@link Entry} as key="value" to the {@link StartTag}. */
-    StartTag addAttributesFrom(Iterable<Entry<String, String>> entries);
+    StartTag addAttributesFrom(Iterable<Map.Entry<String, String>> entries);
     /** Starts an attribute of prefix:name. */
     Attribute attribute(String prefix, String name);
     /** Starts an attribute of name. */

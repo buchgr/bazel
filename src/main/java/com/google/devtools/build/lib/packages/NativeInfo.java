@@ -15,40 +15,71 @@ package com.google.devtools.build.lib.packages;
 
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedMap;
 import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.syntax.EvalException;
+import com.google.devtools.build.lib.syntax.FuncallExpression;
+import com.google.devtools.build.lib.syntax.MethodDescriptor;
 import java.util.Map;
 
-/** Base class for native implementations of {@link Info}. */
+/** Base class for native implementations of {@link StructImpl}. */
 // todo(vladmos,dslomov): make abstract once DefaultInfo stops instantiating it.
-public class NativeInfo extends Info {
-  protected final ImmutableMap<String, Object> values;
+public class NativeInfo extends StructImpl {
+  protected final ImmutableSortedMap<String, Object> values;
+
+  // Initialized lazily.
+  private ImmutableSet<String> fieldNames;
 
   @Override
-  public Object getValue(String name) {
-    return values.get(name);
+  public Object getValue(String name) throws EvalException {
+    if (values.containsKey(name)) {
+      return values.get(name);
+    } else if (hasField(name)) {
+      MethodDescriptor methodDescriptor = FuncallExpression.getStructField(this.getClass(), name);
+      try {
+        return FuncallExpression.invokeStructField(methodDescriptor, name, this);
+      } catch (InterruptedException exception) {
+        // Struct fields on NativeInfo objects are supposed to behave well and not throw
+        // exceptions, as they should be logicless field accessors. If this occurs, it's
+        // indicative of a bad NativeInfo implementation.
+        throw new IllegalStateException(
+            String.format("Access of field %s was unexpectedly interrupted, but should be "
+                + "uninterruptible. This is indicative of a bad provider implementation.", name));
+      }
+    } else {
+      return null;
+    }
   }
 
   @Override
-  public boolean hasKey(String name) {
-    return values.containsKey(name);
+  public boolean hasField(String name) {
+    return getFieldNames().contains(name);
   }
 
   @Override
-  public ImmutableCollection<String> getKeys() {
-    return values.keySet();
+  public ImmutableCollection<String> getFieldNames() {
+    if (fieldNames == null) {
+      fieldNames = ImmutableSet.<String>builder()
+          .addAll(values.keySet())
+          .addAll(FuncallExpression.getStructFieldNames(this.getClass()))
+          .build();
+    }
+    return fieldNames;
   }
 
-  public NativeInfo(NativeProvider<?> provider) {
-    super(provider, Location.BUILTIN);
-    this.values = ImmutableMap.of();
+  public NativeInfo(Provider provider) {
+    this(provider, Location.BUILTIN);
   }
 
-  public NativeInfo(NativeProvider<?> provider, Map<String, Object> values, Location loc) {
+  public NativeInfo(Provider provider, Location loc) {
+    this(provider, ImmutableMap.of(), loc);
+  }
+
+  // TODO(cparsons): Remove this constructor once ToolchainInfo stops using it.
+  @Deprecated
+  public NativeInfo(Provider provider, Map<String, Object> values, Location loc) {
     super(provider, loc);
     this.values = copyValues(values);
-  }
-
-  public NativeInfo(NativeProvider<?> provider, Map<String, Object> values) {
-    this(provider, values, Location.BUILTIN);
   }
 }

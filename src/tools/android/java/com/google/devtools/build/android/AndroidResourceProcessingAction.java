@@ -13,6 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
+import static java.util.stream.Collectors.toList;
+
 import com.android.builder.core.VariantType;
 import com.android.ide.common.internal.AaptCruncher;
 import com.android.ide.common.internal.LoggedErrorException;
@@ -33,6 +35,7 @@ import com.google.devtools.build.android.AndroidResourceProcessor.AaptConfigOpti
 import com.google.devtools.build.android.AndroidResourceProcessor.FlagAaptOptions;
 import com.google.devtools.build.android.Converters.DependencyAndroidDataListConverter;
 import com.google.devtools.build.android.Converters.PathConverter;
+import com.google.devtools.build.android.Converters.SerializedAndroidDataListConverter;
 import com.google.devtools.build.android.Converters.UnvalidatedAndroidDataConverter;
 import com.google.devtools.build.android.Converters.VariantTypeConverter;
 import com.google.devtools.build.android.SplitConfigurationFilter.UnrecognizedSplitsException;
@@ -45,16 +48,19 @@ import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.ShellQuotedParamsFilePreProcessor;
 import com.google.devtools.common.options.TriState;
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.regex.Pattern;
 import javax.annotation.Nullable;
 import javax.xml.parsers.ParserConfigurationException;
 import org.xml.sax.SAXException;
@@ -67,7 +73,6 @@ import org.xml.sax.SAXException;
  *   java/com/google/build/android/AndroidResourceProcessingAction\
  *      --sdkRoot path/to/sdk\
  *      --aapt path/to/sdk/aapt\
- *      --annotationJar path/to/sdk/annotationJar\
  *      --adb path/to/sdk/adb\
  *      --zipAlign path/to/sdk/zipAlign\
  *      --androidJar path/to/sdk/androidJar\
@@ -90,262 +95,265 @@ public class AndroidResourceProcessingAction {
   /** Flag specifications for this action. */
   public static final class Options extends OptionsBase {
     @Option(
-      name = "primaryData",
-      defaultValue = "null",
-      converter = UnvalidatedAndroidDataConverter.class,
-      category = "input",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help =
-          "The directory containing the primary resource directory. The contents will override "
-              + "the contents of any other resource directories during merging. The expected "
-              + "format is "
-              + UnvalidatedAndroidData.EXPECTED_FORMAT
-    )
+        name = "primaryData",
+        defaultValue = "null",
+        converter = UnvalidatedAndroidDataConverter.class,
+        category = "input",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help =
+            "The directory containing the primary resource directory. The contents will override "
+                + "the contents of any other resource directories during merging. The expected "
+                + "format is "
+                + UnvalidatedAndroidData.EXPECTED_FORMAT)
     public UnvalidatedAndroidData primaryData;
 
     @Option(
-      name = "data",
-      defaultValue = "",
-      converter = DependencyAndroidDataListConverter.class,
-      category = "input",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help =
-          "Transitive Data dependencies. These values will be used if not defined in the "
-              + "primary resources. The expected format is "
-              + DependencyAndroidData.EXPECTED_FORMAT
-              + "[,...]"
-    )
+        name = "data",
+        defaultValue = "",
+        converter = DependencyAndroidDataListConverter.class,
+        category = "input",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help =
+            "Transitive Data dependencies. These values will be used if not defined in the "
+                + "primary resources. The expected format is "
+                + DependencyAndroidData.EXPECTED_FORMAT
+                + "[,...]")
     public List<DependencyAndroidData> transitiveData;
 
     @Option(
-      name = "directData",
-      defaultValue = "",
-      converter = DependencyAndroidDataListConverter.class,
-      category = "input",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help =
-          "Direct Data dependencies. These values will be used if not defined in the "
-              + "primary resources. The expected format is "
-              + DependencyAndroidData.EXPECTED_FORMAT
-              + "[,...]"
-    )
+        name = "directData",
+        defaultValue = "",
+        converter = DependencyAndroidDataListConverter.class,
+        category = "input",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help =
+            "Direct Data dependencies. These values will be used if not defined in the "
+                + "primary resources. The expected format is "
+                + DependencyAndroidData.EXPECTED_FORMAT
+                + "[,...]")
     public List<DependencyAndroidData> directData;
 
     @Option(
-      name = "rOutput",
-      defaultValue = "null",
-      converter = PathConverter.class,
-      category = "output",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path to where the R.txt should be written."
-    )
+        name = "assets",
+        defaultValue = "",
+        converter = SerializedAndroidDataListConverter.class,
+        category = "input",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help =
+            "Transitive asset dependencies. These can also be specified together with resources"
+                + " using --data. Expected format: "
+                + SerializedAndroidData.EXPECTED_FORMAT
+                + "[,...]")
+    public List<SerializedAndroidData> transitiveAssets;
+
+    @Option(
+        name = "directAssets",
+        defaultValue = "",
+        converter = SerializedAndroidDataListConverter.class,
+        category = "input",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help =
+            "Direct asset dependencies. These can also be specified together with resources using "
+                + "--directData. Expected format: "
+                + SerializedAndroidData.EXPECTED_FORMAT
+                + "[,...]")
+    public List<SerializedAndroidData> directAssets;
+
+    @Option(
+        name = "rOutput",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Path to where the R.txt should be written.")
     public Path rOutput;
 
     @Option(
-      name = "symbolsOut",
-      oldName = "symbolsTxtOut",
-      defaultValue = "null",
-      converter = PathConverter.class,
-      category = "output",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path to where the symbols should be written."
-    )
+        name = "symbolsOut",
+        oldName = "symbolsTxtOut",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Path to where the symbols should be written.")
     public Path symbolsOut;
 
     @Option(
-      name = "dataBindingInfoOut",
-      defaultValue = "null",
-      converter = PathConverter.class,
-      category = "output",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path to where data binding's layout info output should be written."
-    )
+        name = "dataBindingInfoOut",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Path to where data binding's layout info output should be written.")
     public Path dataBindingInfoOut;
 
     @Option(
-      name = "packagePath",
-      defaultValue = "null",
-      converter = PathConverter.class,
-      category = "output",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path to the write the archive."
-    )
+        name = "packagePath",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Path to the write the archive.")
     public Path packagePath;
 
     @Option(
-      name = "resourcesOutput",
-      defaultValue = "null",
-      converter = PathConverter.class,
-      category = "output",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path to the write merged resources archive."
-    )
+        name = "resourcesOutput",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Path to the write merged resources archive.")
     public Path resourcesOutput;
 
     @Option(
-      name = "proguardOutput",
-      defaultValue = "null",
-      converter = PathConverter.class,
-      category = "output",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path for the proguard file."
-    )
+        name = "proguardOutput",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Path for the proguard file.")
     public Path proguardOutput;
 
     @Option(
-      name = "mainDexProguardOutput",
-      defaultValue = "null",
-      converter = PathConverter.class,
-      category = "output",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path for the main dex proguard file."
-    )
+        name = "mainDexProguardOutput",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Path for the main dex proguard file.")
     public Path mainDexProguardOutput;
 
     @Option(
-      name = "manifestOutput",
-      defaultValue = "null",
-      converter = PathConverter.class,
-      category = "output",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path for the modified manifest."
-    )
+        name = "manifestOutput",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Path for the modified manifest.")
     public Path manifestOutput;
 
     @Option(
-      name = "srcJarOutput",
-      defaultValue = "null",
-      converter = PathConverter.class,
-      category = "output",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path for the generated java source jar."
-    )
+        name = "srcJarOutput",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Path for the generated java source jar.")
     public Path srcJarOutput;
 
     @Option(
-      name = "packageType",
-      defaultValue = "DEFAULT",
-      converter = VariantTypeConverter.class,
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help =
-          "Variant configuration type for packaging the resources."
-              + " Acceptible values DEFAULT, LIBRARY, ANDROID_TEST, UNIT_TEST"
-    )
+        name = "packageType",
+        defaultValue = "DEFAULT",
+        converter = VariantTypeConverter.class,
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help =
+            "Variant configuration type for packaging the resources."
+                + " Acceptable values DEFAULT, LIBRARY, ANDROID_TEST, UNIT_TEST")
     public VariantType packageType;
 
     @Option(
-      name = "densities",
-      defaultValue = "",
-      converter = CommaSeparatedOptionListConverter.class,
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "A list of densities to filter the resource drawables by."
-    )
+        name = "densities",
+        defaultValue = "",
+        converter = CommaSeparatedOptionListConverter.class,
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "A list of densities to filter the resource drawables by.")
     public List<String> densities;
 
     @Option(
-      name = "densitiesForManifest",
-      defaultValue = "",
-      converter = CommaSeparatedOptionListConverter.class,
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help =
-          "Densities to specify in the manifest. If 'densities' is specified, that value will be"
-              + " used instead and this flag will be ignored. However, if resources were filtered"
-              + " in analysis, this flag can be used to specify densities in the manifest without"
-              + " repeating the filtering process."
-    )
-    public List<String> densitiesForManifest;
-
-    @Option(
-      name = "packageForR",
-      defaultValue = "null",
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Custom java package to generate the R symbols files."
-    )
+        name = "packageForR",
+        defaultValue = "null",
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Custom java package to generate the R symbols files.")
     public String packageForR;
 
     @Option(
-      name = "applicationId",
-      defaultValue = "null",
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Custom application id (package manifest) for the packaged manifest."
-    )
+        name = "applicationId",
+        defaultValue = "null",
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Custom application id (package manifest) for the packaged manifest.")
     public String applicationId;
 
     @Option(
-      name = "versionName",
-      defaultValue = "null",
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Version name to stamp into the packaged manifest."
-    )
+        name = "versionName",
+        defaultValue = "null",
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Version name to stamp into the packaged manifest.")
     public String versionName;
 
     @Option(
-      name = "versionCode",
-      defaultValue = "-1",
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Version code to stamp into the packaged manifest."
-    )
+        name = "versionCode",
+        defaultValue = "-1",
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "Version code to stamp into the packaged manifest.")
     public int versionCode;
 
     @Option(
-      name = "prefilteredResources",
-      defaultValue = "",
-      converter = Converters.CommaSeparatedOptionListConverter.class,
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "A list of resources that were filtered out in analysis."
-    )
+        name = "prefilteredResources",
+        defaultValue = "",
+        converter = Converters.CommaSeparatedOptionListConverter.class,
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "A list of resources that were filtered out in analysis.")
     public List<String> prefilteredResources;
 
     @Option(
-      name = "throwOnResourceConflict",
-      defaultValue = "false",
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "If passed, resource merge conflicts will be treated as errors instead of warnings"
-    )
+        name = "throwOnResourceConflict",
+        defaultValue = "false",
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help = "If passed, resource merge conflicts will be treated as errors instead of warnings")
     public boolean throwOnResourceConflict;
 
     @Option(
-      name = "packageUnderTest",
-      defaultValue = "null",
-      category = "config",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help =
-          "When building a test APK, the package of the binary being tested. Android resources can"
-              + " only be provided if there is no package under test or if the test instrumentation"
-              + " is in a different package."
-    )
+        name = "packageUnderTest",
+        defaultValue = "null",
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help =
+            "When building a test APK, the package of the binary being tested. Android resources"
+                + " can only be provided if there is no package under test or if the test"
+                + " instrumentation is in a different package.")
     public String packageUnderTest;
+
+    @Option(
+        name = "isTestWithResources",
+        defaultValue = "false",
+        category = "config",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        help =
+            "Indicates that these resources are being processed for a test APK. Tests can only have"
+                + "resources if they are not instrumented or they instrument only themselves.")
+    public boolean isTestWithResources;
   }
 
   private static AaptConfigOptions aaptConfigOptions;
@@ -353,10 +361,11 @@ public class AndroidResourceProcessingAction {
 
   public static void main(String[] args) throws Exception {
     final Stopwatch timer = Stopwatch.createStarted();
-    OptionsParser optionsParser = OptionsParser.newOptionsParser(
-        Options.class, AaptConfigOptions.class);
-    optionsParser.enableParamsFileSupport(
-        new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()));
+    OptionsParser optionsParser =
+        OptionsParser.builder()
+            .optionsClasses(Options.class, AaptConfigOptions.class)
+            .argsPreProcessor(new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()))
+            .build();
     optionsParser.parseAndExitUponError(args);
     aaptConfigOptions = optionsParser.getOptions(AaptConfigOptions.class);
     options = optionsParser.getOptions(Options.class);
@@ -370,18 +379,17 @@ public class AndroidResourceProcessingAction {
       final Path filteredResources = tmp.resolve("resources-filtered");
       final Path densityManifest = tmp.resolve("manifest-filtered/AndroidManifest.xml");
       final Path processedManifest = tmp.resolve("manifest-processed/AndroidManifest.xml");
-      final Path dummyManifest = tmp.resolve("manifest-aapt-dummy/AndroidManifest.xml");
+      final Path dummyManifestDirectory = tmp.resolve("manifest-aapt-dummy");
+      final Path publicXmlOut = tmp.resolve("public-resources/public.xml");
 
       Path generatedSources = null;
-      if (options.srcJarOutput != null
-          || options.rOutput != null
-          || options.symbolsOut != null) {
+      if (options.srcJarOutput != null || options.rOutput != null || options.symbolsOut != null) {
         generatedSources = tmp.resolve("generated_resources");
       }
 
       logger.fine(String.format("Setup finished at %sms", timer.elapsed(TimeUnit.MILLISECONDS)));
 
-      List<DependencyAndroidData> data =
+      List<DependencyAndroidData> resourceData =
           ImmutableSet.<DependencyAndroidData>builder()
               .addAll(options.directData)
               .addAll(options.transitiveData)
@@ -389,10 +397,16 @@ public class AndroidResourceProcessingAction {
               .asList();
 
       final MergedAndroidData mergedData =
-          AndroidResourceMerger.mergeData(
+          AndroidResourceMerger.mergeDataAndWrite(
               options.primaryData,
-              options.directData,
-              options.transitiveData,
+              ImmutableList.<SerializedAndroidData>builder()
+                  .addAll(options.directData)
+                  .addAll(options.directAssets)
+                  .build(),
+              ImmutableList.<SerializedAndroidData>builder()
+                  .addAll(options.transitiveData)
+                  .addAll(options.transitiveAssets)
+                  .build(),
               mergedResources,
               mergedAssets,
               selectPngCruncher(),
@@ -403,20 +417,13 @@ public class AndroidResourceProcessingAction {
 
       logger.fine(String.format("Merging finished at %sms", timer.elapsed(TimeUnit.MILLISECONDS)));
 
-      final List<String> densitiesToFilter =
-          options.prefilteredResources.isEmpty()
-              ? options.densities
-              : Collections.<String>emptyList();
-      final List<String> densitiesForManifest =
-          densitiesToFilter.isEmpty()
-              ? options.densitiesForManifest
-              : densitiesToFilter;
-
       final DensityFilteredAndroidData filteredData =
           mergedData.filter(
+              // Even if filtering was done in analysis, we still need to filter by density again
+              // in execution since Fileset contents are not available in analysis.
               new DensitySpecificResourceFilter(
-                  densitiesToFilter, filteredResources, mergedResources),
-              new DensitySpecificManifestProcessor(densitiesForManifest, densityManifest));
+                  options.densities, filteredResources, mergedResources),
+              new DensitySpecificManifestProcessor(options.densities, densityManifest));
 
       logger.fine(
           String.format(
@@ -439,46 +446,45 @@ public class AndroidResourceProcessingAction {
       }
 
       if (options.packageType == VariantType.LIBRARY) {
-        AndroidResourceProcessor.writeDummyManifestForAapt(dummyManifest, options.packageForR);
         processedData =
             new MergedAndroidData(
-                processedData.getResourceDir(), processedData.getAssetDir(), dummyManifest);
+                processedData.getResourceDir(),
+                processedData.getAssetDir(),
+                AndroidManifest.parseFrom(processedData.getManifest())
+                    .writeDummyManifestForAapt(dummyManifestDirectory, options.packageForR));
       }
 
       if (hasConflictWithPackageUnderTest(
-          options.packageUnderTest,
-          options.primaryData.resourceDirs,
-          processedData.getManifest(),
-          timer)) {
+          options.packageUnderTest, processedData.getManifest(), timer)) {
         logger.log(
             Level.SEVERE,
             "Android resources cannot be provided if the instrumentation package is the same as "
                 + "the package under test, but the instrumentation package (in the manifest) and "
-                + "the package under test both had the same package: " + options.packageUnderTest);
+                + "the package under test both had the same package: "
+                + options.packageUnderTest);
         System.exit(1);
       }
 
-      resourceProcessor.processResources(
-          tmp,
-          aaptConfigOptions.aapt,
-          aaptConfigOptions.androidJar,
-          aaptConfigOptions.buildToolsVersion,
-          options.packageType,
-          aaptConfigOptions.debug,
-          options.packageForR,
-          new FlagAaptOptions(aaptConfigOptions),
-          aaptConfigOptions.resourceConfigs,
-          aaptConfigOptions.splits,
-          processedData,
-          data,
-          generatedSources,
-          options.packagePath,
-          options.proguardOutput,
-          options.mainDexProguardOutput,
-          options.resourcesOutput != null
-              ? processedData.getResourceDir().resolve("values").resolve("public.xml")
-              : null,
-          options.dataBindingInfoOut);
+      MergedAndroidData processedAndroidData =
+          resourceProcessor.processResources(
+              tmp,
+              aaptConfigOptions.aapt,
+              aaptConfigOptions.androidJar,
+              aaptConfigOptions.buildToolsVersion,
+              options.packageType,
+              aaptConfigOptions.debug,
+              options.packageForR,
+              new FlagAaptOptions(aaptConfigOptions),
+              aaptConfigOptions.resourceConfigs,
+              aaptConfigOptions.splits,
+              processedData,
+              resourceData,
+              generatedSources,
+              options.packagePath,
+              options.proguardOutput,
+              options.mainDexProguardOutput,
+              options.resourcesOutput != null ? publicXmlOut : null,
+              options.dataBindingInfoOut);
       logger.fine(String.format("aapt finished at %sms", timer.elapsed(TimeUnit.MILLISECONDS)));
 
       if (options.srcJarOutput != null) {
@@ -490,8 +496,25 @@ public class AndroidResourceProcessingAction {
             generatedSources, options.rOutput, VariantType.LIBRARY == options.packageType);
       }
       if (options.resourcesOutput != null) {
-        ResourcesZip.from(processedData.getResourceDir(), processedData.getAssetDir())
-            .writeTo(options.resourcesOutput, false /* compress */);
+        if (Files.exists(publicXmlOut)) {
+          try (BufferedReader reader =
+              Files.newBufferedReader(publicXmlOut, StandardCharsets.UTF_8)) {
+            Path publicXml =
+                processedAndroidData.getResourceDir().resolve("values").resolve("public.xml");
+            Files.createDirectories(publicXml.getParent());
+
+            Pattern xmlComment = Pattern.compile("<!--.*-->");
+            Files.write(
+                publicXml,
+                // Remove aapt debugging comment lines to fix hermaticity with generated files.
+                reader.lines().filter(l -> !xmlComment.matcher(l).find()).collect(toList()),
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING);
+          }
+        }
+
+        ResourcesZip.from(processedAndroidData.getResourceDir(), processedAndroidData.getAssetDir())
+            .writeTo(options.resourcesOutput, /* compress= */ false);
       }
       logger.fine(
           String.format("Packaging finished at %sms", timer.elapsed(TimeUnit.MILLISECONDS)));
@@ -521,30 +544,25 @@ public class AndroidResourceProcessingAction {
   /**
    * Checks if there is a conflict between the package under test and the package being built.
    *
-   * When testing Android code, the test can be run in the same or a different process as the code
-   * being tested. If it's in the same process, we do not allow Android resources to be used by the
-   * test, as they could overwrite the resources used by the code being tested. If this APK won't
-   * be testing another APK, the test and code under test are in different processes, or no
+   * <p>When testing Android code, the test can be run in the same or a different process as the
+   * code being tested. If it's in the same process, we do not allow Android resources to be used by
+   * the test, as they could overwrite the resources used by the code being tested. If this APK
+   * won't be testing another APK, the test and code under test are in different processes, or no
    * resources are being used, this isn't a concern.
    *
-   * To determine whether the test and code under test are run in the same process, we check the
+   * <p>To determine whether the test and code under test are run in the same process, we check the
    * package of the code under test, passed into this function, against the target packages of any
    * <code>instrumentation</code> tags in this APK's manifest.
    *
    * @param packageUnderTest the package of the code under test, or null if no code is under test
-   * @param resourceDirs the resource directories for this APK
    * @param processedManifest the processed manifest for this APK
-   *
    * @return true if there is a conflict, false otherwise
    */
   @VisibleForTesting
   static boolean hasConflictWithPackageUnderTest(
-      @Nullable String packageUnderTest,
-      ImmutableList<Path> resourceDirs,
-      Path processedManifest,
-      Stopwatch timer)
+      @Nullable String packageUnderTest, Path processedManifest, Stopwatch timer)
       throws SAXException, StreamException, ParserConfigurationException, IOException {
-    if (packageUnderTest == null || resourceDirs.isEmpty()) {
+    if (packageUnderTest == null) {
       return false;
     }
 

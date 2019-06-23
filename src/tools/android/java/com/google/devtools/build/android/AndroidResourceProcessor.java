@@ -24,12 +24,9 @@ import com.android.builder.model.AaptOptions;
 import com.android.ide.common.internal.CommandLineRunner;
 import com.android.ide.common.internal.ExecutorSingleton;
 import com.android.ide.common.internal.LoggedErrorException;
-import com.android.io.FileWrapper;
-import com.android.io.StreamException;
 import com.android.repository.Revision;
 import com.android.utils.ILogger;
 import com.android.utils.StdLogger;
-import com.android.xml.AndroidManifest;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
@@ -57,26 +54,19 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.logging.Logger;
-import javax.xml.xpath.XPathExpressionException;
 
-/**
- * Provides a wrapper around the AOSP build tools for resource processing.
- */
+/** Provides a wrapper around the AOSP build tools for resource processing. */
 public class AndroidResourceProcessor {
   static final Logger logger = Logger.getLogger(AndroidResourceProcessor.class.getName());
 
-  /**
-   * Options class containing flags for Aapt setup.
-   */
+  /** Options class containing flags for Aapt setup. */
   public static final class AaptConfigOptions extends OptionsBase {
     @Option(
       name = "buildToolsVersion",
@@ -121,17 +111,6 @@ public class AndroidResourceProcessor {
       help = "Apk path of previous split (if any)."
     )
     public Path featureAfter;
-
-    @Option(
-      name = "annotationJar",
-      defaultValue = "null",
-      converter = ExistingPathConverter.class,
-      category = "tool",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Annotation Jar for builder invocations."
-    )
-    public Path annotationJar;
 
     @Option(
       name = "androidJar",
@@ -204,7 +183,7 @@ public class AndroidResourceProcessor {
 
     private static final String ANDROID_SPLIT_DOCUMENTATION_URL =
         "https://developer.android.com/guide/topics/resources/providing-resources.html"
-        + "#QualifierRules";
+            + "#QualifierRules";
 
     @Option(
       name = "split",
@@ -229,9 +208,7 @@ public class AndroidResourceProcessor {
     public List<String> splits;
   }
 
-  /**
-   * {@link AaptOptions} backed by an {@link AaptConfigOptions}.
-   */
+  /** {@link AaptOptions} backed by an {@link AaptConfigOptions}. */
   public static final class FlagAaptOptions implements AaptOptions {
     private final AaptConfigOptions options;
 
@@ -264,16 +241,15 @@ public class AndroidResourceProcessor {
     public List<String> getAdditionalParameters() {
       List<String> params = new java.util.ArrayList<String>();
       if (options.featureOf != null) {
-         params.add("--feature-of");
-         params.add(options.featureOf.toString());
+        params.add("--feature-of");
+        params.add(options.featureOf.toString());
       }
       if (options.featureAfter != null) {
-         params.add("--feature-after");
-         params.add(options.featureAfter.toString());
+        params.add("--feature-after");
+        params.add(options.featureAfter.toString());
       }
       return ImmutableList.copyOf(params);
     }
-
   }
 
   private final StdLogger stdLogger;
@@ -283,8 +259,13 @@ public class AndroidResourceProcessor {
   }
 
   // TODO(bazel-team): Clean up this method call -- 13 params is too many.
-  /** Processes resources for generated sources, configs and packaging resources. */
-  public void processResources(
+  /**
+   * Processes resources for generated sources, configs and packaging resources.
+   *
+   * <p>Returns a post-processed MergedAndroidData. Notably, the resources will be stripped of any
+   * databinding expressions.
+   */
+  public MergedAndroidData processResources(
       Path tempRoot,
       Path aapt,
       Path androidJar,
@@ -310,10 +291,8 @@ public class AndroidResourceProcessor {
             primaryData.getResourceDir().resolveSibling("res_no_binding"),
             primaryData.getResourceDir(),
             dataBindingInfoOut,
-            variantType,
             customPackageForR,
-            androidManifest,
-            true /* shouldZipDataBindingInfo */);
+            /* shouldZipDataBindingInfo= */ true);
 
     final Path assetsDir = primaryData.getAssetDir();
     if (publicResourcesOut != null) {
@@ -345,24 +324,12 @@ public class AndroidResourceProcessor {
           dependencyData, customPackageForR, androidManifest, sourceOut);
     }
     // Reset the output date stamps.
-    if (proguardOut != null) {
-      Files.setLastModifiedTime(proguardOut, FileTime.fromMillis(0L));
-    }
-    if (mainDexProguardOut != null) {
-      Files.setLastModifiedTime(mainDexProguardOut, FileTime.fromMillis(0L));
-    }
     if (packageOut != null) {
-      Files.setLastModifiedTime(packageOut, FileTime.fromMillis(0L));
       if (!splits.isEmpty()) {
-        Iterable<Path> splitFilenames = findAndRenameSplitPackages(packageOut, splits);
-        for (Path splitFilename : splitFilenames) {
-          Files.setLastModifiedTime(splitFilename, FileTime.fromMillis(0L));
-        }
+        renameSplitPackages(packageOut, splits);
       }
     }
-    if (publicResourcesOut != null && Files.exists(publicResourcesOut)) {
-      Files.setLastModifiedTime(publicResourcesOut, FileTime.fromMillis(0L));
-    }
+    return new MergedAndroidData(resourceDir, assetsDir, androidManifest);
   }
 
   public void runAapt(
@@ -506,21 +473,19 @@ public class AndroidResourceProcessor {
    * <p>Returns the resources directory that aapt should read.
    */
   static Path processDataBindings(
-      Path workingDirectory,
-      Path resourceDir,
+      Path processedResourceOutputDirectory,
+      Path inputResourcesDir,
       Path dataBindingInfoOut,
-      VariantType variantType,
       String packagePath,
-      Path androidManifest,
       boolean shouldZipDataBindingInfo)
       throws IOException {
 
     if (dataBindingInfoOut == null) {
-      return resourceDir;
-    } else if (!Files.isDirectory(resourceDir)) {
+      return inputResourcesDir;
+    } else if (!Files.isDirectory(inputResourcesDir)) {
       // No resources: no data binding needed. Create a dummy file to satisfy declared outputs.
       Files.createFile(dataBindingInfoOut);
-      return resourceDir;
+      return inputResourcesDir;
     }
 
     // Strip the file name (the data binding library automatically adds it back in).
@@ -535,32 +500,18 @@ public class AndroidResourceProcessor {
     // Create a directory for the resources, namespaced with the old resource path
     Path processedResourceDir =
         Files.createDirectories(
-            workingDirectory.resolve(
-                resourceDir.isAbsolute()
-                    ? resourceDir.getRoot().relativize(resourceDir)
-                    : resourceDir));
+            processedResourceOutputDirectory.resolve(
+                inputResourcesDir.isAbsolute()
+                    ? inputResourcesDir.getRoot().relativize(inputResourcesDir)
+                    : inputResourcesDir));
 
     ProcessXmlOptions options = new ProcessXmlOptions();
     options.setAppId(packagePath);
-    options.setLibrary(variantType == VariantType.LIBRARY);
-    options.setResInput(resourceDir.toFile());
+    options.setResInput(inputResourcesDir.toFile());
     options.setResOutput(processedResourceDir.toFile());
     options.setLayoutInfoOutput(dataBindingInfoOut.toFile());
     // Whether or not to aggregate data-bound .xml files into a single .zip.
     options.setZipLayoutInfo(shouldZipDataBindingInfo);
-
-    try {
-      Object minSdk = AndroidManifest.getMinSdkVersion(new FileWrapper(androidManifest.toFile()));
-      if (minSdk instanceof Integer) {
-        options.setMinSdk(((Integer) minSdk).intValue());
-      } else {
-        // TODO(bazel-team): Enforce the minimum SDK check.
-        options.setMinSdk(15);
-      }
-    } catch (XPathExpressionException | StreamException e) {
-      // TODO(bazel-team): Enforce the minimum SDK check.
-      options.setMinSdk(15);
-    }
 
     try {
       AndroidDataBinding.doRun(options);
@@ -571,7 +522,7 @@ public class AndroidResourceProcessor {
   }
 
   public ResourceSymbols loadResourceSymbolTable(
-      Iterable<SymbolFileProvider> libraries,
+      Iterable<? extends SymbolFileProvider> libraries,
       String appPackageName,
       Path primaryRTxt,
       Multimap<String, ResourceSymbols> libMap)
@@ -580,10 +531,10 @@ public class AndroidResourceProcessor {
     // (on a shared system). On the other hand, a lot of the work is I/O, so it's not completely
     // CPU bound. As a compromise, divide by 2 the reported availableProcessors.
     int numThreads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
-    ListeningExecutorService executorService = MoreExecutors.listeningDecorator(
-        Executors.newFixedThreadPool(numThreads));
+    ListeningExecutorService executorService =
+        MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(numThreads));
     try (Closeable closeable = ExecutorServiceCloser.createWith(executorService)) {
-      for (Entry<String, ListenableFuture<ResourceSymbols>> entry :
+      for (Map.Entry<String, ListenableFuture<ResourceSymbols>> entry :
           ResourceSymbols.loadFrom(libraries, executorService, appPackageName).entries()) {
         libMap.put(entry.getKey(), entry.getValue().get());
       }
@@ -600,7 +551,8 @@ public class AndroidResourceProcessor {
       List<DependencyAndroidData> dependencyData,
       String customPackageForR,
       Path androidManifest,
-      Path sourceOut) throws IOException {
+      Path sourceOut)
+      throws IOException {
     List<SymbolFileProvider> libraries = new ArrayList<>();
     for (DependencyAndroidData dataDep : dependencyData) {
       SymbolFileProvider library = dataDep.asSymbolFileProvider();
@@ -618,13 +570,13 @@ public class AndroidResourceProcessor {
       // Loop on all the package name, merge all the symbols to write, and write.
       for (String packageName : libSymbolMap.keySet()) {
         Collection<ResourceSymbols> symbols = libSymbolMap.get(packageName);
-        fullSymbolValues.writeSourcesTo(sourceOut, packageName, symbols, true /* finalFields */);
+        fullSymbolValues.writeSourcesTo(sourceOut, packageName, symbols, /* finalFields= */ true);
       }
     }
   }
 
-  /** Finds aapt's split outputs and renames them according to the input flags. */
-  private Iterable<Path> findAndRenameSplitPackages(Path packageOut, Iterable<String> splits)
+  /** Renames aapt's split outputs according to the input flags. */
+  private void renameSplitPackages(Path packageOut, Iterable<String> splits)
       throws UnrecognizedSplitsException, IOException {
     String prefix = packageOut.getFileName().toString() + "_";
     // The regex java string literal below is received as [\\{}\[\]*?] by the regex engine,
@@ -641,16 +593,13 @@ public class AndroidResourceProcessor {
     }
     Map<String, String> outputs =
         SplitConfigurationFilter.mapFilenamesToSplitFlags(filenameSuffixes.build(), splits);
-    ImmutableList.Builder<Path> outputPaths = new ImmutableList.Builder<>();
     for (Map.Entry<String, String> splitMapping : outputs.entrySet()) {
       Path resultPath = packageOut.resolveSibling(prefix + splitMapping.getValue());
-      outputPaths.add(resultPath);
       if (!splitMapping.getKey().equals(splitMapping.getValue())) {
         Path sourcePath = packageOut.resolveSibling(prefix + splitMapping.getKey());
         Files.move(sourcePath, resultPath);
       }
     }
-    return outputPaths.build();
   }
 
   /** A logger that will print messages to a target OutputStream. */
@@ -687,13 +636,7 @@ public class AndroidResourceProcessor {
     }
   }
 
-  public static void writeDummyManifestForAapt(Path dummyManifest, String packageForR) {
-    AndroidManifestProcessor.writeDummyManifestForAapt(dummyManifest, packageForR);
-  }
-
-  /**
-   * Shutdown AOSP utilized thread-pool.
-   */
+  /** Shutdown AOSP utilized thread-pool. */
   public void shutdown() {
     FullyQualifiedName.logCacheUsage(logger);
     // AOSP code never shuts down its singleton executor and leaves the process hanging.

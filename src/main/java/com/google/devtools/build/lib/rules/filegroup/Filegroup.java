@@ -14,14 +14,15 @@
 
 package com.google.devtools.build.lib.rules.filegroup;
 
-import static com.google.devtools.build.lib.analysis.OutputGroupProvider.INTERNAL_SUFFIX;
+import static com.google.devtools.build.lib.analysis.OutputGroupInfo.INTERNAL_SUFFIX;
 
 import com.google.devtools.build.lib.actions.Actions;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.CompilationHelper;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.MiddlemanProvider;
-import com.google.devtools.build.lib.analysis.OutputGroupProvider;
+import com.google.devtools.build.lib.analysis.OutputGroupInfo;
 import com.google.devtools.build.lib.analysis.PrerequisiteArtifacts;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
@@ -32,9 +33,10 @@ import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.test.InstrumentedFilesCollector;
 import com.google.devtools.build.lib.analysis.test.InstrumentedFilesCollector.InstrumentationSpec;
-import com.google.devtools.build.lib.analysis.test.InstrumentedFilesProvider;
+import com.google.devtools.build.lib.analysis.test.InstrumentedFilesInfo;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
+import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -51,7 +53,8 @@ public class Filegroup implements RuleConfiguredTargetFactory {
       "Output group %s is not permitted for " + "reference in filegroups.";
 
   @Override
-  public ConfiguredTarget create(RuleContext ruleContext) throws RuleErrorException {
+  public ConfiguredTarget create(RuleContext ruleContext)
+      throws InterruptedException, RuleErrorException, ActionConflictException {
     String outputGroupName = ruleContext.attributes().get("output_group", Type.STRING);
 
     if (outputGroupName.endsWith(INTERNAL_SUFFIX)) {
@@ -69,11 +72,14 @@ public class Filegroup implements RuleConfiguredTargetFactory {
         CompilationHelper.getAggregatingMiddleman(
             ruleContext, Actions.escapeLabel(ruleContext.getLabel()), filesToBuild);
 
-    InstrumentedFilesProvider instrumentedFilesProvider =
-        InstrumentedFilesCollector.collect(ruleContext,
+    InstrumentedFilesInfo instrumentedFilesProvider =
+        InstrumentedFilesCollector.collect(
+            ruleContext,
             // what do *we* know about whether this is a source file or not
             new InstrumentationSpec(FileTypeSet.ANY_FILE, "srcs", "deps", "data"),
-            InstrumentedFilesCollector.NO_METADATA_COLLECTOR, filesToBuild);
+            InstrumentedFilesCollector.NO_METADATA_COLLECTOR,
+            filesToBuild,
+            /* reportedToActualSources= */ NestedSetBuilder.create(Order.STABLE_ORDER));
 
     RunfilesProvider runfilesProvider = RunfilesProvider.withData(
         new Runfiles.Builder(
@@ -92,10 +98,9 @@ public class Filegroup implements RuleConfiguredTargetFactory {
         .add(RunfilesProvider.class, runfilesProvider)
         .setFilesToBuild(filesToBuild)
         .setRunfilesSupport(null, getExecutable(filesToBuild))
-        .add(InstrumentedFilesProvider.class, instrumentedFilesProvider)
+        .addNativeDeclaredProvider(instrumentedFilesProvider)
         .add(MiddlemanProvider.class, new MiddlemanProvider(middleman))
-        .add(FilegroupPathProvider.class,
-            new FilegroupPathProvider(getFilegroupPath(ruleContext)))
+        .add(FilegroupPathProvider.class, new FilegroupPathProvider(getFilegroupPath(ruleContext)))
         .build();
   }
 
@@ -128,9 +133,9 @@ public class Filegroup implements RuleConfiguredTargetFactory {
     NestedSetBuilder<Artifact> result = NestedSetBuilder.stableOrder();
 
     for (TransitiveInfoCollection dep : deps) {
-      OutputGroupProvider outputGroupProvider = OutputGroupProvider.get(dep);
-      if (outputGroupProvider != null) {
-        result.addTransitive(outputGroupProvider.getOutputGroup(outputGroupName));
+      OutputGroupInfo outputGroupInfo = OutputGroupInfo.get(dep);
+      if (outputGroupInfo != null) {
+        result.addTransitive(outputGroupInfo.getOutputGroup(outputGroupName));
       }
     }
 

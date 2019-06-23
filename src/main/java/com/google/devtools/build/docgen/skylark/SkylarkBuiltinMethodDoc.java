@@ -13,10 +13,9 @@
 // limitations under the License.
 package com.google.devtools.build.docgen.skylark;
 
-import com.google.devtools.build.lib.skylarkinterface.Param;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkSignature;
 import com.google.devtools.build.lib.syntax.BaseFunction;
-import java.util.ArrayList;
+import com.google.devtools.build.lib.syntax.EvalUtils;
 import java.util.List;
 
 /**
@@ -33,8 +32,12 @@ public final class SkylarkBuiltinMethodDoc extends SkylarkMethodDoc {
     this.module = module;
     this.annotation = annotation;
     this.fieldClass = fieldClass;
-    this.params = new ArrayList<>();
-    processParams();
+    this.params =
+        SkylarkDocUtils.determineParams(
+            this,
+            withoutSelfParam(annotation),
+            annotation.extraPositionals(),
+            annotation.extraKeywords());
   }
 
   public SkylarkSignature getAnnotation() {
@@ -53,7 +56,7 @@ public final class SkylarkBuiltinMethodDoc extends SkylarkMethodDoc {
 
   @Override
   public String getDocumentation() {
-    return annotation.doc();
+    return SkylarkDocUtils.substituteVariables(annotation.doc());
   }
 
   /**
@@ -75,23 +78,17 @@ public final class SkylarkBuiltinMethodDoc extends SkylarkMethodDoc {
   }
 
   @Override
+  public String getReturnType() {
+    return EvalUtils.getDataTypeNameFromClass(annotation.returnType());
+  }
+
+  @Override
+  public Boolean isCallable() {
+    return BaseFunction.class.isAssignableFrom(fieldClass);
+  }
+
+  @Override
   public List<SkylarkParamDoc> getParams() {
     return params;
-  }
-
-  private void processParams() {
-    processParams(adjustedParameters(annotation));
-    if (!annotation.extraPositionals().name().isEmpty()) {
-      this.params.add(new SkylarkParamDoc(this, annotation.extraPositionals()));
-    }
-    if (!annotation.extraKeywords().name().isEmpty()) {
-      this.params.add(new SkylarkParamDoc(this, annotation.extraKeywords()));
-    }
-  }
-
-  private void processParams(Param[] params) {
-    for (Param param : params) {
-      this.params.add(new SkylarkParamDoc(this, param));
-    }
   }
 }

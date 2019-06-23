@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.collect;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 import static org.junit.Assert.fail;
 
 import com.google.common.collect.ImmutableList;
@@ -64,7 +65,7 @@ public class CollectionUtilsTest {
     NestedSet<Integer> ns2 = NestedSetBuilder.<Integer>linkOrder().add(1).add(2).add(3).build();
     assertThat(CollectionUtils.isImmutable(ns2)).isTrue();
 
-    IterablesChain<Integer> chain = IterablesChain.<Integer>builder().addElement(1).build();
+    Iterable<Integer> chain = IterablesChain.<Integer>builder().addElement(1).build();
 
     assertThat(CollectionUtils.isImmutable(chain)).isTrue();
 
@@ -98,11 +99,11 @@ public class CollectionUtilsTest {
   @Test
   public void testMakeImmutable() throws Exception {
     Iterable<Integer> immutableList = ImmutableList.of(1, 2, 3);
-    assertThat(CollectionUtils.makeImmutable(immutableList)).isSameAs(immutableList);
+    assertThat(CollectionUtils.makeImmutable(immutableList)).isSameInstanceAs(immutableList);
 
     Iterable<Integer> mutableList = Lists.newArrayList(1, 2, 3);
     Iterable<Integer> converted = CollectionUtils.makeImmutable(mutableList);
-    assertThat(converted).isNotSameAs(mutableList);
+    assertThat(converted).isNotSameInstanceAs(mutableList);
     assertThat(ImmutableList.copyOf(converted)).isEqualTo(mutableList);
   }
 
@@ -152,18 +153,8 @@ public class CollectionUtilsTest {
     assertAllDifferent(Medium.class);
     assertAllDifferent(Large.class);
 
-    try {
-      CollectionUtils.toBits(TooLarge.T32);
-      fail();
-    } catch (IllegalArgumentException e) {
-      // good
-    }
+    assertThrows(IllegalArgumentException.class, () -> CollectionUtils.toBits(TooLarge.T32));
 
-    try {
-      CollectionUtils.fromBits(0, TooLarge.class);
-      fail();
-    } catch (IllegalArgumentException e) {
-      // good
-    }
+    assertThrows(IllegalArgumentException.class, () -> CollectionUtils.fromBits(0, TooLarge.class));
   }
 }

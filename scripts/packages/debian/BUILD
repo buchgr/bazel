@@ -9,12 +9,12 @@ load("//tools/build_defs/pkg:pkg.bzl", "pkg_tar", "pkg_deb")
 pkg_tar(
     name = "bazel-bin",
     srcs = [
-        "//scripts/packages:without-jdk/bazel",
-        "//scripts/packages:without-jdk/bazel-real",
+        "//scripts/packages:with-jdk/bazel",
+        "//scripts/packages:with-jdk/bazel-real",
     ],
     mode = "0755",
     package_dir = "/usr/bin",
-    strip_prefix = "/scripts/packages/without-jdk",
+    strip_prefix = "/scripts/packages/with-jdk",
 )
 
 pkg_tar(
@@ -70,17 +70,27 @@ pkg_deb(
     name = "bazel-debian",
     architecture = "amd64",
     built_using = "bazel (HEAD)",
+    conffiles = [
+        "etc/bash_completion.d/bazel",
+        "etc/bazel.bazelrc",
+    ],
     data = ":debian-data",
     depends = [
-        "google-jdk | java8-jdk | java8-sdk | oracle-java8-installer",
+        # Keep in sync with Depends section in ./control
         "g++",
         "zlib1g-dev",
         "bash-completion",
+        "unzip",
+        "python",
     ],
     description_file = "description",
     homepage = "http://bazel.build",
     maintainer = "The Bazel Authors <bazel-dev@googlegroups.com>",
     package = "bazel",
+    suggests = [
+        # Keep in sync with Suggests section in ./control
+        "google-jdk | java8-sdk-headless | java8-jdk | java8-sdk | oracle-java8-installer",
+    ],
     version_file = ":version.txt",
     visibility = ["//scripts/packages:__pkg__"],
 )
@@ -98,12 +108,11 @@ filegroup(
 genrule(
     name = "generate-changelog-file",
     srcs = [
-        "convert_changelog.py",
-        "//:changelog-file",
+        "generate_changelog.py",
         "//:bazel-srcs",  # Force a rebuild on source change
     ],
     outs = ["changelog"],
-    cmd = "python $(location convert_changelog.py) bazel-out/volatile-status.txt $(location //:changelog-file) $(location changelog)",
+    cmd = "python2.7 $(location generate_changelog.py) bazel-out/volatile-status.txt $(location changelog)",
     stamp = 1,
 )
 

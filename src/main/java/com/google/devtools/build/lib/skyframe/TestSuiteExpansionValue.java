@@ -14,21 +14,20 @@
 package com.google.devtools.build.lib.skyframe;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.skyframe.serialization.NotSerializableRuntimeException;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.io.Serializable;
 import java.util.Collection;
 
 /**
@@ -39,15 +38,16 @@ import java.util.Collection;
 @ThreadSafe
 @VisibleForTesting
 public final class TestSuiteExpansionValue implements SkyValue {
-  private ResolvedTargets<Target> targets;
+  private ResolvedTargets<Label> labels;
 
-  TestSuiteExpansionValue(ResolvedTargets<Target> targets) {
-    this.targets = Preconditions.checkNotNull(targets);
+  TestSuiteExpansionValue(ResolvedTargets<Label> labels) {
+    this.labels = Preconditions.checkNotNull(labels);
   }
 
-  public ResolvedTargets<Target> getTargets() {
-    return targets;
+  public ResolvedTargets<Label> getLabels() {
+    return labels;
   }
+
 
   @SuppressWarnings("unused")
   private void writeObject(ObjectOutputStream out) {
@@ -74,11 +74,10 @@ public final class TestSuiteExpansionValue implements SkyValue {
     return new TestSuiteExpansionKey(ImmutableSortedSet.copyOf(targets));
   }
 
-  /**
-   * A list of targets of which all test suites should be expanded.
-   */
+  /** A list of targets of which all test suites should be expanded. */
+  @AutoCodec
   @ThreadSafe
-  static final class TestSuiteExpansionKey implements SkyKey, Serializable {
+  static final class TestSuiteExpansionKey implements SkyKey {
     private final ImmutableSortedSet<Label> targets;
 
     public TestSuiteExpansionKey(ImmutableSortedSet<Label> targets) {

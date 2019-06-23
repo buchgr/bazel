@@ -27,7 +27,6 @@ import com.android.manifmerger.MergingReport.MergedManifestKind;
 import com.android.manifmerger.PlaceholderHandler;
 import com.android.utils.Pair;
 import com.android.utils.StdLogger;
-import com.google.common.base.Function;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -43,7 +42,6 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import javax.xml.stream.FactoryConfigurationError;
 import javax.xml.stream.XMLEventFactory;
 import javax.xml.stream.XMLEventReader;
@@ -72,30 +70,13 @@ public class AndroidManifestProcessor {
   private static final ImmutableMap<SystemProperty, String> SYSTEM_PROPERTY_NAMES =
       Maps.toMap(
           Arrays.asList(SystemProperty.values()),
-          new Function<SystemProperty, String>() {
-            @Override
-            public String apply(SystemProperty property) {
-              if (property == SystemProperty.PACKAGE) {
-                return "applicationId";
-              } else {
-                return property.toCamelCase();
-              }
+          property -> {
+            if (property == SystemProperty.PACKAGE) {
+              return "applicationId";
+            } else {
+              return property.toCamelCase();
             }
           });
-
-  /** Exception encapsulating the error report of a manifest merge operation. */
-  public static final class MergeErrorException extends Exception {
-    private final MergingReport report;
-
-    private MergeErrorException(MergingReport report) {
-      super(report.getReportString());
-      this.report = report;
-    }
-
-    public MergingReport getMergingReport() {
-      return report;
-    }
-  }
 
   /** Creates a new processor with the appropriate logger. */
   public static AndroidManifestProcessor with(StdLogger stdLogger) {
@@ -131,7 +112,8 @@ public class AndroidManifestProcessor {
       Map<String, String> values,
       String customPackage,
       Path output,
-      Path logFile) throws ManifestProcessingException {
+      Path logFile)
+      throws ManifestProcessingException {
     if (mergeeManifests.isEmpty() && values.isEmpty() && Strings.isNullOrEmpty(customPackage)) {
       return manifest;
     }
@@ -144,7 +126,7 @@ public class AndroidManifestProcessor {
 
     // Add mergee manifests
     List<Pair<String, File>> libraryManifests = new ArrayList<>();
-    for (Entry<Path, String> mergeeManifest : mergeeManifests.entrySet()) {
+    for (Map.Entry<Path, String> mergeeManifest : mergeeManifests.entrySet()) {
       libraryManifests.add(Pair.of(mergeeManifest.getValue(), mergeeManifest.getKey().toFile()));
     }
     manifestMerger.addLibraryManifests(libraryManifests);
@@ -218,8 +200,7 @@ public class AndroidManifestProcessor {
       int versionCode,
       String versionName,
       MergedAndroidData primaryData,
-      Path processedManifest)
-      throws IOException {
+      Path processedManifest) {
 
     ManifestMerger2.MergeType mergeType =
         variantType == VariantType.DEFAULT
@@ -253,7 +234,11 @@ public class AndroidManifestProcessor {
 
     if (versionCode != -1 || versionName != null || applicationId != null) {
       processManifest(
-          versionCode, versionName, manifest, processedManifest, MergeType.APPLICATION,
+          versionCode,
+          versionName,
+          manifest,
+          processedManifest,
+          MergeType.APPLICATION,
           applicationId);
       return processedManifest;
     }
@@ -262,14 +247,12 @@ public class AndroidManifestProcessor {
 
   /** Processes the manifest for a library and return the manifest Path. */
   public Path processLibraryManifest(
-      String newManifestPackage,
-      Path manifest,
-      Path processedManifest) {
+      String newManifestPackage, Path manifest, Path processedManifest) {
 
     if (newManifestPackage != null) {
       processManifest(
-          -1 /* versionCode */,
-          null /* versionName */,
+          /* versionCode= */ -1,
+          /* versionName= */ null,
           manifest,
           processedManifest,
           MergeType.LIBRARY,
@@ -394,19 +377,6 @@ public class AndroidManifestProcessor {
     stdLogger.verbose(annotatedDocument);
     try {
       Files.write(manifestOut, manifestContents.getBytes(UTF_8));
-    } catch (IOException e) {
-      throw new ManifestProcessingException(e);
-    }
-  }
-
-  public static Path writeDummyManifestForAapt(Path dummyManifest, String packageForR) {
-    try {
-      Files.createDirectories(dummyManifest.getParent());
-      return Files.write(dummyManifest, String.format(
-          "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-              + "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\""
-              + " package=\"%s\">"
-              + "</manifest>", packageForR).getBytes(UTF_8));
     } catch (IOException e) {
       throw new ManifestProcessingException(e);
     }

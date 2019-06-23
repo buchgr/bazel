@@ -14,18 +14,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 set -eu
+set -o pipefail
+
+SINGLEJAR="$1"
+shift
+JAR="$1"
+shift
 
 out="$(mktemp)"
-if ! "third_party/bazel/src/tools/singlejar/singlejar" --output "${out}" --check_desugar_deps --sources "$@"; then
-  rm "${out}"
+if ! "${SINGLEJAR}" --output "${out}" --check_desugar_deps --sources "$@"; then
+  # If output was generated, clean it up
+  if [ -e "${out}" ]; then rm "${out}"; fi
   case "$0" in
     *_fail_test) echo "Singlejar failed as expected!"; exit 0;;
   esac
-  echo "Singlejar unexpectedly succeeded :("
+  echo "Singlejar unexpectedly failed"
   exit 1
 fi
 
-if third_party/java/jdk/jar/jar tf "${out}" | grep 'desugar_deps'; then
+case "$0" in
+  *_fail_test) rm "${out}"; echo "Singlejar unexpectedly succeeded :("; exit 1;;
+esac
+
+if "${JAR}" tf "${out}" | grep 'desugar_deps'; then
   rm "${out}"
   echo "Singlejar output unexpectedly contains desugaring metadata"
   exit 2

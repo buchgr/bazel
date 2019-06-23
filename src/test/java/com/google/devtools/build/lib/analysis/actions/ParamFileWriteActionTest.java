@@ -27,16 +27,19 @@ import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifactType;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
-import com.google.devtools.build.lib.actions.ArtifactOwner;
+import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.CommandLine;
 import com.google.devtools.build.lib.actions.Executor;
 import com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType;
-import com.google.devtools.build.lib.actions.Root;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.util.ActionTester;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.events.StoredEventHandler;
+import com.google.devtools.build.lib.exec.BinTools;
 import com.google.devtools.build.lib.exec.util.TestExecutorBuilder;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
+import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -49,13 +52,14 @@ import org.junit.runners.JUnit4;
 /** Tests for ParamFileWriteAction. */
 @RunWith(JUnit4.class)
 public class ParamFileWriteActionTest extends BuildViewTestCase {
-  private Root rootDir;
+  private ArtifactRoot rootDir;
   private Artifact outputArtifact;
-  private Artifact treeArtifact;
+  private SpecialArtifact treeArtifact;
 
   @Before
   public void createArtifacts() throws Exception  {
-    rootDir = Root.asDerivedRoot(scratch.dir("/exec/root"));
+    Path execRoot = scratch.getFileSystem().getPath("/exec");
+    rootDir = ArtifactRoot.asDerivedRoot(execRoot, scratch.dir("/exec/out"));
     outputArtifact = getBinArtifactWithNoOwner("destination.txt");
     FileSystemUtils.createDirectoryAndParents(outputArtifact.getPath().getParentDirectory());
     treeArtifact = createTreeArtifact("artifact/myTreeFileArtifact");
@@ -72,11 +76,11 @@ public class ParamFileWriteActionTest extends BuildViewTestCase {
 
   @Test
   public void testInputs() {
-    Action action = createParameterFileWriteAction(
-        ImmutableList.of(treeArtifact),
-        createTreeArtifactExpansionCommandLine());
-    assertThat(Artifact.toExecPaths(action.getInputs())).containsExactly(
-        "artifact/myTreeFileArtifact");
+    Action action =
+        createParameterFileWriteAction(
+            ImmutableList.of(treeArtifact), createTreeArtifactExpansionCommandLineDefault());
+    assertThat(Artifact.toExecPaths(action.getInputs()))
+        .containsExactly("out/artifact/myTreeFileArtifact");
   }
 
   @Test
@@ -91,10 +95,10 @@ public class ParamFileWriteActionTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testWriteCommandLineWithTreeArtifactExpansion() throws Exception {
-    Action action = createParameterFileWriteAction(
-        ImmutableList.of(treeArtifact),
-        createTreeArtifactExpansionCommandLine());
+  public void testWriteCommandLineWithTreeArtifactExpansionDefault() throws Exception {
+    Action action =
+        createParameterFileWriteAction(
+            ImmutableList.of(treeArtifact), createTreeArtifactExpansionCommandLineDefault());
     ActionExecutionContext context = actionExecutionContext();
     ActionResult actionResult = action.execute(context);
     assertThat(actionResult.spawnResults()).isEmpty();
@@ -102,25 +106,41 @@ public class ParamFileWriteActionTest extends BuildViewTestCase {
     assertThat(content.trim())
         .isEqualTo(
             "--flag1\n"
-                + "artifact/myTreeFileArtifact/artifacts/treeFileArtifact1\n"
-                + "artifact/myTreeFileArtifact/artifacts/treeFileArtifact2");
+                + "out/artifact/myTreeFileArtifact/artifacts/treeFileArtifact1\n"
+                + "out/artifact/myTreeFileArtifact/artifacts/treeFileArtifact2");
   }
 
-  private Artifact createTreeArtifact(String rootRelativePath) {
+  @Test
+  public void testWriteCommandLineWithTreeArtifactExpansionExpandedFunction() throws Exception {
+    Action action =
+        createParameterFileWriteAction(
+            ImmutableList.of(treeArtifact),
+            createTreeArtifactExpansionCommandLineExpandedFunction());
+    ActionExecutionContext context = actionExecutionContext();
+    ActionResult actionResult = action.execute(context);
+    assertThat(actionResult.spawnResults()).isEmpty();
+    String content = new String(FileSystemUtils.readContentAsLatin1(outputArtifact.getPath()));
+    assertThat(content.trim())
+        .isEqualTo(
+            "--flag1=out/artifact/myTreeFileArtifact/artifacts/treeFileArtifact1\n"
+                + "--flag1=out/artifact/myTreeFileArtifact/artifacts/treeFileArtifact2");
+  }
+
+  private SpecialArtifact createTreeArtifact(String rootRelativePath) {
     PathFragment relpath = PathFragment.create(rootRelativePath);
     return new SpecialArtifact(
-        rootDir.getPath().getRelative(relpath),
         rootDir,
         rootDir.getExecPath().getRelative(relpath),
-        ArtifactOwner.NULL_OWNER,
+        ActionsTestUtil.NULL_ARTIFACT_OWNER,
         SpecialArtifactType.TREE);
   }
 
   private TreeFileArtifact createTreeFileArtifact(
-      Artifact inputTreeArtifact, String parentRelativePath) {
-    return ActionInputHelper.treeFileArtifact(
+      SpecialArtifact inputTreeArtifact, String parentRelativePath) {
+    return ActionInputHelper.treeFileArtifactWithNoGeneratingActionSet(
         inputTreeArtifact,
-        PathFragment.create(parentRelativePath));
+        PathFragment.create(parentRelativePath),
+        inputTreeArtifact.getArtifactOwner());
   }
 
   private ParameterFileWriteAction createParameterFileWriteAction(
@@ -142,10 +162,17 @@ public class ParamFileWriteActionTest extends BuildViewTestCase {
         .build();
   }
 
-  private CommandLine createTreeArtifactExpansionCommandLine() {
+  private CommandLine createTreeArtifactExpansionCommandLineDefault() {
     return CustomCommandLine.builder()
         .add("--flag1")
         .addExpandedTreeArtifactExecPaths(treeArtifact)
+        .build();
+  }
+
+  private CommandLine createTreeArtifactExpansionCommandLineExpandedFunction() {
+    return CustomCommandLine.builder()
+        .addExpandedTreeArtifact(
+            treeArtifact, artifact -> ImmutableList.of("--flag1=" + artifact.getExecPath()))
         .build();
   }
 
@@ -165,9 +192,21 @@ public class ParamFileWriteActionTest extends BuildViewTestCase {
       }
     };
 
-    Executor executor = new TestExecutorBuilder(directories, binTools).build();
-    return new ActionExecutionContext(executor, null, ActionInputPrefetcher.NONE, null,
-        new FileOutErr(), ImmutableMap.<String, String>of(), artifactExpander);
+    BinTools binTools = BinTools.forUnitTesting(directories, analysisMock.getEmbeddedTools());
+    Executor executor = new TestExecutorBuilder(fileSystem, directories, binTools).build();
+    return new ActionExecutionContext(
+        executor,
+        null,
+        ActionInputPrefetcher.NONE,
+        actionKeyContext,
+        null,
+        new FileOutErr(),
+        new StoredEventHandler(),
+        ImmutableMap.<String, String>of(),
+        ImmutableMap.of(),
+        artifactExpander,
+        /*actionFileSystem=*/ null,
+        /*skyframeDepsResult=*/ null);
   }
 
   private enum KeyAttributes {
@@ -198,6 +237,7 @@ public class ParamFileWriteActionTest extends BuildViewTestCase {
               commandLine,
               parameterFileType,
               charset);
-        });
+        },
+        actionKeyContext);
   }
 }

@@ -16,7 +16,9 @@ package com.google.devtools.build.lib.actions;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.analysis.platform.PlatformInfo;
 import java.util.Collection;
+import javax.annotation.Nullable;
 
 /**
  * A delegating spawn that allow us to overwrite certain methods while maintaining the original
@@ -31,23 +33,8 @@ public class DelegateSpawn implements Spawn {
   }
 
   @Override
-  public final ImmutableMap<String, String> getExecutionInfo() {
+  public ImmutableMap<String, String> getExecutionInfo() {
     return spawn.getExecutionInfo();
-  }
-
-  @Override
-  public boolean isRemotable() {
-    return spawn.isRemotable();
-  }
-
-  @Override
-  public boolean hasNoSandbox() {
-    return spawn.hasNoSandbox();
-  }
-
-  @Override
-  public ImmutableList<Artifact> getFilesetManifests() {
-    return spawn.getFilesetManifests();
   }
 
   @Override
@@ -63,6 +50,11 @@ public class DelegateSpawn implements Spawn {
   @Override
   public ImmutableMap<String, String> getEnvironment() {
     return spawn.getEnvironment();
+  }
+
+  @Override
+  public ImmutableMap<Artifact, ImmutableList<FilesetOutputSymlink>> getFilesetMappings() {
+    return spawn.getFilesetMappings();
   }
 
   @Override
@@ -93,5 +85,11 @@ public class DelegateSpawn implements Spawn {
   @Override
   public String getMnemonic() {
     return spawn.getMnemonic();
+  }
+
+  @Override
+  @Nullable
+  public PlatformInfo getExecutionPlatform() {
+    return spawn.getExecutionPlatform();
   }
 }

@@ -19,20 +19,21 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
 
-/**
- * A {@link TransitiveInfoProvider} that creates extra actions.
- */
+/** A {@link TransitiveInfoProvider} that creates extra actions. */
 @Immutable
+@AutoCodec
 public final class ExtraActionArtifactsProvider implements TransitiveInfoProvider {
   public static final ExtraActionArtifactsProvider EMPTY =
       new ExtraActionArtifactsProvider(
-          NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER),
-          NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER));
+          NestedSetBuilder.emptySet(Order.STABLE_ORDER),
+          NestedSetBuilder.emptySet(Order.STABLE_ORDER));
 
   public static ExtraActionArtifactsProvider create(
-      NestedSet<Artifact> extraActionArtifacts,
-      NestedSet<Artifact> transitiveExtraActionArtifacts) {
+      NestedSet<Artifact.DerivedArtifact> extraActionArtifacts,
+      NestedSet<Artifact.DerivedArtifact> transitiveExtraActionArtifacts) {
     if (extraActionArtifacts.isEmpty() && transitiveExtraActionArtifacts.isEmpty()) {
       return EMPTY;
     }
@@ -41,8 +42,9 @@ public final class ExtraActionArtifactsProvider implements TransitiveInfoProvide
 
   public static ExtraActionArtifactsProvider merge(
       Iterable<ExtraActionArtifactsProvider> providers) {
-    NestedSetBuilder<Artifact> artifacts = NestedSetBuilder.stableOrder();
-    NestedSetBuilder<Artifact> transitiveExtraActionArtifacts = NestedSetBuilder.stableOrder();
+    NestedSetBuilder<Artifact.DerivedArtifact> artifacts = NestedSetBuilder.stableOrder();
+    NestedSetBuilder<Artifact.DerivedArtifact> transitiveExtraActionArtifacts =
+        NestedSetBuilder.stableOrder();
 
     for (ExtraActionArtifactsProvider provider : providers) {
       artifacts.addTransitive(provider.getExtraActionArtifacts());
@@ -53,26 +55,27 @@ public final class ExtraActionArtifactsProvider implements TransitiveInfoProvide
   }
 
   /** The outputs of the extra actions associated with this target. */
-  private final NestedSet<Artifact> extraActionArtifacts;
-  private final NestedSet<Artifact> transitiveExtraActionArtifacts;
+  private final NestedSet<Artifact.DerivedArtifact> extraActionArtifacts;
+
+  private final NestedSet<Artifact.DerivedArtifact> transitiveExtraActionArtifacts;
 
   /** Use {@link #create} instead. */
-  private ExtraActionArtifactsProvider(
-      NestedSet<Artifact> extraActionArtifacts,
-      NestedSet<Artifact> transitiveExtraActionArtifacts) {
+  @AutoCodec.Instantiator
+  @VisibleForSerialization
+  ExtraActionArtifactsProvider(
+      NestedSet<Artifact.DerivedArtifact> extraActionArtifacts,
+      NestedSet<Artifact.DerivedArtifact> transitiveExtraActionArtifacts) {
     this.extraActionArtifacts = extraActionArtifacts;
     this.transitiveExtraActionArtifacts = transitiveExtraActionArtifacts;
   }
 
-  /**
-   * The outputs of the extra actions associated with this target.
-   */
-  public NestedSet<Artifact> getExtraActionArtifacts() {
+  /** The outputs of the extra actions associated with this target. */
+  public NestedSet<Artifact.DerivedArtifact> getExtraActionArtifacts() {
     return extraActionArtifacts;
   }
 
   /** The outputs of the extra actions in the whole transitive closure. */
-  public NestedSet<Artifact> getTransitiveExtraActionArtifacts() {
+  public NestedSet<Artifact.DerivedArtifact> getTransitiveExtraActionArtifacts() {
     return transitiveExtraActionArtifacts;
   }
 }

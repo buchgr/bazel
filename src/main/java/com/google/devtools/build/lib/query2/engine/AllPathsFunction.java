@@ -20,6 +20,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Argument;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.ArgumentType;
+import com.google.devtools.build.lib.query2.engine.QueryEnvironment.CustomFunctionQueryEnvironment;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryTaskCallable;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryTaskFuture;
@@ -54,7 +55,7 @@ public class AllPathsFunction implements QueryFunction {
   @Override
   public <T> QueryTaskFuture<Void> eval(
       final QueryEnvironment<T> env,
-      VariableContext<T> context,
+      QueryExpressionContext<T> context,
       final QueryExpression expression,
       List<Argument> args,
       final Callback<T> callback) {
@@ -63,6 +64,20 @@ public class AllPathsFunction implements QueryFunction {
     final QueryTaskFuture<ThreadSafeMutableSet<T>> toValueFuture =
         QueryUtil.evalAll(env, context, args.get(1).getExpression());
 
+    if (env instanceof CustomFunctionQueryEnvironment) {
+      return env.whenAllSucceedCall(
+          ImmutableList.of(fromValueFuture, toValueFuture),
+          new QueryTaskCallable<Void>() {
+            @Override
+            public Void call() throws QueryException, InterruptedException {
+              Collection<T> fromValue = fromValueFuture.getIfSuccessful();
+              Collection<T> toValue = toValueFuture.getIfSuccessful();
+              ((CustomFunctionQueryEnvironment<T>) env)
+                  .allPaths(fromValue, toValue, expression, callback);
+              return null;
+            }
+          });
+    }
     return env.whenAllSucceedCall(
         ImmutableList.of(fromValueFuture, toValueFuture),
         new QueryTaskCallable<Void>() {
@@ -79,14 +94,14 @@ public class AllPathsFunction implements QueryFunction {
 
             env.buildTransitiveClosure(expression, fromValue, Integer.MAX_VALUE);
 
-            Set<T> reachableFromX = env.getTransitiveClosure(fromValue);
+            Set<T> reachableFromX = env.getTransitiveClosure(fromValue, context);
             Predicate<T> reachable = Predicates.in(reachableFromX);
             Uniquifier<T> uniquifier = env.createUniquifier();
             Collection<T> result = uniquifier.unique(intersection(reachableFromX, toValue));
             callback.process(result);
             Collection<T> worklist = result;
             while (!worklist.isEmpty()) {
-              Iterable<T> reverseDeps = env.getReverseDeps(worklist);
+              Iterable<T> reverseDeps = env.getReverseDeps(worklist, context);
               worklist = uniquifier.unique(Iterables.filter(reverseDeps, reachable));
               callback.process(worklist);
             }

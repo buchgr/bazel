@@ -26,16 +26,6 @@ import javax.annotation.Nullable;
 public interface ActionExecutionMetadata extends ActionAnalysisMetadata {
 
   /**
-   * Return this key to signify a failed key computation.
-   *
-   * <p>Actions that return this value should fail to execute.
-   *
-   * <p>Consumers must either gracefully handle multiple failed actions having the same key,
-   * (recommended), or check against this value explicitly.
-   */
-  String KEY_ERROR = "1ea50e01-0349-4552-80cf-76cf520e8592";
-
-  /**
    * If this executable can supply verbose information, returns a string that can be used as a
    * progress message while this executable is running. A return value of {@code null} indicates no
    * message should be reported.
@@ -44,50 +34,24 @@ public interface ActionExecutionMetadata extends ActionAnalysisMetadata {
   String getProgressMessage();
 
   /**
-   * Returns a string encoding all of the significant behaviour of this Action that might affect the
-   * output. The general contract of <code>getKey</code> is this: if the work to be performed by the
-   * execution of this action changes, the key must change.
-   *
-   * <p>As a corollary, the build system is free to omit the execution of an Action <code>a1</code>
-   * if (a) at some time in the past, it has already executed an Action <code>a0</code> with the
-   * same key as <code>a1</code>, (b) the names and contents of the input files listed by <code>
-   * a1.getInputs()</code> are identical to the names and contents of the files listed by <code>
-   * a0.getInputs()</code>, and (c) the names and values in the client environment of the variables
-   * listed by <code>a1.getClientEnvironmentVariables()</code> are identical to those listed by
-   * <code>a0.getClientEnvironmentVariables()</code>.
-   *
-   * <p>Examples of changes that should affect the key are:
-   *
-   * <ul>
-   * <li>Changes to the BUILD file that materially affect the rule which gave rise to this Action.
-   * <li>Changes to the command-line options, environment, or other global configuration resources
-   *     which affect the behaviour of this kind of Action (other than changes to the names of the
-   *     input/output files, which are handled externally).
-   * <li>An upgrade to the build tools which changes the program logic of this kind of Action
-   *     (typically this is achieved by incorporating a UUID into the key, which is changed each
-   *     time the program logic of this action changes).
-   * </ul>
-   */
-  String getKey();
-
-  /**
-   * Returns a human-readable description of the inputs to {@link #getKey()}.
-   * Used in the output from '--explain', and in error messages for
-   * '--check_up_to_date' and '--check_tests_up_to_date'.
-   * May return null, meaning no extra information is available.
+   * Returns a human-readable description of the inputs to {@link #getKey(ActionKeyContext)}. Used
+   * in the output from '--explain', and in error messages for '--check_up_to_date' and
+   * '--check_tests_up_to_date'. May return null, meaning no extra information is available.
    *
    * <p>If the return value is non-null, for consistency it should be a multiline message of the
    * form:
+   *
    * <pre>
    *   <var>Summary</var>
    *     <var>Fieldname</var>: <var>value</var>
    *     <var>Fieldname</var>: <var>value</var>
    *     ...
    * </pre>
+   *
    * where each line after the first one is intended two spaces, and where any fields that might
    * contain newlines or other funny characters are escaped using {@link
-   * com.google.devtools.build.lib.shell.ShellUtils#shellEscape}.
-   * For example:
+   * com.google.devtools.build.lib.shell.ShellUtils#shellEscape}. For example:
+   *
    * <pre>
    *   Compiling foo.cc
    *     Command: /usr/bin/gcc
@@ -97,7 +61,11 @@ public interface ActionExecutionMetadata extends ActionAnalysisMetadata {
    *     Argument: foo.o
    * </pre>
    */
-  @Nullable String describeKey();
+  @Nullable
+  String describeKey();
+
+  /** Returns a description of this action. */
+  String describe();
 
   /**
    * Get the {@link RunfilesSupplier} providing runfiles needed by this action.
@@ -111,7 +79,7 @@ public interface ActionExecutionMetadata extends ActionAnalysisMetadata {
    * are dynamically discovered from the previous execution of the Action, and so before the initial
    * execution, this method will return false in those cases.
    *
-   * <p>Any builder <em>must</em> unconditionally execute an Action for which inputsKnown() returns
+   * <p>Any builder <em>must</em> unconditionally execute an Action for which this method returns
    * false, regardless of all other inferences made by its dependency analysis. In addition, all
    * prerequisites mentioned in the (possibly incomplete) value returned by getInputs must also be
    * built first, as usual.
@@ -119,9 +87,21 @@ public interface ActionExecutionMetadata extends ActionAnalysisMetadata {
   @ThreadSafe
   boolean inputsDiscovered();
 
-  /**
-   * Returns true iff inputsKnown() may ever return false.
-   */
+  /** Returns true iff {@link #inputsDiscovered()} may ever return false. */
   @ThreadSafe
   boolean discoversInputs();
+
+  /**
+   * Returns true if the action may create output artifacts whose contents aren't generated by this
+   * action, and also, this action does not consume its input artifacts' contents.
+   *
+   * <p>This is rarely true. Symlink actions are an example where this is true: their outputs'
+   * contents are equal to their inputs' contents, and a symlink action does not consume its inputs'
+   * contents.
+   *
+   * <p>This property is relevant for action rewinding.
+   */
+  default boolean mayInsensitivelyPropagateInputs() {
+    return false;
+  }
 }

@@ -15,9 +15,9 @@
 package com.google.devtools.build.singlejar;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.junit.Assert.fail;
 
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ListMultimap;
@@ -493,10 +493,7 @@ public class ZipCombinerTest {
     };
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     try (ZipCombiner zipCombiner = new ZipCombiner(badFilter, out)) {
-      zipCombiner.addZip(sampleZip());
-      fail();
-    } catch (IllegalStateException e) {
-      // Expected exception.
+      assertThrows(IllegalStateException.class, () -> zipCombiner.addZip(sampleZip()));
     }
   }
 
@@ -510,10 +507,7 @@ public class ZipCombinerTest {
     };
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     try (ZipCombiner zipCombiner = new ZipCombiner(badFilter, out)) {
-      zipCombiner.addZip(sampleZip());
-      fail();
-    } catch (IllegalStateException e) {
-      // Expected exception.
+      assertThrows(IllegalStateException.class, () -> zipCombiner.addZip(sampleZip()));
     }
   }
 
@@ -745,17 +739,20 @@ public class ZipCombinerTest {
     byte[] zipCombinerRaw = out.toByteArray();
 
     new ZipTester(zipCombinerRaw).validate();
-    assertZipFilesEquivalent(new ZipReader(zipCombinerFile), new ZipReader(javaFile));
+    assertZipFilesEquivalent(zipCombinerFile, javaFile);
   }
 
-  void assertZipFilesEquivalent(ZipReader x, ZipReader y) {
-    Collection<ZipFileEntry> xEntries = x.entries();
-    Collection<ZipFileEntry> yEntries = y.entries();
-    assertThat(xEntries).hasSize(yEntries.size());
-    Iterator<ZipFileEntry> xIter = xEntries.iterator();
-    Iterator<ZipFileEntry> yIter = yEntries.iterator();
-    for (int i = 0; i < xEntries.size(); i++) {
-      assertZipEntryEquivalent(xIter.next(), yIter.next());
+  void assertZipFilesEquivalent(File a, File b) throws IOException {
+    try (ZipReader x = new ZipReader(a);
+        ZipReader y = new ZipReader(b)) {
+      Collection<ZipFileEntry> xEntries = x.entries();
+      Collection<ZipFileEntry> yEntries = y.entries();
+      assertThat(xEntries).hasSize(yEntries.size());
+      Iterator<ZipFileEntry> xIter = xEntries.iterator();
+      Iterator<ZipFileEntry> yIter = yEntries.iterator();
+      for (int i = 0; i < xEntries.size(); i++) {
+        assertZipEntryEquivalent(xIter.next(), yIter.next());
+      }
     }
   }
 

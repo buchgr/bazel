@@ -14,7 +14,7 @@
 package com.google.devtools.build.lib.syntax;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
@@ -246,36 +246,28 @@ public class SkylarkListTest extends EvaluationTestCase {
     MutableList<Object> list = MutableList.copyOf(mutability, ImmutableList.of(1, 2, 3));
     mutability.freeze();
 
-    try {
-      list.add(4, null, mutability);
-      fail("expected exception");
-    } catch (EvalException e) {
-      assertThat(e).hasMessage("trying to mutate a frozen object");
-    }
-    try {
-      list.add(0, 4, null, mutability);
-      fail("expected exception");
-    } catch (EvalException e) {
-      assertThat(e).hasMessage("trying to mutate a frozen object");
-    }
-    try {
-      list.addAll(ImmutableList.of(4, 5, 6), null, mutability);
-      fail("expected exception");
-    } catch (EvalException e) {
-      assertThat(e).hasMessage("trying to mutate a frozen object");
-    }
-    try {
-      list.remove(0, null, mutability);
-      fail("expected exception");
-    } catch (EvalException e) {
-      assertThat(e).hasMessage("trying to mutate a frozen object");
-    }
-    try {
-      list.set(0, 10, null, mutability);
-      fail("expected exception");
-    } catch (EvalException e) {
-      assertThat(e).hasMessage("trying to mutate a frozen object");
-    }
+    EvalException e = assertThrows(EvalException.class, () -> list.add(4, null, mutability));
+    assertThat(e).hasMessageThat().isEqualTo("trying to mutate a frozen object");
+    e = assertThrows(EvalException.class, () -> list.add(0, 4, null, mutability));
+    assertThat(e).hasMessageThat().isEqualTo("trying to mutate a frozen object");
+    e =
+        assertThrows(
+            EvalException.class, () -> list.addAll(ImmutableList.of(4, 5, 6), null, mutability));
+    assertThat(e).hasMessageThat().isEqualTo("trying to mutate a frozen object");
+    e = assertThrows(EvalException.class, () -> list.remove(0, null, mutability));
+    assertThat(e).hasMessageThat().isEqualTo("trying to mutate a frozen object");
+    e = assertThrows(EvalException.class, () -> list.set(0, 10, null, mutability));
+    assertThat(e).hasMessageThat().isEqualTo("trying to mutate a frozen object");
+  }
+
+  @Test
+  public void testCannotMutateAfterShallowFreeze() throws Exception {
+    Mutability mutability = Mutability.createAllowingShallowFreeze("test");
+    MutableList<Object> list = MutableList.copyOf(mutability, ImmutableList.of(1, 2, 3));
+    list.unsafeShallowFreeze();
+
+    EvalException e = assertThrows(EvalException.class, () -> list.add(4, null, mutability));
+    assertThat(e).hasMessageThat().isEqualTo("trying to mutate a frozen object");
   }
 
   @Test
@@ -301,5 +293,16 @@ public class SkylarkListTest extends EvaluationTestCase {
     mutableList.add("added2", /*loc=*/ null, mutability);
     assertThat(wrapped).containsExactly("hi", "added1", "added2").inOrder();
     assertThat(mutableList).containsExactly("hi", "added1", "added2").inOrder();
+  }
+
+  @Test
+  public void testGetSkylarkType_GivesExpectedClassesForListsAndTuples() throws Exception {
+    Class<?> emptyTupleClass = Tuple.empty().getClass();
+    Class<?> tupleClass = Tuple.of(1, "a", "b").getClass();
+    Class<?> mutableListClass = MutableList.copyOf(env, Tuple.of(1, 2, 3)).getClass();
+
+    assertThat(EvalUtils.getSkylarkType(mutableListClass)).isEqualTo(MutableList.class);
+    assertThat(EvalUtils.getSkylarkType(emptyTupleClass)).isEqualTo(Tuple.class);
+    assertThat(EvalUtils.getSkylarkType(tupleClass)).isEqualTo(Tuple.class);
   }
 }

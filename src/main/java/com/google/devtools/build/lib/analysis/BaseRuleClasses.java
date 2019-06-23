@@ -14,8 +14,6 @@
 
 package com.google.devtools.build.lib.analysis;
 
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.DATA;
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.DISTRIBUTIONS;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
@@ -29,33 +27,32 @@ import static com.google.devtools.build.lib.syntax.Type.STRING_LIST;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
-import com.google.devtools.build.lib.analysis.config.DynamicTransitionMapper;
 import com.google.devtools.build.lib.analysis.config.HostTransition;
-import com.google.devtools.build.lib.analysis.config.PatchTransition;
 import com.google.devtools.build.lib.analysis.config.RunUnder;
 import com.google.devtools.build.lib.analysis.constraints.EnvironmentRule;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Attribute;
-import com.google.devtools.build.lib.packages.Attribute.LateBoundDefault;
-import com.google.devtools.build.lib.packages.Attribute.Transition;
+import com.google.devtools.build.lib.packages.Attribute.LabelLateBoundDefault;
+import com.google.devtools.build.lib.packages.Attribute.LabelListLateBoundDefault;
+import com.google.devtools.build.lib.packages.Attribute.LateBoundDefault.Resolver;
 import com.google.devtools.build.lib.packages.AttributeMap;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
+import com.google.devtools.build.lib.packages.RuleClass.ExecutionPlatformConstraintsAllowed;
 import com.google.devtools.build.lib.packages.TestSize;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileTypeSet;
-import java.util.List;
 
 /**
  * Rule class definitions used by (almost) every rule.
  */
 public class BaseRuleClasses {
-  private static final Attribute.ComputedDefault testonlyDefault =
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final Attribute.ComputedDefault testonlyDefault =
       new Attribute.ComputedDefault() {
         @Override
         public Object getDefault(AttributeMap rule) {
@@ -63,7 +60,8 @@ public class BaseRuleClasses {
         }
       };
 
-  private static final Attribute.ComputedDefault deprecationDefault =
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final Attribute.ComputedDefault deprecationDefault =
       new Attribute.ComputedDefault() {
         @Override
         public Object getDefault(AttributeMap rule) {
@@ -80,17 +78,60 @@ public class BaseRuleClasses {
    * they only run on the target configuration and should not operate on action_listeners and
    * extra_actions themselves (to avoid cycles).
    */
-  @VisibleForTesting
-  static final LateBoundDefault<?, List<Label>> ACTION_LISTENER =
-      LateBoundDefault.fromTargetConfiguration(
+  @AutoCodec @VisibleForTesting
+  static final LabelListLateBoundDefault<?> ACTION_LISTENER =
+      LabelListLateBoundDefault.fromTargetConfiguration(
           BuildConfiguration.class,
-          ImmutableList.of(),
           (rule, attributes, configuration) -> configuration.getActionListeners());
+
+  public static final String DEFAULT_COVERAGE_SUPPORT_VALUE = "//tools/test:coverage_support";
+
+  @AutoCodec
+  static final Resolver<TestConfiguration, Label> COVERAGE_SUPPORT_CONFIGURATION_RESOLVER =
+      (rule, attributes, configuration) -> configuration.getCoverageSupport();
+
+  public static LabelLateBoundDefault<TestConfiguration> coverageSupportAttribute(
+      Label defaultValue) {
+    return LabelLateBoundDefault.fromTargetConfiguration(
+        TestConfiguration.class, defaultValue, COVERAGE_SUPPORT_CONFIGURATION_RESOLVER);
+  }
+
+  public static final String DEFAULT_COVERAGE_REPORT_GENERATOR_VALUE =
+      "//tools/test:coverage_report_generator";
+
+  private static final String DEFAULT_COVERAGE_OUTPUT_GENERATOR_VALUE =
+      "@bazel_tools//tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator:Main";
+
+  @AutoCodec
+  static final Resolver<TestConfiguration, Label> COVERAGE_REPORT_GENERATOR_CONFIGURATION_RESOLVER =
+      (rule, attributes, configuration) -> configuration.getCoverageReportGenerator();
+
+  public static LabelLateBoundDefault<TestConfiguration> coverageReportGeneratorAttribute(
+      Label defaultValue) {
+    return LabelLateBoundDefault.fromTargetConfiguration(
+        TestConfiguration.class, defaultValue, COVERAGE_REPORT_GENERATOR_CONFIGURATION_RESOLVER);
+  }
+
+  public static LabelLateBoundDefault<BuildConfiguration> getCoverageOutputGeneratorLabel() {
+    return LabelLateBoundDefault.fromTargetConfiguration(
+        BuildConfiguration.class, null, COVERAGE_OUTPUT_GENERATOR_RESOLVER);
+  }
+
+  @AutoCodec
+  static final Resolver<BuildConfiguration, Label> COVERAGE_OUTPUT_GENERATOR_RESOLVER =
+      (rule, attributes, configuration) -> {
+        if (configuration.isCodeCoverageEnabled()) {
+          return Label.parseAbsoluteUnchecked(DEFAULT_COVERAGE_OUTPUT_GENERATOR_VALUE);
+        } else {
+          return null;
+        }
+      };
 
   // TODO(b/65746853): provide a way to do this without passing the entire configuration
   /** Implementation for the :run_under attribute. */
-  public static final LateBoundDefault<?, Label> RUN_UNDER =
-      LateBoundDefault.fromTargetConfiguration(
+  @AutoCodec
+  public static final LabelLateBoundDefault<?> RUN_UNDER =
+      LabelLateBoundDefault.fromTargetConfiguration(
           BuildConfiguration.class,
           null,
           (rule, attributes, configuration) -> {
@@ -103,7 +144,7 @@ public class BaseRuleClasses {
    */
   public static final class TestBaseRule implements RuleDefinition {
     @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
       return builder
           .requiresConfigurationFragments(TestConfiguration.class)
           .add(
@@ -143,23 +184,48 @@ public class BaseRuleClasses {
           .add(attr("args", STRING_LIST))
           // Input files for every test action
           .add(
+              attr("$test_wrapper", LABEL)
+                  .cfg(HostTransition.createFactory())
+                  .singleArtifact()
+                  .value(env.getToolsLabel("//tools/test:test_wrapper")))
+          .add(
+              attr("$xml_writer", LABEL)
+                  .cfg(HostTransition.createFactory())
+                  .singleArtifact()
+                  .value(env.getToolsLabel("//tools/test:xml_writer")))
+          .add(
               attr("$test_runtime", LABEL_LIST)
-                  .cfg(HOST)
+                  .cfg(HostTransition.createFactory())
                   .value(ImmutableList.of(env.getToolsLabel("//tools/test:runtime"))))
+          .add(
+              attr("$test_setup_script", LABEL)
+                  .cfg(HostTransition.createFactory())
+                  .singleArtifact()
+                  .value(env.getToolsLabel("//tools/test:test_setup")))
+          .add(
+              attr("$xml_generator_script", LABEL)
+                  .cfg(HostTransition.createFactory())
+                  .singleArtifact()
+                  .value(env.getToolsLabel("//tools/test:test_xml_generator")))
+          .add(
+              attr("$collect_coverage_script", LABEL)
+                  .cfg(HostTransition.createFactory())
+                  .singleArtifact()
+                  .value(env.getToolsLabel("//tools/test:collect_coverage")))
           // Input files for test actions collecting code coverage
           .add(
-              attr("$coverage_support", LABEL)
-                  .value(env.getLabel("//tools/defaults:coverage_support")))
+              attr(":coverage_support", LABEL)
+                  .value(
+                      coverageSupportAttribute(env.getToolsLabel(DEFAULT_COVERAGE_SUPPORT_VALUE))))
           // Used in the one-per-build coverage report generation action.
           .add(
-              attr("$coverage_report_generator", LABEL)
-                  .cfg(HOST)
-                  .value(env.getLabel("//tools/defaults:coverage_report_generator"))
-                  .singleArtifact())
-
-          // The target itself and run_under both run on the same machine. We use the DATA config
-          // here because the run_under acts like a data dependency (e.g. no LIPO optimization).
-          .add(attr(":run_under", LABEL).cfg(DATA).value(RUN_UNDER).skipPrereqValidatorCheck())
+              attr(":coverage_report_generator", LABEL)
+                  .cfg(HostTransition.createFactory())
+                  .value(
+                      coverageReportGeneratorAttribute(
+                          env.getToolsLabel(DEFAULT_COVERAGE_REPORT_GENERATOR_VALUE))))
+          // The target itself and run_under both run on the same machine.
+          .add(attr(":run_under", LABEL).value(RUN_UNDER).skipPrereqValidatorCheck())
           .build();
     }
 
@@ -174,10 +240,16 @@ public class BaseRuleClasses {
   }
 
   /**
+   * The attribute used to list the configuration properties used by a target and its transitive
+   * dependencies. Currently only supports config_feature_flag.
+   */
+  public static final String TAGGED_TRIMMING_ATTR = "transitive_configs";
+
+  /**
    * Share common attributes across both base and Skylark base rules.
    */
   public static RuleClass.Builder commonCoreAndSkylarkAttributes(RuleClass.Builder builder) {
-    return PlatformSemantics.platformAttributes(builder)
+    return builder
         // The visibility attribute is special: it is a nodep label, and loading the
         // necessary package groups is handled by {@link LabelVisitor#visitTargetVisibility}.
         // Package groups always have the null configuration so that they are not duplicated
@@ -185,9 +257,13 @@ public class BaseRuleClasses {
         .add(
             attr("visibility", NODEP_LABEL_LIST)
                 .orderIndependent()
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .nonconfigurable(
                     "special attribute integrated more deeply into Bazel's core logic"))
+        .add(
+            attr(TAGGED_TRIMMING_ATTR, NODEP_LABEL_LIST)
+                .orderIndependent()
+                .nonconfigurable("Used in determining configuration"))
         .add(
             attr("deprecation", STRING)
                 .value(deprecationDefault)
@@ -214,11 +290,14 @@ public class BaseRuleClasses {
                 .value(testonlyDefault)
                 .nonconfigurable("policy decision: rules testability should be consistent"))
         .add(attr("features", STRING_LIST).orderIndependent())
-        .add(attr(":action_listener", LABEL_LIST).cfg(HOST).value(ACTION_LISTENER))
+        .add(
+            attr(":action_listener", LABEL_LIST)
+                .cfg(HostTransition.createFactory())
+                .value(ACTION_LISTENER))
         .add(
             attr(RuleClass.COMPATIBLE_ENVIRONMENT_ATTR, LABEL_LIST)
                 .allowedRuleClasses(EnvironmentRule.RULE_NAME)
-                .cfg(Attribute.ConfigurationTransition.HOST)
+                .cfg(HostTransition.createFactory())
                 .allowedFileTypes(FileTypeSet.NO_FILE)
                 .dontCheckConstraints()
                 .nonconfigurable(
@@ -226,11 +305,14 @@ public class BaseRuleClasses {
         .add(
             attr(RuleClass.RESTRICTED_ENVIRONMENT_ATTR, LABEL_LIST)
                 .allowedRuleClasses(EnvironmentRule.RULE_NAME)
-                .cfg(Attribute.ConfigurationTransition.HOST)
+                .cfg(HostTransition.createFactory())
                 .allowedFileTypes(FileTypeSet.NO_FILE)
                 .dontCheckConstraints()
                 .nonconfigurable(
-                    "special logic for constraints and select: see ConstraintSemantics"));
+                    "special logic for constraints and select: see ConstraintSemantics"))
+        .add(
+            attr(RuleClass.CONFIG_SETTING_DEPS_ATTRIBUTE, LABEL_LIST)
+                .nonconfigurable("stores configurability keys"));
   }
 
   public static RuleClass.Builder nameAttribute(RuleClass.Builder builder) {
@@ -245,7 +327,7 @@ public class BaseRuleClasses {
   public static final class RootRule implements RuleDefinition {
 
     @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment environment) {
+    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment environment) {
         return nameAttribute(builder).build();
     }
 
@@ -265,24 +347,12 @@ public class BaseRuleClasses {
     @Override
     public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
       return commonCoreAndSkylarkAttributes(builder)
-          // Aggregates the labels of all {@link ConfigRuleClasses} rules this rule uses (e.g.
-          // keys for configurable attributes). This is specially populated in
-          // {@RuleClass#populateRuleAttributeValues}.
-          //
-          // This attribute is not needed for actual builds. Its main purpose is so query's
-          // proto/XML output includes the labels of config dependencies, so, e.g., depserver
-          // reverse dependency lookups remain accurate. These can't just be added to the
-          // attribute definitions proto/XML queries already output because not all attributes
-          // contain labels.
-          //
-          // Builds and Blaze-interactive queries don't need this because they find dependencies
-          // through direct Rule label visitation, which already factors these in.
-          .add(attr("$config_dependencies", LABEL_LIST)
-              .nonconfigurable("not intended for actual builds"))
-          .add(attr("licenses", LICENSE)
-              .nonconfigurable("Used in core loading phase logic with no access to configs"))
-          .add(attr("distribs", DISTRIBUTIONS)
-              .nonconfigurable("Used in core loading phase logic with no access to configs"))
+          .add(
+              attr("licenses", LICENSE)
+                  .nonconfigurable("Used in core loading phase logic with no access to configs"))
+          .add(
+              attr("distribs", DISTRIBUTIONS)
+                  .nonconfigurable("Used in core loading phase logic with no access to configs"))
           .build();
     }
 
@@ -301,7 +371,7 @@ public class BaseRuleClasses {
    */
   public static final class MakeVariableExpandingRule implements RuleDefinition {
     @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
       return builder
           /* <!-- #BLAZE_RULE($make_variable_expanding_rule).ATTRIBUTE(toolchains) -->
           The set of toolchains that supply <a href="${link make-variables}">"Make variables"</a>
@@ -310,7 +380,8 @@ public class BaseRuleClasses {
           <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
           .add(attr("toolchains", LABEL_LIST)
               .allowedFileTypes(FileTypeSet.NO_FILE)
-              .mandatoryProviders(ImmutableList.of(MakeVariableInfo.PROVIDER.id())))
+              .mandatoryProviders(ImmutableList.of(TemplateVariableInfo.PROVIDER.id()))
+              .dontCheckConstraints())
           .build();
     }
 
@@ -328,12 +399,14 @@ public class BaseRuleClasses {
    */
   public static final class RuleBase implements RuleDefinition {
     @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
       return builder
           .add(attr("deps", LABEL_LIST).legacyAllowAnyFileType())
-          .add(attr("data", LABEL_LIST).cfg(DATA)
-              .allowedFileTypes(FileTypeSet.ANY_FILE)
-              .dontCheckConstraints())
+          .add(
+              attr("data", LABEL_LIST)
+                  .allowedFileTypes(FileTypeSet.ANY_FILE)
+                  .dontCheckConstraints())
+          .executionPlatformConstraintsAllowed(ExecutionPlatformConstraintsAllowed.PER_TARGET)
           .build();
     }
 
@@ -353,7 +426,7 @@ public class BaseRuleClasses {
   /** A base rule for all binary rules. */
   public static final class BinaryBaseRule implements RuleDefinition {
     @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
       return builder
           .add(attr("args", STRING_LIST))
           .add(attr("output_licenses", LICENSE))
@@ -377,7 +450,7 @@ public class BaseRuleClasses {
   /** Rule class for rules in error. */
   public static final class ErrorRule implements RuleDefinition {
     @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
       return builder.publicByDefault().build();
     }
 
@@ -390,21 +463,4 @@ public class BaseRuleClasses {
           .build();
     }
   }
-
-  /**
-   * Declares the implementations for {@link Attribute.ConfigurationTransition} enums.
-   *
-   * <p>We can't put this in {@link Attribute} because that's in the {@code lib.packages} package,
-   * which has no access to configuration classes.
-   *
-   * <p>New transitions should extend {@link PatchTransition}, which avoids the need for this map.
-   */
-  public static final ImmutableMap<Transition, Transition> DYNAMIC_TRANSITIONS_MAP =
-      ImmutableMap.of(
-          Attribute.ConfigurationTransition.NONE, DynamicTransitionMapper.SELF,
-          Attribute.ConfigurationTransition.NULL, DynamicTransitionMapper.SELF,
-          Attribute.ConfigurationTransition.HOST, HostTransition.INSTANCE
-          // Attribute.ConfigurationTransition.DATA is skipped because it's C++-specific.
-          // The C++ rule definitions handle its mapping.
-      );
 }

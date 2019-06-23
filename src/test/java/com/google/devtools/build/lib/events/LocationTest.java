@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.events;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.devtools.build.lib.skyframe.serialization.testutils.SerializationTester;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -33,7 +34,7 @@ public class LocationTest extends EventTestTemplate {
     assertThat(location.getEndLineAndColumn()).isNull();
     assertThat(location.print()).isEqualTo(path + ":1");
   }
-  
+
   @Test
   public void testPrintRelative() throws Exception {
     Location location = Location.fromPathFragment(path);
@@ -52,5 +53,14 @@ public class LocationTest extends EventTestTemplate {
                 PathFragment.create("/path/to/workspace/my/sample/path.txt"),
                 PathFragment.create("new")))
         .isEqualTo("new:1");
+  }
+
+  @Test
+  public void testCodec() throws Exception {
+    new SerializationTester(
+            Location.fromPathFragment(path),
+            Location.fromPathAndStartColumn(path, 0, 100, new Location.LineAndColumn(20, 25)),
+            Location.BUILTIN)
+        .runTests();
   }
 }

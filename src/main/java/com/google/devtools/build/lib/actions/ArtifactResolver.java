@@ -14,9 +14,11 @@
 
 package com.google.devtools.build.lib.actions;
 
+import com.google.common.base.Supplier;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import java.util.Map;
 import javax.annotation.Nullable;
 
@@ -78,5 +80,11 @@ public interface ArtifactResolver {
   Map<PathFragment, Artifact> resolveSourceArtifacts(
       Iterable<PathFragment> execPaths, PackageRootResolver resolver) throws InterruptedException;
 
-  Path getPathFromSourceExecPath(PathFragment execPath);
+  Path getPathFromSourceExecPath(Path execRoot, PathFragment execPath);
+
+  /**
+   * Supplies an {@link ArtifactFactory}. We define a custom interface because parameterized types
+   * are not allowed as dependencies to serialization.
+   */
+  interface ArtifactResolverSupplier extends Supplier<ArtifactResolver> {}
 }

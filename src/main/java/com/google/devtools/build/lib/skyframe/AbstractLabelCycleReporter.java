@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.skyframe;
 
 import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -25,7 +26,6 @@ import com.google.devtools.build.lib.packages.NoSuchTargetException;
 import com.google.devtools.build.lib.packages.NoSuchThingException;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.pkgcache.PackageProvider;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.skyframe.CycleInfo;
 import com.google.devtools.build.skyframe.CyclesReporter;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -40,14 +40,32 @@ abstract class AbstractLabelCycleReporter implements CyclesReporter.SingleCycleR
     this.packageProvider = packageProvider;
   }
 
-  /** Returns the String representation of the {@code SkyKey}. */
-  protected abstract String prettyPrint(SkyKey key);
-
   /** Returns the associated Label of the SkyKey. */
   protected abstract Label getLabel(SkyKey key);
 
   protected abstract boolean canReportCycle(SkyKey topLevelKey, CycleInfo cycleInfo);
 
+  /** Returns the String representation of the {@code SkyKey}. */
+  protected String prettyPrint(SkyKey key) {
+    return getLabel(key).toString();
+  }
+
+  /**
+   * Can be used to skip individual keys on the path to cycle.
+   *
+   * @param key
+   */
+  protected boolean shouldSkip(SkyKey key) {
+    return false;
+  }
+
+  /**
+   * Can be used to report an additional message about the cycle.
+   *
+   * @param eventHandler
+   * @param topLevelKey
+   * @param cycleInfo
+   */
   protected String getAdditionalMessageAboutCycle(
       ExtendedEventHandler eventHandler, SkyKey topLevelKey, CycleInfo cycleInfo) {
     return "";
@@ -65,16 +83,26 @@ abstract class AbstractLabelCycleReporter implements CyclesReporter.SingleCycleR
     }
 
     if (alreadyReported) {
-      Label label = getLabel(topLevelKey);
-      Target target = getTargetForLabel(eventHandler, label);
-      eventHandler.handle(Event.error(target.getLocation(),
-          "in " + target.getTargetKind() + " " + label +
-              ": cycle in dependency graph: target depends on an already-reported cycle"));
+      if (!shouldSkip(topLevelKey)) {
+        Label label = getLabel(topLevelKey);
+        Target target = getTargetForLabel(eventHandler, label);
+        eventHandler.handle(
+            Event.error(
+                target.getLocation(),
+                "in "
+                    + target.getTargetKind()
+                    + " "
+                    + label
+                    + ": cycle in dependency graph: target depends on an already-reported cycle"));
+      }
     } else {
       StringBuilder cycleMessage = new StringBuilder("cycle in dependency graph:");
       ImmutableList<SkyKey> pathToCycle = cycleInfo.getPathToCycle();
       ImmutableList<SkyKey> cycle = cycleInfo.getCycle();
       for (SkyKey value : pathToCycle) {
+        if (shouldSkip(value)) {
+          continue;
+        }
         cycleMessage.append("\n    ");
         cycleMessage.append(prettyPrint(value));
       }

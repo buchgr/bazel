@@ -18,12 +18,10 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.unix.UnixFileSystem;
 import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.JavaIoFileSystem;
-import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.UnionFileSystem;
 import com.google.devtools.build.lib.windows.WindowsFileSystem;
-import java.util.Map;
 
 /**
  * This static file system singleton manages access to a single default
@@ -36,7 +34,6 @@ public final class FileSystems {
 
   private static FileSystem defaultNativeFileSystem;
   private static FileSystem defaultJavaIoFileSystem;
-  private static FileSystem defaultUnionFileSystem;
 
   /**
    * Initializes the default native {@link FileSystem} instance as a platform native
@@ -46,16 +43,18 @@ public final class FileSystems {
   public static synchronized FileSystem getNativeFileSystem() {
     if (OS.getCurrent() == OS.WINDOWS) {
       if (defaultNativeFileSystem == null) {
-        defaultNativeFileSystem = new WindowsFileSystem();
+        defaultNativeFileSystem = new WindowsFileSystem(DigestHashFunction.DEFAULT_HASH_FOR_TESTS);
       } else {
         Verify.verify(defaultNativeFileSystem instanceof WindowsFileSystem);
       }
     } else {
       if (defaultNativeFileSystem == null) {
         try {
-          defaultNativeFileSystem = (FileSystem)
-              Class.forName(TestConstants.TEST_REAL_UNIX_FILE_SYSTEM)
-                  .getDeclaredConstructor().newInstance();
+          defaultNativeFileSystem =
+              (FileSystem)
+                  Class.forName(TestConstants.TEST_REAL_UNIX_FILE_SYSTEM)
+                      .getDeclaredConstructor(DigestHashFunction.class)
+                      .newInstance(DigestHashFunction.DEFAULT_HASH_FOR_TESTS);
         } catch (Exception e) {
           throw new IllegalStateException(e);
         }
@@ -73,28 +72,10 @@ public final class FileSystems {
    */
   public static synchronized FileSystem getJavaIoFileSystem() {
     if (defaultJavaIoFileSystem == null) {
-      defaultJavaIoFileSystem = new JavaIoFileSystem();
+      defaultJavaIoFileSystem = new JavaIoFileSystem(DigestHashFunction.DEFAULT_HASH_FOR_TESTS);
     } else {
       Verify.verify(defaultJavaIoFileSystem instanceof JavaIoFileSystem);
     }
     return defaultJavaIoFileSystem;
-  }
-
-  /**
-   * Initializes the default union {@link FileSystem} instance as a
-   * {@link UnionFileSystem}. If it's not initialized, then initialize it,
-   * otherwise verify if the type of the instance is correct.
-   *
-   * @param prefixMapping the desired mapping of path prefixes to delegate file systems
-   * @param rootFileSystem the default file system for paths that don't match any prefix map
-   */
-  public static synchronized FileSystem getUnionFileSystem(
-      Map<PathFragment, FileSystem> prefixMapping, FileSystem rootFileSystem) {
-    if (defaultUnionFileSystem == null) {
-      defaultUnionFileSystem = new UnionFileSystem(prefixMapping, rootFileSystem);
-    } else {
-      Verify.verify(defaultUnionFileSystem instanceof UnionFileSystem);
-    }
-    return defaultUnionFileSystem;
   }
 }

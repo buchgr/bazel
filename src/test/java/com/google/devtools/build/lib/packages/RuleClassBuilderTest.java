@@ -19,10 +19,13 @@ import static com.google.devtools.build.lib.syntax.Type.BOOLEAN;
 import static com.google.devtools.build.lib.syntax.Type.INTEGER;
 import static com.google.devtools.build.lib.syntax.Type.STRING;
 import static com.google.devtools.build.lib.syntax.Type.STRING_LIST;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
+import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassNamePredicate;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
 import com.google.devtools.build.lib.packages.util.PackageLoadingTestCase;
 import org.junit.Test;
@@ -34,11 +37,12 @@ import org.junit.runners.JUnit4;
  */
 @RunWith(JUnit4.class)
 public class RuleClassBuilderTest extends PackageLoadingTestCase {
-  private static final RuleClass.ConfiguredTargetFactory<Object, Object>
+  private static final RuleClass.ConfiguredTargetFactory<Object, Object, Exception>
       DUMMY_CONFIGURED_TARGET_FACTORY =
-          new RuleClass.ConfiguredTargetFactory<Object, Object>() {
+          new RuleClass.ConfiguredTargetFactory<Object, Object, Exception>() {
             @Override
-            public Object create(Object ruleContext) throws InterruptedException {
+            public Object create(Object ruleContext)
+                throws InterruptedException, RuleErrorException, ActionConflictException {
               throw new IllegalStateException();
             }
           };
@@ -95,52 +99,36 @@ public class RuleClassBuilderTest extends PackageLoadingTestCase {
 
   @Test
   public void testRuleClassTestNameValidity() throws Exception {
-    try {
-      new RuleClass.Builder("ruleA", RuleClassType.TEST, false).build();
-      fail();
-    } catch (IllegalArgumentException e) {
-      // Expected exception.
-    }
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new RuleClass.Builder("ruleA", RuleClassType.TEST, false).build());
   }
 
   @Test
   public void testRuleClassNormalNameValidity() throws Exception {
-    try {
-      new RuleClass.Builder("ruleA_test", RuleClassType.NORMAL, false).build();
-      fail();
-    } catch (IllegalArgumentException e) {
-      // Expected exception.
-    }
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new RuleClass.Builder("ruleA_test", RuleClassType.NORMAL, false).build());
   }
 
   @Test
   public void testDuplicateAttribute() throws Exception {
     RuleClass.Builder builder =
         new RuleClass.Builder("ruleA", RuleClassType.NORMAL, false).add(attr("a", STRING));
-    try {
-      builder.add(attr("a", STRING));
-      fail();
-    } catch (IllegalStateException e) {
-      // Expected exception.
-    }
+    assertThrows(IllegalStateException.class, () -> builder.add(attr("a", STRING)));
   }
 
   @Test
   public void testPropertiesOfAbstractRuleClass() throws Exception {
-    try {
-      new RuleClass.Builder("$ruleA", RuleClassType.ABSTRACT, false).setOutputToGenfiles();
-      fail();
-    } catch (IllegalStateException e) {
-      // Expected exception.
-    }
+    assertThrows(
+        IllegalStateException.class,
+        () -> new RuleClass.Builder("$ruleA", RuleClassType.ABSTRACT, false).setOutputToGenfiles());
 
-    try {
-      new RuleClass.Builder("$ruleB", RuleClassType.ABSTRACT, false)
-          .setImplicitOutputsFunction(null);
-      fail();
-    } catch (IllegalStateException e) {
-      // Expected exception.
-    }
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            new RuleClass.Builder("$ruleB", RuleClassType.ABSTRACT, false)
+                .setImplicitOutputsFunction(null));
   }
 
   @Test
@@ -157,13 +145,13 @@ public class RuleClassBuilderTest extends PackageLoadingTestCase {
             .add(attr("a", STRING).value("B"))
             .add(attr("tags", STRING_LIST))
             .build();
-    try {
-      // In case of multiple attribute inheritance the attributes must equal
-      new RuleClass.Builder("ruleC", RuleClassType.NORMAL, false, a, b).build();
-      fail();
-    } catch (IllegalArgumentException e) {
-      assertThat(e).hasMessage("Attribute a is inherited multiple times in ruleC ruleclass");
-    }
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new RuleClass.Builder("ruleC", RuleClassType.NORMAL, false, a, b).build());
+    assertThat(e)
+        .hasMessageThat()
+        .isEqualTo("Attribute a is inherited multiple times in ruleC ruleclass");
   }
 
   @Test
@@ -183,12 +171,7 @@ public class RuleClassBuilderTest extends PackageLoadingTestCase {
     assertThat(c.hasAttr("a", INTEGER)).isTrue();
     assertThat(c.hasAttr("b", STRING)).isFalse();
 
-    try {
-      builder.removeAttribute("c");
-      fail();
-    } catch (IllegalStateException e) {
-      // Expected exception.
-    }
+    assertThrows(IllegalStateException.class, () -> builder.removeAttribute("c"));
   }
 
   @Test
@@ -205,5 +188,54 @@ public class RuleClassBuilderTest extends PackageLoadingTestCase {
             .add(attr("attr", STRING))
             .build();
     assertThat(child.getRequiredToolchains()).contains(mockToolchainType);
+  }
+
+  @Test
+  public void testBasicRuleNamePredicates() throws Exception {
+    Predicate<String> abcdef = nothingBut("abc", "def").asPredicateOfRuleClassName();
+    assertThat(abcdef.test("abc")).isTrue();
+    assertThat(abcdef.test("def")).isTrue();
+    assertThat(abcdef.test("ghi")).isFalse();
+  }
+
+  @Test
+  public void testTwoRuleNamePredicateFactoriesEquivalent() throws Exception {
+    RuleClassNamePredicate a = nothingBut("abc", "def");
+    RuleClassNamePredicate b = RuleClassNamePredicate.only(ImmutableList.of("abc", "def"));
+    assertThat(a.asPredicateOfRuleClassName()).isEqualTo(b.asPredicateOfRuleClassName());
+    assertThat(a.asPredicateOfRuleClass()).isEqualTo(b.asPredicateOfRuleClass());
+  }
+
+  @Test
+  public void testEverythingButRuleNamePredicates() throws Exception {
+    Predicate<String> abcdef = allBut("abc", "def").asPredicateOfRuleClassName();
+    assertThat(abcdef.test("abc")).isFalse();
+    assertThat(abcdef.test("def")).isFalse();
+    assertThat(abcdef.test("ghi")).isTrue();
+  }
+
+  @Test
+  public void testRuleClassNamePredicateIntersection() {
+    // two positives intersect iff they contain any of the same items
+    assertThat(nothingBut("abc", "def").consideredOverlapping(nothingBut("abc"))).isTrue();
+    assertThat(nothingBut("abc", "def").consideredOverlapping(nothingBut("ghi"))).isFalse();
+
+    // negatives are never considered to overlap...
+    assertThat(allBut("abc", "def").consideredOverlapping(allBut("abc", "def"))).isFalse();
+    assertThat(allBut("abc", "def").consideredOverlapping(allBut("ghi", "jkl"))).isFalse();
+
+    assertThat(allBut("abc", "def").consideredOverlapping(nothingBut("abc", "def"))).isFalse();
+    assertThat(nothingBut("abc", "def").consideredOverlapping(allBut("abc", "def"))).isFalse();
+
+    assertThat(allBut("abc", "def").consideredOverlapping(nothingBut("abc"))).isFalse();
+    assertThat(allBut("abc").consideredOverlapping(nothingBut("abc", "def"))).isFalse();
+  }
+
+  private RuleClassNamePredicate nothingBut(String... excludedRuleClasses) {
+    return RuleClassNamePredicate.only(excludedRuleClasses);
+  }
+
+  private RuleClassNamePredicate allBut(String... excludedRuleClasses) {
+    return RuleClassNamePredicate.allExcept(excludedRuleClasses);
   }
 }

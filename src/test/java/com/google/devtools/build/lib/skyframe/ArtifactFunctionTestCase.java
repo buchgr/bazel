@@ -13,29 +13,31 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
-import com.google.common.base.Predicate;
-import com.google.common.base.Predicates;
-import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionLookupValue.ActionLookupKey;
+import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.FileStateValue;
+import com.google.devtools.build.lib.actions.FileValue;
+import com.google.devtools.build.lib.actions.util.InjectedActionLookupKey;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ServerDirectories;
+import com.google.devtools.build.lib.packages.WorkspaceFileValue;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.skyframe.ExternalFilesHelper.ExternalFileAction;
 import com.google.devtools.build.lib.skyframe.PackageLookupFunction.CrossRepositoryLabelViolationStrategy;
-import com.google.devtools.build.lib.skyframe.PackageLookupValue.BuildFileName;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.UnixGlob;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.devtools.build.skyframe.InMemoryMemoizingEvaluator;
-import com.google.devtools.build.skyframe.LegacySkyKey;
 import com.google.devtools.build.skyframe.MemoizingEvaluator;
 import com.google.devtools.build.skyframe.RecordingDifferencer;
 import com.google.devtools.build.skyframe.SequencedRecordingDifferencer;
@@ -46,25 +48,22 @@ import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.io.IOException;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
 
 abstract class ArtifactFunctionTestCase {
-  static final ActionLookupKey ALL_OWNER = new SingletonActionLookupKey();
-  static final SkyKey OWNER_KEY = LegacySkyKey.create(SkyFunctions.ACTION_LOOKUP, ALL_OWNER);
+  static final ActionLookupKey ALL_OWNER = new InjectedActionLookupKey("all_owner");
 
-  protected Predicate<PathFragment> allowedMissingInputsPredicate = Predicates.alwaysFalse();
-
-  protected Set<ActionAnalysisMetadata> actions;
+  protected LinkedHashSet<ActionAnalysisMetadata> actions;
   protected boolean fastDigest = false;
   protected RecordingDifferencer differencer = new SequencedRecordingDifferencer();
   protected SequentialBuildDriver driver;
   protected MemoizingEvaluator evaluator;
   protected Path root;
   protected Path middlemanPath;
+  protected final ActionKeyContext actionKeyContext = new ActionKeyContext();
 
   /**
    * The test action execution function. The Skyframe evaluator's action execution function
@@ -73,13 +72,22 @@ abstract class ArtifactFunctionTestCase {
   protected SkyFunction delegateActionExecutionFunction;
 
   @Before
-  public void baseSetUp() throws Exception  {
-    setupRoot(new CustomInMemoryFs());
-    AtomicReference<PathPackageLocator> pkgLocator = new AtomicReference<>(new PathPackageLocator(
-        root.getFileSystem().getPath("/outputbase"), ImmutableList.of(root)));
+  public void baseSetUp() throws Exception {
+    CustomInMemoryFs fs = new CustomInMemoryFs();
+    setupRoot(fs);
+    AtomicReference<PathPackageLocator> pkgLocator =
+        new AtomicReference<>(
+            new PathPackageLocator(
+                root.getFileSystem().getPath("/outputbase"),
+                ImmutableList.of(Root.fromPath(root)),
+                BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY));
     BlazeDirectories directories =
-        new BlazeDirectories(new ServerDirectories(root, root), root, TestConstants.PRODUCT_NAME);
-    ExternalFilesHelper externalFilesHelper = new ExternalFilesHelper(
+        new BlazeDirectories(
+            new ServerDirectories(root, root, root),
+            root,
+            /* defaultSystemJavabase= */ null,
+            TestConstants.PRODUCT_NAME);
+    ExternalFilesHelper externalFilesHelper = ExternalFilesHelper.createForTesting(
         pkgLocator,
         ExternalFileAction.DEPEND_ON_EXTERNAL_PKG_FOR_EXTERNAL_REPO_PATHS,
         directories);
@@ -88,11 +96,13 @@ abstract class ArtifactFunctionTestCase {
         new InMemoryMemoizingEvaluator(
             ImmutableMap.<SkyFunctionName, SkyFunction>builder()
                 .put(
-                    SkyFunctions.FILE_STATE,
+                    FileStateValue.FILE_STATE,
                     new FileStateFunction(
-                        new AtomicReference<TimestampGranularityMonitor>(), externalFilesHelper))
-                .put(SkyFunctions.FILE, new FileFunction(pkgLocator))
-                .put(SkyFunctions.ARTIFACT, new ArtifactFunction(allowedMissingInputsPredicate))
+                        new AtomicReference<TimestampGranularityMonitor>(),
+                        new AtomicReference<>(UnixGlob.DEFAULT_SYSCALLS),
+                        externalFilesHelper))
+                .put(FileValue.FILE, new FileFunction(pkgLocator))
+                .put(Artifact.ARTIFACT, new ArtifactFunction(() -> true))
                 .put(SkyFunctions.ACTION_EXECUTION, new SimpleActionExecutionFunction())
                 .put(
                     SkyFunctions.PACKAGE,
@@ -102,27 +112,29 @@ abstract class ArtifactFunctionTestCase {
                     new PackageLookupFunction(
                         null,
                         CrossRepositoryLabelViolationStrategy.ERROR,
-                        ImmutableList.of(BuildFileName.BUILD_DOT_BAZEL, BuildFileName.BUILD)))
+                        BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY))
                 .put(
                     SkyFunctions.WORKSPACE_AST,
                     new WorkspaceASTFunction(TestRuleClassProvider.getRuleClassProvider()))
                 .put(
-                    SkyFunctions.WORKSPACE_FILE,
+                    WorkspaceFileValue.WORKSPACE_FILE,
                     new WorkspaceFileFunction(
                         TestRuleClassProvider.getRuleClassProvider(),
-                        TestConstants.PACKAGE_FACTORY_BUILDER_FACTORY_FOR_TESTING.builder().build(
-                            TestRuleClassProvider.getRuleClassProvider(), root.getFileSystem()),
-                        directories))
+                        TestConstants.PACKAGE_FACTORY_BUILDER_FACTORY_FOR_TESTING
+                            .builder(directories)
+                            .build(TestRuleClassProvider.getRuleClassProvider(), fs),
+                        directories,
+                        /*skylarkImportLookupFunctionForInlining=*/ null))
                 .put(SkyFunctions.EXTERNAL_PACKAGE, new ExternalPackageFunction())
                 .put(
                     SkyFunctions.ACTION_TEMPLATE_EXPANSION,
-                    new ActionTemplateExpansionFunction(Suppliers.ofInstance(false)))
+                    new ActionTemplateExpansionFunction(actionKeyContext))
                 .build(),
             differencer);
     driver = new SequentialBuildDriver(evaluator);
     PrecomputedValue.BUILD_ID.set(differencer, UUID.randomUUID());
     PrecomputedValue.PATH_PACKAGE_LOCATOR.set(differencer, pkgLocator.get());
-    actions = new HashSet<>();
+    actions = new LinkedHashSet<>();
   }
 
   protected void setupRoot(CustomInMemoryFs fs) throws IOException {
@@ -153,23 +165,11 @@ abstract class ArtifactFunctionTestCase {
     }
   }
 
-  private static class SingletonActionLookupKey extends ActionLookupKey {
-    @Override
-    protected SkyKey getSkyKeyInternal() {
-      return OWNER_KEY;
-    }
-
-    @Override
-    protected SkyFunctionName getType() {
-      throw new UnsupportedOperationException();
-    }
-  }
-
   /** InMemoryFileSystem that can pretend to do a fast digest. */
   protected class CustomInMemoryFs extends InMemoryFileSystem {
     @Override
-    protected byte[] getFastDigest(Path path, HashFunction hashFunction) throws IOException {
-      return fastDigest ? getDigest(path, hashFunction) : null;
+    protected byte[] getFastDigest(Path path) throws IOException {
+      return fastDigest ? getDigest(path) : null;
     }
   }
 }

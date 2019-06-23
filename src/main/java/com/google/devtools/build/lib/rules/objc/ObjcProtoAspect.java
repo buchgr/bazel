@@ -16,9 +16,9 @@ package com.google.devtools.build.lib.rules.objc;
 
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
 import com.google.devtools.build.lib.analysis.ConfiguredAspectFactory;
-import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.PrerequisiteArtifacts;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
@@ -28,14 +28,15 @@ import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.packages.AspectDefinition;
 import com.google.devtools.build.lib.packages.AspectParameters;
 import com.google.devtools.build.lib.packages.BuildType;
-import com.google.devtools.build.lib.packages.NativeAspectClass;
-import com.google.devtools.build.lib.rules.proto.ProtoSourcesProvider;
+import com.google.devtools.build.lib.packages.SkylarkNativeAspect;
+import com.google.devtools.build.lib.rules.proto.ProtoInfo;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 
 /**
  * Aspect that gathers the proto dependencies of the attached rule target, and propagates the proto
  * values of its dependencies through the ObjcProtoProvider.
  */
-public class ObjcProtoAspect extends NativeAspectClass implements ConfiguredAspectFactory {
+public class ObjcProtoAspect extends SkylarkNativeAspect implements ConfiguredAspectFactory {
   public static final String NAME = "ObjcProtoAspect";
 
   @Override
@@ -47,8 +48,11 @@ public class ObjcProtoAspect extends NativeAspectClass implements ConfiguredAspe
 
   @Override
   public ConfiguredAspect create(
-      ConfiguredTarget base, RuleContext ruleContext, AspectParameters parameters)
-      throws InterruptedException {
+      ConfiguredTargetAndData ctadBase,
+      RuleContext ruleContext,
+      AspectParameters parameters,
+      String toolsRepository)
+      throws InterruptedException, ActionConflictException {
     ConfiguredAspect.Builder aspectBuilder = new ConfiguredAspect.Builder(
         this, parameters, ruleContext);
 
@@ -56,7 +60,7 @@ public class ObjcProtoAspect extends NativeAspectClass implements ConfiguredAspe
 
     if (ruleContext.attributes().has("deps", BuildType.LABEL_LIST)) {
       Iterable<ObjcProtoProvider> depObjcProtoProviders =
-          ruleContext.getPrerequisites("deps", Mode.TARGET, ObjcProtoProvider.class);
+          ruleContext.getPrerequisites("deps", Mode.TARGET, ObjcProtoProvider.SKYLARK_CONSTRUCTOR);
       aspectObjcProtoProvider.addTransitive(depObjcProtoProviders);
     }
 
@@ -68,11 +72,11 @@ public class ObjcProtoAspect extends NativeAspectClass implements ConfiguredAspe
     if (attributes.isObjcProtoLibrary()) {
 
       // Gather up all the dependency protos depended by this target.
-      Iterable<ProtoSourcesProvider> protoProviders =
-          ruleContext.getPrerequisites("deps", Mode.TARGET, ProtoSourcesProvider.class);
+      Iterable<ProtoInfo> protoInfos =
+          ruleContext.getPrerequisites("deps", Mode.TARGET, ProtoInfo.PROVIDER);
 
-      for (ProtoSourcesProvider protoProvider : protoProviders) {
-        aspectObjcProtoProvider.addProtoGroup(protoProvider.getTransitiveProtoSources());
+      for (ProtoInfo protoInfo : protoInfos) {
+        aspectObjcProtoProvider.addProtoGroup(protoInfo.getTransitiveProtoSources());
       }
 
       NestedSet<Artifact> portableProtoFilters =
@@ -81,13 +85,11 @@ public class ObjcProtoAspect extends NativeAspectClass implements ConfiguredAspe
 
       // If this target does not provide filters but specifies direct proto_library dependencies,
       // generate a filter file only for those proto files.
-      if (Iterables.isEmpty(portableProtoFilters) && !Iterables.isEmpty(protoProviders)) {
+      if (Iterables.isEmpty(portableProtoFilters) && !Iterables.isEmpty(protoInfos)) {
         Artifact generatedFilter =
             ProtobufSupport.getGeneratedPortableFilter(ruleContext, ruleContext.getConfiguration());
         ProtobufSupport.registerPortableFilterGenerationAction(
-            ruleContext,
-            generatedFilter,
-            protoProviders);
+            ruleContext, generatedFilter, protoInfos);
         portableProtoFilters = NestedSetBuilder.create(Order.STABLE_ORDER, generatedFilter);
       }
 
@@ -105,8 +107,13 @@ public class ObjcProtoAspect extends NativeAspectClass implements ConfiguredAspe
 
     // Only add the provider if it has any values, otherwise skip it.
     if (!aspectObjcProtoProvider.isEmpty()) {
-      aspectBuilder.addProvider(aspectObjcProtoProvider.build());
+      aspectBuilder.addNativeDeclaredProvider(aspectObjcProtoProvider.build());
     }
     return aspectBuilder.build();
+  }
+
+  @Override
+  public String getName() {
+    return NAME;
   }
 }

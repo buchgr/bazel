@@ -15,13 +15,14 @@
 
 # pylint: disable=g-import-not-at-top
 import gzip
+import io
 import os
-try:
-  from StringIO import StringIO
-except ImportError:
-  from io import StringIO
 import subprocess
 import tarfile
+
+# Use a deterministic mtime that doesn't confuse other programs.
+# See: https://github.com/bazelbuild/bazel/issues/1299
+PORTABLE_MTIME = 946684800  # 2000-01-01 00:00:00.000 UTC
 
 
 class SimpleArFile(object):
@@ -35,7 +36,7 @@ class SimpleArFile(object):
   with SimpleArFile(filename) as ar:
     nextFile = ar.next()
     while nextFile:
-      print nextFile.filename
+      print(nextFile.filename)
       nextFile = ar.next()
 
   Upon error, this class will raise a ArError exception.
@@ -60,7 +61,7 @@ class SimpleArFile(object):
     """
 
     def __init__(self, f):
-      self.filename = f.read(16).strip()
+      self.filename = f.read(16).decode('utf-8').strip()
       if self.filename.endswith('/'):  # SysV variant
         self.filename = self.filename[:-1]
       self.timestamp = int(f.read(12).strip())
@@ -69,11 +70,11 @@ class SimpleArFile(object):
       self.mode = int(f.read(8).strip(), 8)
       self.size = int(f.read(10).strip())
       pad = f.read(2)
-      if pad != '\x60\x0a':
+      if pad != b'\x60\x0a':
         raise SimpleArFile.ArError('Invalid AR file header')
       self.data = f.read(self.size)
 
-  MAGIC_STRING = '!<arch>\n'
+  MAGIC_STRING = b'!<arch>\n'
 
   def __init__(self, filename):
     self.filename = filename
@@ -105,7 +106,21 @@ class TarFileWriter(object):
   class Error(Exception):
     pass
 
-  def __init__(self, name, compression=''):
+  def __init__(self,
+               name,
+               compression='',
+               root_directory='./',
+               default_mtime=None):
+    """TarFileWriter wraps tarfile.open().
+
+    Args:
+      name: the tar file name.
+      compression: compression type: bzip2, bz2, gz, tgz, xz, lzma.
+      root_directory: virtual root to prepend to elements in the archive.
+      default_mtime: default mtime to use for elements in the archive.
+          May be an integer or the value 'portable' to use the date
+          2000-01-01, which is compatible with non *nix OSes'.
+    """
     if compression in ['bzip2', 'bz2']:
       mode = 'w:bz2'
     else:
@@ -114,12 +129,20 @@ class TarFileWriter(object):
     # Support xz compression through xz... until we can use Py3
     self.xz = compression in ['xz', 'lzma']
     self.name = name
+    self.root_directory = root_directory.rstrip('/')
+    if default_mtime is None:
+      self.default_mtime = 0
+    elif default_mtime == 'portable':
+      self.default_mtime = PORTABLE_MTIME
+    else:
+      self.default_mtime = int(default_mtime)
+
     self.fileobj = None
     if self.gz:
       # The Tarfile class doesn't allow us to specify gzip's mtime attribute.
       # Instead, we manually re-implement gzopen from tarfile.py and set mtime.
       self.fileobj = gzip.GzipFile(
-          filename=name, mode='w', compresslevel=9, mtime=0)
+          filename=name, mode='w', compresslevel=9, mtime=self.default_mtime)
     self.tar = tarfile.open(name=name, mode=mode, fileobj=self.fileobj)
     self.members = set([])
     self.directories = set([])
@@ -137,7 +160,7 @@ class TarFileWriter(object):
               gid=0,
               uname='',
               gname='',
-              mtime=0,
+              mtime=None,
               mode=None,
               depth=100):
     """Recursively add a directory.
@@ -158,8 +181,11 @@ class TarFileWriter(object):
       TarFileWriter.Error: when the recursion depth has exceeded the
                            `depth` argument.
     """
-    if not (name == '.' or name.startswith('/') or name.startswith('./')):
-      name = './' + name
+    if not (name == self.root_directory or name.startswith('/') or
+            name.startswith(self.root_directory + '/')):
+      name = os.path.join(self.root_directory, name)
+    if mtime is None:
+      mtime = self.default_mtime
     if os.path.isdir(path):
       # Remove trailing '/' (index -1 => last character)
       if name[-1] == '/':
@@ -219,7 +245,7 @@ class TarFileWriter(object):
                gid=0,
                uname='',
                gname='',
-               mtime=0,
+               mtime=None,
                mode=None):
     """Add a file to the current tar.
 
@@ -241,12 +267,15 @@ class TarFileWriter(object):
       # Recurse into directory
       self.add_dir(name, file_content, uid, gid, uname, gname, mtime, mode)
       return
-    if not (name == '.' or name.startswith('/') or name.startswith('./')):
-      name = './' + name
+    if not (name == self.root_directory or name.startswith('/') or
+            name.startswith(self.root_directory + '/')):
+      name = os.path.join(self.root_directory, name)
     if kind == tarfile.DIRTYPE:
       name = name.rstrip('/')
       if name in self.directories:
         return
+    if mtime is None:
+      mtime = self.default_mtime
 
     components = name.rsplit('/', 1)
     if len(components) > 1:
@@ -273,8 +302,9 @@ class TarFileWriter(object):
     if link:
       tarinfo.linkname = link
     if content:
-      tarinfo.size = len(content)
-      self._addfile(tarinfo, StringIO(content))
+      content_bytes = content.encode('utf-8')
+      tarinfo.size = len(content_bytes)
+      self._addfile(tarinfo, io.BytesIO(content_bytes))
     elif file_content:
       with open(file_content, 'rb') as f:
         tarinfo.size = os.fstat(f.fileno()).st_size
@@ -302,7 +332,7 @@ class TarFileWriter(object):
       name_filter: filter out file by names. If not none, this method will be
           called for each file to add, given the name and should return true if
           the file is to be added to the final tar and false otherwise.
-      root: place all non-absolute content under given root direcory, if not
+      root: place all non-absolute content under given root directory, if not
           None.
 
     Raises:
@@ -334,14 +364,21 @@ class TarFileWriter(object):
       p = subprocess.Popen('cat %s | xzcat' % tar,
                            shell=True,
                            stdout=subprocess.PIPE)
-      f = StringIO(p.stdout.read())
+      f = io.BytesIO(p.stdout.read())
       p.wait()
       intar = tarfile.open(fileobj=f, mode='r:')
     else:
-      intar = tarfile.open(name=tar, mode='r:' + compression)
+      if compression in ['gz', 'bz2']:
+        # prevent performance issues due to accidentally-introduced seeks
+        # during intar traversal by opening in "streaming" mode. gz, bz2
+        # are supported natively by python 2.7 and 3.x
+        inmode = 'r|' + compression
+      else:
+        inmode = 'r:' + compression
+      intar = tarfile.open(name=tar, mode=inmode)
     for tarinfo in intar:
       if name_filter is None or name_filter(tarinfo.name):
-        tarinfo.mtime = 0
+        tarinfo.mtime = self.default_mtime
         if rootuid is not None and tarinfo.uid == rootuid:
           tarinfo.uid = 0
           tarinfo.uname = 'root'
@@ -353,8 +390,9 @@ class TarFileWriter(object):
           tarinfo.gname = ''
 
         name = tarinfo.name
-        if not name.startswith('/') and not name.startswith('.'):
-          name = './' + name
+        if (not name.startswith('/') and
+            not name.startswith(self.root_directory)):
+          name = os.path.join(self.root_directory, name)
         if root is not None:
           if name.startswith('.'):
             name = '.' + root + name.lstrip('.')
@@ -375,7 +413,9 @@ class TarFileWriter(object):
         tarinfo.name = name
 
         if tarinfo.isfile():
-          self._addfile(tarinfo, intar.extractfile(tarinfo.name))
+          # use extractfile(tarinfo) instead of tarinfo.name to preserve
+          # seek position in intar
+          self._addfile(tarinfo, intar.extractfile(tarinfo))
         else:
           self._addfile(tarinfo)
     intar.close()

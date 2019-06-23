@@ -15,7 +15,7 @@ package com.google.devtools.build.lib.events;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.common.base.Preconditions;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.Objects;
@@ -31,6 +31,8 @@ public final class Event implements Serializable {
   private final EventKind kind;
   private final Location location;
   private final String message;
+  @Nullable private final String stdout;
+  @Nullable private final String stderr;
 
   /**
    * An alternative representation for message.
@@ -46,30 +48,58 @@ public final class Event implements Serializable {
 
   private final int hashCode;
 
-  private Event(EventKind kind, @Nullable Location location, String message, @Nullable String tag) {
+  private Event(
+      EventKind kind,
+      @Nullable Location location,
+      String message,
+      @Nullable String tag,
+      @Nullable String stdout,
+      @Nullable String stderr) {
     this.kind = Preconditions.checkNotNull(kind);
     this.location = location;
     this.message = Preconditions.checkNotNull(message);
     this.messageBytes = null;
     this.tag = tag;
-    this.hashCode = Objects.hash(kind, location, message, tag, Arrays.hashCode(messageBytes));
+    this.stdout = stdout;
+    this.stderr = stderr;
+    this.hashCode =
+        Objects.hash(kind, location, message, tag, Arrays.hashCode(messageBytes), stdout, stderr);
   }
 
   private Event(
-      EventKind kind, @Nullable Location location, byte[] messageBytes, @Nullable String tag) {
+      EventKind kind,
+      @Nullable Location location,
+      byte[] messageBytes,
+      @Nullable String tag,
+      @Nullable String stdout,
+      @Nullable String stderr) {
     this.kind = Preconditions.checkNotNull(kind);
     this.location = location;
     this.message = null;
     this.messageBytes = Preconditions.checkNotNull(messageBytes);
     this.tag = tag;
-    this.hashCode = Objects.hash(kind, location, message, tag, Arrays.hashCode(messageBytes));
+    this.stdout = stdout;
+    this.stderr = stderr;
+    this.hashCode =
+        Objects.hash(kind, location, message, tag, Arrays.hashCode(messageBytes), stdout, stderr);
   }
 
   public Event withTag(String tag) {
+    if (Objects.equals(tag, this.tag)) {
+      return this;
+    }
     if (this.message != null) {
-      return new Event(this.kind, this.location, this.message, tag);
+      return new Event(this.kind, this.location, this.message, tag, this.stdout, this.stderr);
     } else {
-      return new Event(this.kind, this.location, this.messageBytes, tag);
+      return new Event(this.kind, this.location, this.messageBytes, tag, this.stdout, this.stderr);
+    }
+  }
+
+  public Event withStdoutStderr(String stdout, String stderr) {
+    if (this.message != null) {
+      return new Event(this.kind, this.location, this.message, this.tag, stdout, stderr);
+    } else {
+      return new Event(this.kind, this.location, this.messageBytes, this.tag, stdout, stderr);
     }
   }
 
@@ -91,6 +121,24 @@ public final class Event implements Serializable {
   @Nullable
   public String getTag() {
     return tag;
+  }
+
+  /**
+   * Get the stdout bytes associated with this event; typically, the event will report where the
+   * output originated from.
+   */
+  @Nullable
+  public String getStdOut() {
+    return stdout;
+  }
+
+  /**
+   * Get the stdout bytes associated with this event; typically, the event will report where the
+   * output originated from.
+   */
+  @Nullable
+  public String getStdErr() {
+    return stderr;
   }
 
   /**
@@ -130,6 +178,8 @@ public final class Event implements Serializable {
         && Objects.equals(this.location, that.location)
         && Objects.equals(this.tag, that.tag)
         && Objects.equals(this.message, that.message)
+        && Objects.equals(this.stdout, that.stdout)
+        && Objects.equals(this.stderr, that.stderr)
         && Arrays.equals(this.messageBytes, that.messageBytes);
   }
 
@@ -143,7 +193,7 @@ public final class Event implements Serializable {
   }
 
   public static Event of(EventKind kind, @Nullable Location location, String message) {
-    return new Event(kind, location, message, null);
+    return new Event(kind, location, message, null, null, null);
   }
 
   /**
@@ -152,56 +202,34 @@ public final class Event implements Serializable {
    * The bytes must be decodable as UTF-8 text.
    */
   public static Event of(EventKind kind, @Nullable Location location, byte[] messageBytes) {
-    return new Event(kind, location, messageBytes, null);
+    return new Event(kind, location, messageBytes, null, null, null);
   }
 
-  /**
-   * Reports an error.
-   */
-  public static Event error(@Nullable Location location, String message){
-    return new Event(EventKind.ERROR, location, message, null);
+  /** Reports an error. */
+  public static Event error(@Nullable Location location, String message) {
+    return new Event(EventKind.ERROR, location, message, null, null, null);
   }
 
-  /**
-   * Reports a warning.
-   */
+  /** Reports an error. */
+  public static Event error(String message) {
+    return error(null, message);
+  }
+
+  /** Reports a warning. */
   public static Event warn(@Nullable Location location, String message) {
-    return new Event(EventKind.WARNING, location, message, null);
+    return new Event(EventKind.WARNING, location, message, null, null, null);
+  }
+
+  /** Reports a warning. */
+  public static Event warn(String message) {
+    return warn(null, message);
   }
 
   /**
    * Reports atemporal statements about the build, i.e. they're true for the duration of execution.
    */
   public static Event info(@Nullable Location location, String message) {
-    return new Event(EventKind.INFO, location, message, null);
-  }
-
-  /**
-   * Reports a temporal statement about the build.
-   */
-  public static Event progress(@Nullable Location location, String message) {
-    return new Event(EventKind.PROGRESS, location, message, null);
-  }
-
-  /**
-   * Reports a debug message.
-   */
-  public static Event debug(@Nullable Location location, String message) {
-    return new Event(EventKind.DEBUG, location, message, null);
-  }
-
-  /**
-   * Reports an error.
-   */
-  public static Event error(String message){
-    return error(null, message);
-  }
-
-  /**
-   * Reports a warning.
-   */
-  public static Event warn(String message) {
-    return warn(null, message);
+    return new Event(EventKind.INFO, location, message, null, null, null);
   }
 
   /**
@@ -211,11 +239,19 @@ public final class Event implements Serializable {
     return info(null, message);
   }
 
-  /**
-   * Reports a temporal statement about the build.
-   */
+  /** Reports a temporal statement about the build. */
+  public static Event progress(@Nullable Location location, String message) {
+    return new Event(EventKind.PROGRESS, location, message, null, null, null);
+  }
+
+  /** Reports a temporal statement about the build. */
   public static Event progress(String message) {
     return progress(null, message);
+  }
+
+  /** Reports a debug message. */
+  public static Event debug(@Nullable Location location, String message) {
+    return new Event(EventKind.DEBUG, location, message, null, null, null);
   }
 
   /**

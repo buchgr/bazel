@@ -17,78 +17,106 @@ package com.google.devtools.build.lib.sandbox;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
-import com.google.devtools.build.lib.exec.apple.XCodeLocalEnvProvider;
+import com.google.devtools.build.lib.exec.TreeDeleter;
 import com.google.devtools.build.lib.exec.local.LocalEnvProvider;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
+import com.google.devtools.build.lib.runtime.ProcessWrapperUtil;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.Path;
 import java.io.IOException;
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
 
 /** Strategy that uses sandboxing to execute a process. */
 final class ProcessWrapperSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
 
   public static boolean isSupported(CommandEnvironment cmdEnv) {
-    return OS.isPosixCompatible() && ProcessWrapperRunner.isSupported(cmdEnv);
+    return OS.isPosixCompatible() && ProcessWrapperUtil.isSupported(cmdEnv);
   }
 
-  private final Path execRoot;
-  private final String productName;
   private final Path processWrapper;
+  private final Path execRoot;
+  private final Path sandboxBase;
   private final LocalEnvProvider localEnvProvider;
-  private final int timeoutGraceSeconds;
+  private final Duration timeoutKillDelay;
+  private final TreeDeleter treeDeleter;
 
+  /**
+   * Creates a sandboxed spawn runner that uses the {@code process-wrapper} tool.
+   *
+   * @param cmdEnv the command environment to use
+   * @param sandboxBase path to the sandbox base directory
+   * @param productName the product name to use
+   * @param timeoutKillDelay additional grace period before killing timing out commands
+   */
   ProcessWrapperSandboxedSpawnRunner(
       CommandEnvironment cmdEnv,
       Path sandboxBase,
       String productName,
-      int timeoutGraceSeconds) {
-    super(cmdEnv, sandboxBase);
+      Duration timeoutKillDelay,
+      TreeDeleter treeDeleter) {
+    super(cmdEnv);
+    this.processWrapper = ProcessWrapperUtil.getProcessWrapper(cmdEnv);
     this.execRoot = cmdEnv.getExecRoot();
-    this.productName = productName;
-    this.timeoutGraceSeconds = timeoutGraceSeconds;
-    this.processWrapper = ProcessWrapperRunner.getProcessWrapper(cmdEnv);
-    this.localEnvProvider =
-        OS.getCurrent() == OS.DARWIN
-            ? new XCodeLocalEnvProvider()
-            : LocalEnvProvider.ADD_TEMP_POSIX;
+    this.localEnvProvider = LocalEnvProvider.forCurrentOs(cmdEnv.getClientEnv());
+    this.sandboxBase = sandboxBase;
+    this.timeoutKillDelay = timeoutKillDelay;
+    this.treeDeleter = treeDeleter;
   }
 
   @Override
-  protected SpawnResult actuallyExec(Spawn spawn, SpawnExecutionPolicy policy)
+  protected SpawnResult actuallyExec(Spawn spawn, SpawnExecutionContext context)
       throws ExecException, IOException, InterruptedException {
-    // Each invocation of "exec" gets its own sandbox.
-    Path sandboxPath = getSandboxRoot();
+    // Each invocation of "exec" gets its own sandbox base.
+    // Note that the value returned by context.getId() is only unique inside one given SpawnRunner,
+    // so we have to prefix our name to turn it into a globally unique value.
+    Path sandboxPath =
+        sandboxBase.getRelative(getName()).getRelative(Integer.toString(context.getId()));
+    sandboxPath.getParentDirectory().createDirectory();
+    sandboxPath.createDirectory();
+
+    // b/64689608: The execroot of the sandboxed process must end with the workspace name, just like
+    // the normal execroot does.
     Path sandboxExecRoot = sandboxPath.getRelative("execroot").getRelative(execRoot.getBaseName());
+    sandboxExecRoot.getParentDirectory().createDirectory();
+    sandboxExecRoot.createDirectory();
 
-    // Each sandboxed action runs in its own execroot, so we don't need to make the temp directory's
-    // name unique (like we have to with standalone execution strategy).
-    Path tmpDir = sandboxExecRoot.getRelative("tmp");
-
-    Duration timeout = policy.getTimeout();
-    List<String> arguments =
-        ProcessWrapperRunner.getCommandLine(
-            processWrapper, spawn.getArguments(), timeout, timeoutGraceSeconds);
     Map<String, String> environment =
-        localEnvProvider.rewriteLocalEnv(spawn.getEnvironment(), execRoot, tmpDir, productName);
+        localEnvProvider.rewriteLocalEnv(spawn.getEnvironment(), binTools, "/tmp");
+
+    Duration timeout = context.getTimeout();
+    ProcessWrapperUtil.CommandLineBuilder commandLineBuilder =
+        ProcessWrapperUtil.commandLineBuilder(processWrapper.getPathString(), spawn.getArguments())
+            .setTimeout(timeout);
+
+    commandLineBuilder.setKillDelay(timeoutKillDelay);
+
+    Path statisticsPath = null;
+    if (getSandboxOptions().collectLocalSandboxExecutionStatistics) {
+      statisticsPath = sandboxPath.getRelative("stats.out");
+      commandLineBuilder.setStatisticsPath(statisticsPath);
+    }
 
     SandboxedSpawn sandbox =
         new SymlinkedSandboxedSpawn(
             sandboxPath,
             sandboxExecRoot,
-            arguments,
+            commandLineBuilder.build(),
             environment,
-            SandboxHelpers.getInputFiles(spawn, policy, execRoot),
-            SandboxHelpers.getOutputFiles(spawn),
-            getWritableDirs(sandboxExecRoot, spawn.getEnvironment(), tmpDir));
+            SandboxHelpers.processInputFiles(
+                spawn,
+                context,
+                execRoot,
+                getSandboxOptions().symlinkedSandboxExpandsTreeArtifactsInRunfilesTree),
+            SandboxHelpers.getOutputs(spawn),
+            getWritableDirs(sandboxExecRoot, environment),
+            treeDeleter);
 
-    return runSpawn(spawn, sandbox, policy, execRoot, tmpDir, timeout);
+    return runSpawn(spawn, sandbox, context, execRoot, timeout, statisticsPath);
   }
 
   @Override
-  protected String getName() {
+  public String getName() {
     return "processwrapper-sandbox";
   }
 }

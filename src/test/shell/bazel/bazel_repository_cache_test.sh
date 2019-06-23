@@ -26,10 +26,6 @@ source "${CURRENT_DIR}/remote_helpers.sh" \
 function set_up() {
   bazel clean --expunge >& $TEST_log
   repo_cache_dir=$TEST_TMPDIR/repository_cache
-  # TODO(b/37617303): make test UI-independent
-  add_to_bazelrc "fetch --noexperimental_ui"
-  add_to_bazelrc "build --noexperimental_ui"
-  add_to_bazelrc "build --noexperimental_skyframe_target_pattern_evaluator"
 }
 
 function tear_down() {
@@ -43,6 +39,8 @@ function setup_repository() {
   # Test with the extension
   serve_file $repo2_zip
   cat > WORKSPACE <<EOF
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
 http_archive(
     name = 'endangered',
     url = 'http://localhost:$nc_port/bleh',
@@ -104,6 +102,7 @@ maven_jar(
     artifact = "com.example.carnivore:carnivore:1.23",
     repository = 'http://localhost:$fileserver_port/',
     sha1 = '$sha1',
+    sha1_src = '$sha1_src',
 )
 bind(name = 'mongoose', actual = '@endangered//jar')
 EOF
@@ -168,6 +167,8 @@ EOF
 
   if [[ $write_workspace = 0 ]]; then
     cat > WORKSPACE <<EOF
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
 http_archive(
     name = 'endangered',
     url = 'http://localhost:$nc_port/$repo2_name',
@@ -214,7 +215,7 @@ function assert_files_same() {
 function test_build() {
   setup_repository
 
-  bazel run --experimental_repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+  bazel run --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
     || echo "Expected build/run to succeed"
   expect_log $what_does_the_fox_say
 }
@@ -222,7 +223,7 @@ function test_build() {
 function test_fetch() {
   setup_repository
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
     || echo "Expected fetch to succeed"
   expect_log "All external dependencies fetched successfully"
 }
@@ -230,7 +231,7 @@ function test_fetch() {
 function test_directory_structure() {
   setup_repository
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
     || echo "Expected fetch to succeed"
   if [ ! -d $repo_cache_dir/content_addressable/sha256/ ]; then
     fail "repository cache directories were not created"
@@ -240,7 +241,7 @@ function test_directory_structure() {
 function test_cache_entry_exists() {
   setup_repository
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
     || echo "Expected fetch to succeed"
   if [ ! -f $repo_cache_dir/content_addressable/sha256/$sha256/file ]; then
     fail "the file was not cached successfully"
@@ -257,7 +258,7 @@ function test_fetch_value_with_existing_cache_and_no_network() {
 
   # Fetch without a server
   shutdown_server
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
       || echo "Expected fetch to succeed"
 
   expect_log "All external dependencies fetched successfully"
@@ -267,7 +268,7 @@ function test_fetch_value_with_existing_cache_and_no_network() {
 function test_load_cached_value() {
   setup_repository
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   # Kill the server
@@ -275,16 +276,60 @@ function test_load_cached_value() {
   bazel clean --expunge
 
   # Fetch again
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   expect_log "All external dependencies fetched successfully"
 }
 
+function test_write_cache_without_hash() {
+  setup_repository
+
+  # Have a WORKSPACE file without the specified sha256
+  cat > WORKSPACE <<EOF
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = 'endangered',
+    url = 'http://localhost:$nc_port/bleh',
+    type = 'zip',
+)
+EOF
+
+  # Fetch; as we did not specify a hash, we expect bazel to tell us the hash
+  # in an info message.
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+    || fail "expected fetch to succeed"
+
+  expect_log "${sha256}"
+
+  # Shutdown the server; so fetching again won't work
+  shutdown_server
+  bazel clean --expunge
+
+  # As we don't have a predicted cache, we expect fetching to fail now.
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+    && fail "expected failure" || :
+
+  # However, if we add the hash, the value is taken from cache
+  cat > WORKSPACE <<EOF
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = 'endangered',
+    url = 'http://localhost:$nc_port/bleh',
+    type = 'zip',
+    sha256 = '${sha256}',
+)
+EOF
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+    || fail "expected fetch to succeed"
+}
+
 function test_failed_fetch_without_cache() {
   setup_repository
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   # Kill the server and reset state
@@ -295,7 +340,7 @@ function test_failed_fetch_without_cache() {
   rm -rf "$repo_cache_dir"
 
   # Attempt to fetch again
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:breeding-program >& $TEST_log \
     && echo "Expected fetch to fail"
 
   expect_log "Error downloading"
@@ -312,7 +357,7 @@ def _impl(repository_ctx):
 repo = repository_rule(implementation=_impl, local=False)
 EOF
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   if [ ! -f $repo_cache_dir/content_addressable/sha256/$zip_sha256/file ]; then
@@ -331,7 +376,7 @@ def _impl(repository_ctx):
 repo = repository_rule(implementation=_impl, local=False)
 EOF
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   if [ ! -f $repo_cache_dir/content_addressable/sha256/$zip_sha256/file ]; then
@@ -350,7 +395,7 @@ def _impl(repository_ctx):
 repo = repository_rule(implementation=_impl, local=False)
 EOF
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   # Kill the server
@@ -358,7 +403,7 @@ EOF
   bazel clean --expunge
 
   # Fetch again
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   expect_log "All external dependencies fetched successfully"
@@ -375,7 +420,7 @@ def _impl(repository_ctx):
 repo = repository_rule(implementation=_impl, local=False)
 EOF
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   # Kill the server
@@ -386,7 +431,7 @@ EOF
   rm -rf "$repo_cache_dir"
 
   # Fetch again
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     && echo "Expected fetch to fail"
 
   expect_log "Error downloading"
@@ -403,7 +448,7 @@ def _impl(repository_ctx):
 repo = repository_rule(implementation=_impl, local=False)
 EOF
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   # Kill the server
@@ -411,7 +456,7 @@ EOF
   bazel clean --expunge
 
   # Fetch again
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   expect_log "All external dependencies fetched successfully"
@@ -428,7 +473,7 @@ def _impl(repository_ctx):
 repo = repository_rule(implementation=_impl, local=False)
 EOF
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   # Kill the server
@@ -439,7 +484,7 @@ EOF
   rm -rf "$repo_cache_dir"
 
   # Fetch again
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" @foo//:all >& $TEST_log \
     && echo "Expected fetch to fail"
 
   expect_log "Error downloading"
@@ -448,18 +493,22 @@ EOF
 function test_maven_jar_exists_in_cache() {
   setup_maven_repository
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   if [ ! -f $repo_cache_dir/content_addressable/sha1/$sha1/file ]; then
-    fail "the file was not cached successfully"
+    fail "the jar file was not cached successfully"
+  fi
+
+  if [ ! -f $repo_cache_dir/content_addressable/sha1/$sha1_src/file ]; then
+    fail "the sources file was not cached successfully"
   fi
 }
 
 function test_load_cached_value_maven_jar() {
   setup_maven_repository
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   # Kill the server
@@ -467,7 +516,7 @@ function test_load_cached_value_maven_jar() {
   bazel clean --expunge
 
   # Fetch again
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   expect_log "All external dependencies fetched successfully"
@@ -476,7 +525,7 @@ function test_load_cached_value_maven_jar() {
 function test_maven_jar_fail_without_cache() {
   setup_maven_repository
 
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
     || echo "Expected fetch to succeed"
 
   # Kill the server
@@ -487,7 +536,7 @@ function test_maven_jar_fail_without_cache() {
   rm -rf "$repo_cache_dir"
 
   # Fetch again
-  bazel fetch --experimental_repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
+  bazel fetch --repository_cache="$repo_cache_dir" //zoo:ball-pit >& $TEST_log \
     && echo "Expected fetch to fail"
 
   expect_log "Failed to fetch Maven dependency"

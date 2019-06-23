@@ -33,7 +33,7 @@ import javax.annotation.Nullable;
 final class ExtraActionsVisitor extends ActionGraphVisitor {
   private final RuleContext ruleContext;
   private final Multimap<String, ExtraActionSpec> mnemonicToExtraActionMap;
-  private final List<Artifact> extraArtifacts;
+  private final List<Artifact.DerivedArtifact> extraArtifacts;
 
   /** Creates a new visitor for the extra actions associated with the given target. */
   public ExtraActionsVisitor(RuleContext ruleContext,
@@ -47,13 +47,11 @@ final class ExtraActionsVisitor extends ActionGraphVisitor {
   void maybeAddExtraAction(ActionAnalysisMetadata original) {
     if (original instanceof Action) {
       Action action = (Action) original;
-      if (action.extraActionCanAttach()) {
-        Collection<ExtraActionSpec> extraActions =
-            mnemonicToExtraActionMap.get(action.getMnemonic());
-        if (extraActions != null) {
-          for (ExtraActionSpec extraAction : extraActions) {
-            extraArtifacts.addAll(extraAction.addExtraAction(ruleContext, action));
-          }
+      Collection<ExtraActionSpec> extraActions =
+          mnemonicToExtraActionMap.get(action.getMnemonic());
+      if (extraActions != null) {
+        for (ExtraActionSpec extraAction : extraActions) {
+          extraArtifacts.addAll(extraAction.addExtraAction(ruleContext, action));
         }
       }
     }
@@ -65,8 +63,8 @@ final class ExtraActionsVisitor extends ActionGraphVisitor {
   }
 
   /** Retrieves the collected artifacts since this method was last called and clears the list. */
-  public ImmutableList<Artifact> getAndResetExtraArtifacts() {
-    ImmutableList<Artifact> collected = ImmutableList.copyOf(extraArtifacts);
+  ImmutableList<Artifact.DerivedArtifact> getAndResetExtraArtifacts() {
+    ImmutableList<Artifact.DerivedArtifact> collected = ImmutableList.copyOf(extraArtifacts);
     extraArtifacts.clear();
     return collected;
   }

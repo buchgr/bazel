@@ -254,14 +254,63 @@ function assert_singlejar_works() {
   mkdir -p "$pkg/jvm"
   cat > "$pkg/jvm/BUILD" <<EOF
 package(default_visibility=["//visibility:public"])
-java_runtime_suite(name='suite', default=':runtime')
-java_runtime(name='runtime', java_home='$javabase')
+java_runtime(
+    name='runtime',
+    java_home='$javabase',
+)
 EOF
+
+  if [ ! -f buildenv/platforms/BUILD ]; then
+  cat >> "$pkg/jvm/BUILD" <<EOF
+constraint_setting(
+    name = 'constraint_setting',
+)
+constraint_value(
+    name = 'constraint',
+    constraint_setting = ':constraint_setting',
+)
+toolchain(
+    name = 'java_runtime_toolchain',
+    toolchain = ':runtime',
+    toolchain_type = '@bazel_tools//tools/jdk:runtime_toolchain_type',
+    target_compatible_with = [':constraint'],
+)
+platform(
+    name = 'platform',
+    parents = ['@bazel_tools//platforms:host_platform'],
+    constraint_values = [':constraint'],
+)
+EOF
+  else
+  cat >> "$pkg/jvm/BUILD" <<EOF
+constraint_value(
+    name = 'constraint',
+    constraint_setting = '//third_party/bazel_rules/rules_java/java/constraints:runtime',
+)
+toolchain(
+    name = 'java_runtime_toolchain',
+    toolchain = ':runtime',
+    toolchain_type = '//tools/jdk:runtime_toolchain_type',
+    target_compatible_with = [':constraint'],
+)
+platform(
+    name = 'platform',
+    parents = ['//buildenv/platforms:host_platform'],
+    constraint_values = [
+        ':constraint',
+        '//third_party/bazel_rules/rules_java/java/constraints:java8',
+    ],
+)
+EOF
+  fi
 
 
   # Set javabase to an absolute path.
   bazel build //$pkg/java/hello:hello //$pkg/java/hello:hello_deploy.jar \
-      "$stamp_arg" --javabase="//$pkg/jvm:suite" "$embed_label" >&"$TEST_log" \
+      "$stamp_arg" --javabase="//$pkg/jvm:runtime" \
+      --extra_toolchains="//$pkg/jvm:all,//tools/jdk:all" \
+      --platforms="//$pkg/jvm:platform" \
+      "$embed_label" >&"$TEST_log" \
       || fail "Build failed"
 
   mkdir $pkg/ugly/ || fail "mkdir failed"
@@ -270,7 +319,7 @@ EOF
   cp ${PRODUCT_NAME}-bin/$pkg/java/hello/hello_deploy.jar $pkg/ugly/
 
   $pkg/ugly/hello build.target build.time build.timestamp \
-      main.class=hello.Hello "$expected_build_data" 2>&1 >>$TEST_log
+      main.class=hello.Hello "$expected_build_data" >> $TEST_log 2>&1
   expect_log 'Hello, World!'
 }
 
@@ -317,7 +366,7 @@ function test_deterministic_nostamp_build() {
   # https://github.com/bazelbuild/bazel/issues/3156
   local -r first_run="$(md5_file $(find "${PRODUCT_NAME}-out/" -type f '!' \
       -name build-changelist.txt -a '!' -name volatile-status.txt \
-      -a '!' -name stderr-* -a '!' -name *.a \
+      -a '!' -name 'stderr-*' -a '!' -name '*.a' \
       -a '!' -name __xcodelocatorcache -a '!' -name __xcruncache \
       | sort -u))"
 
@@ -328,7 +377,7 @@ function test_deterministic_nostamp_build() {
       || fail "Build failed"
   local -r second_run="$(md5_file $(find "${PRODUCT_NAME}-out/" -type f '!' \
       -name build-changelist.txt -a '!' -name volatile-status.txt \
-      -a '!' -name stderr-* -a '!' -name *.a \
+      -a '!' -name 'stderr-*' -a '!' -name '*.a' \
       -a '!' -name __xcodelocatorcache -a '!' -name __xcruncache \
       | sort -u))"
 
@@ -635,22 +684,21 @@ EOF
 function test_jvm_flags_are_passed_verbatim() {
   local -r pkg="${FUNCNAME[0]}"
   mkdir -p $pkg/java/com/google/jvmflags || fail "mkdir"
-  cat >$pkg/java/com/google/jvmflags/BUILD <<'EOF'
+  cat >$pkg/java/com/google/jvmflags/BUILD <<EOF
 java_binary(
     name = 'foo',
     srcs = ['Foo.java'],
     main_class = 'com.google.jvmflags.Foo',
+    toolchains = ['${TOOLS_REPOSITORY}//tools/jdk:current_java_runtime'],
     jvm_flags = [
         # test quoting
-        '--a=\'single_single\'',
+        '--a=\\'single_single\\'',
         '--b="single_double"',
         "--c='double_single'",
-        "--d=\"double_double\"",
+        "--d=\\"double_double\\"",
         '--e=no_quotes',
         # no escaping expected
-        '--f=stuff$$to"escape\\',
-        # test make variable expansion
-        '--g=$(JAVABASE)',
+        '--f=stuff\$\$to"escape\\\\',
     ],
 )
 EOF
@@ -672,7 +720,6 @@ EOF
       " --d=\"double_double\" " \
       ' --e=no_quotes ' \
       ' --f=stuff$to"escape\\ ' \
-      " --g=${runfiles_relative_javabase}" \
       ; do
     # NOTE: don't test the full path of the JDK, it's architecture-dependent.
     assert_contains $flag $STUBSCRIPT
@@ -809,8 +856,8 @@ java_library(
 )
 EOF
   bazel build --java_header_compilation=true \
-    //$pkg/java/test:a >& "$TEST_log" && fail "Unexpected success"
-  expect_log "package missing does not exist"
+    //$pkg/java/test:liba.jar >& "$TEST_log" && fail "Unexpected success"
+  expect_log "symbol not found missing.NoSuch"
 }
 
 function test_java_import_with_empty_jars_attribute() {

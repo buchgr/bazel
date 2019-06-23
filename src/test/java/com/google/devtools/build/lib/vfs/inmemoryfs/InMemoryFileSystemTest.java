@@ -14,37 +14,35 @@
 package com.google.devtools.build.lib.vfs.inmemoryfs;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.testutil.TestThread;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.ScopeEscapableFileSystemTest;
+import com.google.devtools.build.lib.vfs.SymlinkAwareFileSystemTest;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.Charset;
 import java.util.Collection;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
 
 /**
- * Tests for {@link InMemoryFileSystem}. Note that most tests are inherited
- * from {@link ScopeEscapableFileSystemTest} and ancestors. This specific
- * file focuses only on concurrency tests.
- *
+ * Tests for {@link InMemoryFileSystem}. Note that most tests are inherited from {@link
+ * SymlinkAwareFileSystemTest} and ancestors. This specific file focuses only on concurrency tests.
  */
-@RunWith(JUnit4.class)
-public class InMemoryFileSystemTest extends ScopeEscapableFileSystemTest {
+public class InMemoryFileSystemTest extends SymlinkAwareFileSystemTest {
 
   @Override
-  public FileSystem getFreshFileSystem() {
-    return new InMemoryFileSystem(BlazeClock.instance(), SCOPE_ROOT);
+  public FileSystem getFreshFileSystem(DigestHashFunction digestHashFunction) {
+    return new InMemoryFileSystem(BlazeClock.instance(), digestHashFunction);
   }
 
   @Override
@@ -59,9 +57,9 @@ public class InMemoryFileSystemTest extends ScopeEscapableFileSystemTest {
    * Writes the given data to the given file.
    */
   private static void writeToFile(Path path, String data) throws IOException {
-    OutputStream out = path.getOutputStream();
-    out.write(data.getBytes(Charset.defaultCharset()));
-    out.close();
+    try (OutputStream out = path.getOutputStream()) {
+      out.write(data.getBytes(Charset.defaultCharset()));
+    }
   }
 
   /**
@@ -155,10 +153,11 @@ public class InMemoryFileSystemTest extends ScopeEscapableFileSystemTest {
           assertThat(file.isWritable()).isFalse();
           assertThat(file.isExecutable()).isFalse();
           assertThat(file.getLastModifiedTime()).isEqualTo(300);
-          BufferedReader reader = new BufferedReader(
-              new InputStreamReader(file.getInputStream(), Charset.defaultCharset()));
-          assertThat(reader.readLine()).isEqualTo(TEST_FILE_DATA);
-          assertThat(reader.readLine()).isNull();
+          try (BufferedReader reader = new BufferedReader(
+              new InputStreamReader(file.getInputStream(), Charset.defaultCharset()))) {
+            assertThat(reader.readLine()).isEqualTo(TEST_FILE_DATA);
+            assertThat(reader.readLine()).isNull();
+          }
 
           Path symlink = base.getRelative("symlink" + i);
           assertThat(symlink.exists()).isTrue();
@@ -239,10 +238,11 @@ public class InMemoryFileSystemTest extends ScopeEscapableFileSystemTest {
           assertThat(file.isExecutable()).isEqualTo(i % 4 == 0);
           assertThat(file.getLastModifiedTime()).isEqualTo(i);
           if (file.isReadable()) {
-            BufferedReader reader = new BufferedReader(
-                new InputStreamReader(file.getInputStream(), Charset.defaultCharset()));
-            assertThat(reader.readLine()).isEqualTo(TEST_FILE_DATA);
-            assertThat(reader.readLine()).isNull();
+            try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(file.getInputStream(), Charset.defaultCharset()))) {
+              assertThat(reader.readLine()).isEqualTo(TEST_FILE_DATA);
+              assertThat(reader.readLine()).isNull();
+            }
           }
 
           Path symlink = base.getRelative("symlink_" + threadId + "_" + i);
@@ -386,25 +386,26 @@ public class InMemoryFileSystemTest extends ScopeEscapableFileSystemTest {
 
   @Test
   public void testEloop() throws Exception {
-    Path a = testFS.getPath("/a");
-    Path b = testFS.getPath("/b");
-    a.createSymbolicLink(PathFragment.create("b"));
-    b.createSymbolicLink(PathFragment.create("a"));
-    try {
-      a.stat();
-    } catch (IOException e) {
-      assertThat(e).hasMessage("/a (Too many levels of symbolic links)");
-    }
+    // The test assumes that aName and bName is not a prefix of the workingDir.
+    String aName = "/" + UUID.randomUUID();
+    String bName = "/" + UUID.randomUUID();
+
+    Path a = testFS.getPath(aName);
+    Path b = testFS.getPath(bName);
+    a.createSymbolicLink(PathFragment.create(bName));
+    b.createSymbolicLink(PathFragment.create(aName));
+    IOException e = assertThrows(IOException.class, () -> a.stat());
+    assertThat(e).hasMessageThat().isEqualTo(aName + " (Too many levels of symbolic links)");
   }
 
   @Test
   public void testEloopSelf() throws Exception {
-    Path a = testFS.getPath("/a");
-    a.createSymbolicLink(PathFragment.create("a"));
-    try {
-      a.stat();
-    } catch (IOException e) {
-      assertThat(e).hasMessage("/a (Too many levels of symbolic links)");
-    }
+    // The test assumes that aName is not a prefix of the workingDir.
+    String aName = "/" + UUID.randomUUID();
+
+    Path a = testFS.getPath(aName);
+    a.createSymbolicLink(PathFragment.create(aName));
+    IOException e = assertThrows(IOException.class, () -> a.stat());
+    assertThat(e).hasMessageThat().isEqualTo(aName + " (Too many levels of symbolic links)");
   }
 }

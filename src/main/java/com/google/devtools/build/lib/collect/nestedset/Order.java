@@ -15,15 +15,14 @@ package com.google.devtools.build.lib.collect.nestedset;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import java.util.HashMap;
 
 /**
  * Type of a nested set (defines order).
  *
- *
  * <p>STABLE_ORDER: an unspecified traversal order. Use when the order of elements does not matter.
  * In Skylark it is called "default"; its older deprecated name is "stable".
- *
  *
  * <p>COMPILE_ORDER: left-to-right postorder. In Skylark it is called "postorder"; its older
  * deprecated name is "compile".
@@ -33,7 +32,6 @@ import java.util.HashMap;
  *
  * <p>This type of set would typically be used for artifacts where elements of nested sets go before
  * the direct members of a set, for example in the case of Javascript dependencies.
- *
  *
  * <p>LINK_ORDER: a variation of left-to-right preorder that enforces topological sorting. In
  * Skylark it is called "topological"; its older deprecated name is "link".
@@ -87,7 +85,6 @@ import java.util.HashMap;
  * such cases ordering is decided by the rightmost branch because of the list reversing behind the
  * scenes, so the ordering in the final enumeration will be "E D".
  *
- *
  * <p>NAIVE_LINK_ORDER: a left-to-right preordering. In Skylark it is called "preorder"; its older
  * deprecated name is "naive_link".
  *
@@ -110,6 +107,7 @@ public enum Order {
   NAIVE_LINK_ORDER("preorder");
 
   private static final ImmutableMap<String, Order> VALUES;
+  private static final Order[] ORDINALS;
 
   private final String skylarkName;
   private final NestedSet<?> emptySet;
@@ -118,6 +116,29 @@ public enum Order {
     this.skylarkName = skylarkName;
     this.emptySet = new NestedSet<>(this);
   }
+
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final Order STABLE_ORDER_CONSTANT = STABLE_ORDER;
+
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final Order COMPILE_ORDER_CONSTANT = COMPILE_ORDER;
+
+  @AutoCodec @AutoCodec.VisibleForSerialization static final Order LINK_ORDER_CONSTANT = LINK_ORDER;
+
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final Order NAIVE_LINK_ORDER_CONSTANT = NAIVE_LINK_ORDER;
+
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final NestedSet<?> EMPTY_STABLE = STABLE_ORDER.emptySet();
+
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final NestedSet<?> EMPTY_COMPILE = COMPILE_ORDER.emptySet();
+
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final NestedSet<?> EMPTY_LINK = LINK_ORDER.emptySet();
+
+  @AutoCodec @AutoCodec.VisibleForSerialization
+  static final NestedSet<?> EMPTY_NAIVE_LINK = NAIVE_LINK_ORDER.emptySet();
 
   /**
    * Returns an empty set of the given ordering.
@@ -160,14 +181,17 @@ public enum Order {
    * Indexes all possible values by name and stores the results in a {@code ImmutableMap}
    */
   static {
-    Order[] tmpValues = Order.values();
+    ORDINALS = values();
+    HashMap<String, Order> entries = Maps.newHashMapWithExpectedSize(ORDINALS.length);
 
-    HashMap<String, Order> entries = Maps.newHashMapWithExpectedSize(tmpValues.length);
-
-    for (Order current : tmpValues) {
+    for (Order current : ORDINALS) {
       entries.put(current.getSkylarkName(), current);
     }
 
     VALUES = ImmutableMap.copyOf(entries);
+  }
+
+  static Order getOrder(int ordinal) {
+    return ORDINALS[ordinal];
   }
 }

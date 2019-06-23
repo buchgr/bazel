@@ -17,27 +17,30 @@ import com.google.common.base.Function;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
+import com.google.devtools.build.lib.analysis.BlazeDirectories;
+import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.Package;
-import com.google.devtools.build.lib.packages.RuleClassProvider;
 import com.google.devtools.build.lib.packages.Target;
-import com.google.devtools.build.lib.skyframe.PackageFunction;
 import com.google.devtools.build.lib.skyframe.packages.BazelPackageLoader;
 import com.google.devtools.build.lib.skyframe.packages.PackageLoader;
-import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.syntax.StarlarkSemantics;
+import com.google.devtools.build.lib.vfs.Root;
 
 /**
  * A Package.Builder.Helper for use in tests that a sanity check with {@link BazelPackageLoader} for
  * each loaded package, for the sake of getting pretty nice test coverage.
  */
 public class BazelPackageBuilderHelperForTesting implements Package.Builder.Helper {
-  private final RuleClassProvider ruleClassProvider;
+  private final ConfiguredRuleClassProvider ruleClassProvider;
+  private final BlazeDirectories directories;
 
-  public BazelPackageBuilderHelperForTesting(RuleClassProvider ruleClassProvider) {
+  public BazelPackageBuilderHelperForTesting(
+      ConfiguredRuleClassProvider ruleClassProvider, BlazeDirectories directories) {
     this.ruleClassProvider = ruleClassProvider;
+    this.directories = directories;
   }
 
   @Override
@@ -46,8 +49,9 @@ public class BazelPackageBuilderHelperForTesting implements Package.Builder.Help
   }
 
   @Override
-  public void onLoadingComplete(Package pkg) {
-    sanityCheckBazelPackageLoader(pkg, ruleClassProvider);
+  public void onLoadingComplete(
+      Package pkg, StarlarkSemantics starlarkSemantics, long loadTimeNanos) {
+    sanityCheckBazelPackageLoader(pkg, ruleClassProvider, starlarkSemantics);
   }
 
   private static final Function<Target, Label> TARGET_TO_LABEL =
@@ -58,27 +62,19 @@ public class BazelPackageBuilderHelperForTesting implements Package.Builder.Help
         }
       };
 
-  // This is synchronized because some Skylark internals aren't thread safe.
-  private synchronized void sanityCheckBazelPackageLoader(
+  private void sanityCheckBazelPackageLoader(
       Package pkg,
-      RuleClassProvider ruleClassProvider) {
+      ConfiguredRuleClassProvider ruleClassProvider,
+      StarlarkSemantics starlarkSemantics) {
     PackageIdentifier pkgId = pkg.getPackageIdentifier();
-    if (pkgId.equals(Label.EXTERNAL_PACKAGE_IDENTIFIER)
-        || !pkg.getPackageIdentifier().getRepository().isMain()
-        || PackageFunction.isDefaultsPackage(pkg.getPackageIdentifier())) {
-      // TODO(nharmata): Support these packages.
-      return;
-    }
-    int numNameSegments = pkg.getNameFragment().segmentCount();
-    PathFragment fullFilenameFragment = pkg.getFilename().asFragment();
-    int numFullFilenameFragmentSegments = fullFilenameFragment.segmentCount();
-    Path workspaceRoot = pkg.getFilename().getFileSystem().getPath(
-        fullFilenameFragment.subFragment(
-            0,
-            numFullFilenameFragmentSegments - (numNameSegments + 1)));
-    PackageLoader packageLoader = BazelPackageLoader.builder(workspaceRoot)
-        .setRuleClassProvider(ruleClassProvider)
-        .build();
+    PackageLoader packageLoader =
+        BazelPackageLoader.builder(
+                Root.fromPath(directories.getWorkspace()),
+                directories.getInstallBase(),
+                directories.getOutputBase())
+            .setSkylarkSemantics(starlarkSemantics)
+            .setRuleClassProvider(ruleClassProvider)
+            .build();
     Package newlyLoadedPkg;
     try {
       newlyLoadedPkg = packageLoader.loadPackage(pkg.getPackageIdentifier());
@@ -93,17 +89,19 @@ public class BazelPackageBuilderHelperForTesting implements Package.Builder.Help
         ImmutableSet.copyOf(
             Iterables.transform(newlyLoadedPkg.getTargets().values(), TARGET_TO_LABEL));
     if (!targetsInPkg.equals(targetsInNewlyLoadedPkg)) {
-      throw new IllegalStateException(String.format(
-          "The Package for %s had a different set of targets (<targetsInPkg> - "
-          + "<targetsInNewlyLoadedPkg> = %s, <targetsInNewlyLoadedPkg> - <targetsInPkg> = %s) when "
-          + "loaded normally during execution of the current test than it did when loaded via "
-          + "BazelPackageLoader (done automatically by the BazelPackageBuilderHelperForTesting "
-          + "hook). This either means: (i) Skyframe package loading semantics have diverged from "
-          + "BazelPackageLoader semantics (ii) The test in question is doing something that "
-          + "confuses BazelPackageBuilderHelperForTesting.",
-          pkgId,
-          Sets.difference(targetsInPkg, targetsInNewlyLoadedPkg),
-          Sets.difference(targetsInNewlyLoadedPkg, targetsInPkg)));
+      Sets.SetView<Label> unsatisfied = Sets.difference(targetsInPkg, targetsInNewlyLoadedPkg);
+      Sets.SetView<Label> unexpected = Sets.difference(targetsInNewlyLoadedPkg, targetsInPkg);
+      throw new IllegalStateException(
+          String.format(
+              "The Package for %s had a different set of targets (<targetsInPkg> - "
+                  + "<targetsInNewlyLoadedPkg> = %s, <targetsInNewlyLoadedPkg> - <targetsInPkg> = "
+                  + "%s) when loaded normally during execution of the current test than it did "
+                  + "when loaded via BazelPackageLoader (done automatically by the "
+                  + "BazelPackageBuilderHelperForTesting hook). This either means: (i) Skyframe "
+                  + "package loading semantics have diverged from "
+                  + "BazelPackageLoader semantics (ii) The test in question is doing something "
+                  + "that confuses BazelPackageBuilderHelperForTesting.",
+              pkgId, unsatisfied, unexpected));
     }
   }
 }

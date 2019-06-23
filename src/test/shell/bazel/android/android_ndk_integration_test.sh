@@ -24,9 +24,17 @@
 # Note that if the environment is not set up as above
 # android_ndk_integration_test will silently be ignored and will be shown as
 # passing.
+#
+# Due to clang version constraints, this test only runs with NDK 15 and above.
 
 # Load the test setup defined in the parent directory
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "${CURRENT_DIR}/android_helper.sh" \
+  || { echo "android_helper.sh not found!" >&2; exit 1; }
+fail_if_no_android_sdk
+fail_if_no_android_ndk
+
 source "${CURRENT_DIR}/../../integration_test_setup.sh" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
@@ -45,7 +53,6 @@ android_binary(
         "MainActivity.java",
         "Jni.java",
     ],
-    legacy_native_support = 0,
     manifest = "AndroidManifest.xml",
     deps = [
         ":lib",
@@ -202,20 +209,7 @@ function test_android_binary() {
   check_soname
 }
 
-is_ndk_10() {
-  if [[ -r "${BAZEL_RUNFILES}/external/androidndk/ndk/source.properties" ]]; then
-    return 1
-  else
-    return 0
-  fi
-}
-
 function test_android_binary_clang() {
-  # clang3.8 is only available on NDK r11
-  if is_ndk_10; then
-    echo "Not running test_android_binary_clang because it requires NDK11 or later"
-    return
-  fi
   create_new_workspace
   setup_android_sdk_support
   setup_android_ndk_support
@@ -225,7 +219,7 @@ function test_android_binary_clang() {
 
   bazel build -s //java/bazel:bin \
       --fat_apk_cpu="$cpus" \
-      --android_compiler=clang3.8 \
+      --android_compiler=clang5.0.300080 \
       || fail "build failed"
   check_num_sos
   check_soname
@@ -233,10 +227,6 @@ function test_android_binary_clang() {
 
 # Regression test for https://github.com/bazelbuild/bazel/issues/2601.
 function test_clang_include_paths() {
-  if is_ndk_10; then
-    echo "Not running test_clang_include_paths because it requires NDK11 or later"
-    return
-  fi
   create_new_workspace
   setup_android_ndk_support
   cat > BUILD <<EOF
@@ -251,7 +241,7 @@ EOF
 int main() { return 0; }
 EOF
   bazel build //:foo \
-    --compiler=clang3.8 \
+    --compiler=clang5.0.300080 \
     --cpu=armeabi-v7a \
     --crosstool_top=//external:android/crosstool \
     --host_crosstool_top=@bazel_tools//tools/cpp:toolchain \
@@ -286,31 +276,144 @@ EOF
 
 function test_android_ndk_repository_wrong_path() {
   create_new_workspace
-  mkdir "$TEST_SRCDIR/some_dir"
+  mkdir "$TEST_TMPDIR/some_dir"
   cat > WORKSPACE <<EOF
 android_ndk_repository(
     name = "androidndk",
     api_level = 25,
-    path = "$TEST_SRCDIR/some_dir",
+    path = "$TEST_TMPDIR/some_dir",
 )
 EOF
   bazel build @androidndk//:files >& $TEST_log && fail "Should have failed"
-  expect_log "Unable to read the Android NDK at $TEST_SRCDIR/some_dir, the path may be invalid." \
+  expect_log "Unable to read the Android NDK at $TEST_TMPDIR/some_dir, the path may be invalid." \
     " Is the path in android_ndk_repository() or \$ANDROID_NDK_HOME set correctly?"
 }
 
-# ndk r10 and earlier
-if [[ ! -r "${TEST_SRCDIR}/androidndk/ndk/RELEASE.TXT" ]]; then
-  # ndk r11 and later
-  if [[ ! -r "${TEST_SRCDIR}/androidndk/ndk/source.properties" ]]; then
-    echo "Not running Android NDK tests due to lack of an Android NDK."
-    exit 0
-  fi
-fi
+function test_stripped_cc_binary() {
+  create_new_workspace
+  setup_android_ndk_support
+  cat > BUILD <<EOF
+cc_binary(
+    name = "foo",
+    srcs = ["foo.cc"],
+)
+EOF
+  cat > foo.cc <<EOF
+int main() { return 0; }
+EOF
+  bazel build //:foo.stripped \
+    --cpu=armeabi-v7a \
+    --crosstool_top=//external:android/crosstool \
+    --host_crosstool_top=@bazel_tools//tools/cpp:toolchain \
+    || fail "build failed"
+}
 
-if [[ ! -d "${TEST_SRCDIR}/androidsdk" ]]; then
-  echo "Not running Android NDK tests due to lack of an Android SDK."
-  exit 0
-fi
+function test_crosstool_stlport() {
+  create_new_workspace
+  setup_android_ndk_support
+  cat > BUILD <<EOF
+cc_binary(
+    name = "foo",
+    srcs = ["foo.cc"],
+    linkopts = ["-ldl"],
+)
+EOF
+  cat > foo.cc <<EOF
+#include <string>
+#include <jni.h>
+#include <android/log.h>
+#include <cstdio>
+#include <iostream>
+
+using namespace std;
+int main(){
+  string foo = "foo";
+  string bar = "bar";
+  string foobar = foo + bar;
+  return 0;
+}
+EOF
+  assert_build //:foo \
+    --cpu=armeabi-v7a \
+    --crosstool_top=@androidndk//:toolchain-stlport \
+    --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
+}
+
+function test_crosstool_libcpp() {
+  create_new_workspace
+  setup_android_ndk_support
+  cat > BUILD <<EOF
+cc_binary(
+    name = "foo",
+    srcs = ["foo.cc"],
+    linkopts = ["-ldl", "-lm"],
+)
+EOF
+  cat > foo.cc <<EOF
+#include <string>
+#include <jni.h>
+#include <android/log.h>
+#include <cstdio>
+#include <iostream>
+
+using namespace std;
+int main(){
+  string foo = "foo";
+  string bar = "bar";
+  string foobar = foo + bar;
+  return 0;
+}
+EOF
+  assert_build //:foo \
+    --cpu=armeabi-v7a \
+    --crosstool_top=@androidndk//:toolchain-libcpp \
+    --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
+}
+
+function test_crosstool_gnu_libstdcpp() {
+  create_new_workspace
+  setup_android_ndk_support
+  cat > BUILD <<EOF
+cc_binary(
+    name = "foo",
+    srcs = ["foo.cc"],
+)
+EOF
+  cat > foo.cc <<EOF
+#include <string>
+#include <jni.h>
+#include <android/log.h>
+#include <cstdio>
+#include <iostream>
+
+using namespace std;
+int main(){
+  string foo = "foo";
+  string bar = "bar";
+  string foobar = foo + bar;
+  return 0;
+}
+EOF
+  assert_build //:foo \
+    --cpu=armeabi-v7a \
+    --crosstool_top=@androidndk//:toolchain-gnu-libstdcpp \
+    --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
+}
+
+function test_crosstool_libcpp_with_multiarch() {
+  create_new_workspace
+  setup_android_sdk_support
+  setup_android_ndk_support
+  create_android_binary
+
+  cpus="armeabi,armeabi-v7a,arm64-v8a,x86,x86_64"
+
+  assert_build //java/bazel:bin \
+    --fat_apk_cpu="$cpus" \
+    --android_crosstool_top=@androidndk//:toolchain-libcpp \
+    --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
+  check_num_sos
+  check_soname
+}
 
 run_suite "Android NDK integration tests"

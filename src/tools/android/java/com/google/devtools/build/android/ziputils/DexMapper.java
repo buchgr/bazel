@@ -19,8 +19,10 @@ import com.google.common.base.Predicates;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
-import com.google.devtools.common.options.Options;
 import com.google.devtools.common.options.OptionsBase;
+import com.google.devtools.common.options.OptionsParser;
+import com.google.devtools.common.options.ShellQuotedParamsFilePreProcessor;
+import java.nio.file.FileSystems;
 import java.util.List;
 
 /**
@@ -36,9 +38,16 @@ public class DexMapper {
    * @param args the command line arguments
    */
   public static void main(String[] args) {
-    DexMapperOptions options =
-        Options.parseAndExitUponError(DexMapperOptions.class, /*allowResidue=*/ true, args)
-            .getOptions();
+
+    OptionsParser parser =
+        OptionsParser.builder()
+            .optionsClasses(DexMapperOptions.class)
+            .allowResidue(true)
+            .argsPreProcessor(new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()))
+            .build();
+    parser.parseAndExitUponError(args);
+    DexMapperOptions options = parser.getOptions(DexMapperOptions.class);
+
     List<String> inputs = options.inputJars;
     List<String> outputs = options.outputJars;
     String filterFile = options.mainDexFilter;

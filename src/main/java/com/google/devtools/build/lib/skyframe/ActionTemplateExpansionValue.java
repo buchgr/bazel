@@ -13,85 +13,93 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
-import com.google.common.collect.ImmutableList;
-import com.google.devtools.build.lib.actions.Action;
-import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
-import com.google.devtools.build.lib.actions.ActionLookupValue;
-import com.google.devtools.build.lib.analysis.actions.ActionTemplate;
+import com.google.common.base.MoreObjects;
+import com.google.common.collect.Interner;
+import com.google.devtools.build.lib.actions.Actions.GeneratingActions;
+import com.google.devtools.build.lib.actions.BasicActionLookupValue;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.build.skyframe.LegacySkyKey;
+import com.google.devtools.build.lib.concurrent.BlazeInterners;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.skyframe.SkyFunctionName;
-import com.google.devtools.build.skyframe.SkyKey;
 
 /**
  * Value that stores expanded actions from ActionTemplate.
  */
-public final class ActionTemplateExpansionValue extends ActionLookupValue {
-
-  ActionTemplateExpansionValue(
-      Iterable<Action> expandedActions, boolean removeActionsAfterEvaluation) {
-    super(
-        ImmutableList.<ActionAnalysisMetadata>copyOf(expandedActions),
-        removeActionsAfterEvaluation);
+public final class ActionTemplateExpansionValue extends BasicActionLookupValue {
+  ActionTemplateExpansionValue(GeneratingActions generatingActions) {
+    super(generatingActions, /*nonceVersion=*/ null);
   }
 
-  static SkyKey key(ActionTemplate<?> actionTemplate) {
-    return LegacySkyKey.create(
-        SkyFunctions.ACTION_TEMPLATE_EXPANSION, createActionTemplateExpansionKey(actionTemplate));
+  static ActionTemplateExpansionKey key(ActionLookupKey actionLookupKey, int actionIndex) {
+    return ActionTemplateExpansionKey.of(actionLookupKey, actionIndex);
   }
 
-  static ActionTemplateExpansionKey createActionTemplateExpansionKey(
-      ActionTemplate<?> actionTemplate) {
-    return new ActionTemplateExpansionKey(actionTemplate);
-  }
+  /** Key for {@link ActionTemplateExpansionValue} nodes. */
+  @AutoCodec
+  public static final class ActionTemplateExpansionKey extends ActionLookupKey {
+    private static final Interner<ActionTemplateExpansionKey> interner =
+        BlazeInterners.newWeakInterner();
 
+    private final ActionLookupKey actionLookupKey;
+    private final int actionIndex;
 
-  static final class ActionTemplateExpansionKey extends ActionLookupKey {
-    private final ActionTemplate<?> actionTemplate;
+    private ActionTemplateExpansionKey(ActionLookupKey actionLookupKey, int actionIndex) {
+      this.actionLookupKey = actionLookupKey;
+      this.actionIndex = actionIndex;
+    }
 
-    ActionTemplateExpansionKey(ActionTemplate<?> actionTemplate) {
-      Preconditions.checkNotNull(
-          actionTemplate,
-          "Passed in action template cannot be null: %s",
-          actionTemplate);
-      this.actionTemplate = actionTemplate;
+    @AutoCodec.VisibleForSerialization
+    @AutoCodec.Instantiator
+    static ActionTemplateExpansionKey of(ActionLookupKey actionLookupKey, int actionIndex) {
+      return interner.intern(new ActionTemplateExpansionKey(actionLookupKey, actionIndex));
     }
 
     @Override
-    protected SkyFunctionName getType() {
+    public SkyFunctionName functionName() {
       return SkyFunctions.ACTION_TEMPLATE_EXPANSION;
     }
 
-
     @Override
     public Label getLabel() {
-      return actionTemplate.getOwner().getLabel();
+      return actionLookupKey.getLabel();
     }
 
-    /** Returns the associated {@link ActionTemplate} */
-    ActionTemplate<?> getActionTemplate() {
-      return actionTemplate;
+    ActionLookupKey getActionLookupKey() {
+      return actionLookupKey;
+    }
+
+    /**
+     * Index of the action in question in the node keyed by {@link #getActionLookupKey}. Should be
+     * passed to {@link ActionLookupValue#getAction}.
+     */
+    int getActionIndex() {
+      return actionIndex;
     }
 
     @Override
     public int hashCode() {
-      return actionTemplate.hashCode();
+      return 37 * actionLookupKey.hashCode() + actionIndex;
     }
 
     @Override
     public boolean equals(Object obj) {
-     if (this == obj) {
-       return true;
-     }
-      if (obj == null) {
-        return false;
+      if (this == obj) {
+        return true;
       }
       if (!(obj instanceof ActionTemplateExpansionKey)) {
         return false;
       }
-      ActionTemplateExpansionKey other = (ActionTemplateExpansionKey) obj;
-      return actionTemplate.equals(other.actionTemplate);
+      ActionTemplateExpansionKey that = (ActionTemplateExpansionKey) obj;
+      return this.actionIndex == that.actionIndex
+          && this.actionLookupKey.equals(that.actionLookupKey);
+    }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper(this)
+          .add("actionLookupKey", actionLookupKey)
+          .add("actionIndex", actionIndex)
+          .toString();
     }
   }
 }

@@ -29,8 +29,21 @@ import org.junit.runners.JUnit4;
 public class AndroidCommonTest extends BuildViewTestCase {
 
   @Before
+  public void setupCcToolchain() throws Exception {
+    getAnalysisMock().ccSupport().setupCcToolchainConfigForCpu(mockToolsConfig, "armeabi-v7a");
+  }
+
+  @Before
   public final void createFile() throws Exception {
     scratch.file("java/srcs/a.properties", "foo");
+  }
+
+  @Before
+  public void setup() throws Exception {
+    // Force tests to use aapt to unblock global aapt2 migration, until these
+    // tests are migrated to use aapt2.
+    // TODO(jingwen): https://github.com/bazelbuild/bazel/issues/6907
+    useConfiguration("--android_aapt=aapt");
   }
 
   // regression test for #3169099
@@ -74,7 +87,7 @@ public class AndroidCommonTest extends BuildViewTestCase {
         "'//java/srcs:gvalid' is misplaced " + descriptionPlural,
         "'//java/srcs:gmix' does not produce any " + descriptionPlural);
     assertSrcsValidity(rule, "//java/srcs:invalid", true,
-        "file '//java/srcs:a.properties' is misplaced here " + descriptionPluralFile,
+        "source file '//java/srcs:a.properties' is misplaced here " + descriptionPluralFile,
         "'//java/srcs:ginvalid' does not produce any " + descriptionPlural);
     assertSrcsValidity(rule, "//java/srcs:mix", true,
         "'//java/srcs:a.properties' does not produce any " + descriptionPlural);
@@ -88,13 +101,14 @@ public class AndroidCommonTest extends BuildViewTestCase {
   public void testMultidexModeEnum() throws Exception {
     assertThat(MultidexMode.getValidValues()).containsExactly("native", "legacy", "manual_main_dex",
         "off");
-    assertThat(MultidexMode.fromValue("native")).isSameAs(MultidexMode.NATIVE);
+    assertThat(MultidexMode.fromValue("native")).isSameInstanceAs(MultidexMode.NATIVE);
     assertThat(MultidexMode.NATIVE.getAttributeValue()).isEqualTo("native");
-    assertThat(MultidexMode.fromValue("legacy")).isSameAs(MultidexMode.LEGACY);
+    assertThat(MultidexMode.fromValue("legacy")).isSameInstanceAs(MultidexMode.LEGACY);
     assertThat(MultidexMode.LEGACY.getAttributeValue()).isEqualTo("legacy");
-    assertThat(MultidexMode.fromValue("manual_main_dex")).isSameAs(MultidexMode.MANUAL_MAIN_DEX);
+    assertThat(MultidexMode.fromValue("manual_main_dex"))
+        .isSameInstanceAs(MultidexMode.MANUAL_MAIN_DEX);
     assertThat(MultidexMode.MANUAL_MAIN_DEX.getAttributeValue()).isEqualTo("manual_main_dex");
-    assertThat(MultidexMode.fromValue("off")).isSameAs(MultidexMode.OFF);
+    assertThat(MultidexMode.fromValue("off")).isSameInstanceAs(MultidexMode.OFF);
     assertThat(MultidexMode.OFF.getAttributeValue()).isEqualTo("off");
   }
 

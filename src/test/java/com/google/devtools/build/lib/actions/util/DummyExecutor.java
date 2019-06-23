@@ -13,35 +13,33 @@
 // limitations under the License.
 package com.google.devtools.build.lib.actions.util;
 
-import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.actions.ActionContext;
+import com.google.devtools.build.lib.actions.ActionExecutionContext.ShowSubcommands;
 import com.google.devtools.build.lib.actions.Executor;
-import com.google.devtools.build.lib.actions.SpawnActionContext;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.clock.Clock;
-import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.common.options.OptionsClassProvider;
+import com.google.devtools.common.options.OptionsProvider;
 
-/**
- * A dummy implementation of Executor.
- */
-public final class DummyExecutor implements Executor {
+/** A dummy implementation of Executor. */
+public class DummyExecutor implements Executor {
 
+  private final FileSystem fileSystem;
   private final Path inputDir;
-  private final EventHandler eventHandler;
 
-  public DummyExecutor(Path inputDir) {
-    this(inputDir, null);
-  }
-
-  public DummyExecutor(EventHandler eventHandler) {
-    this(null, eventHandler);
-  }
-
-  public DummyExecutor(Path inputDir, EventHandler eventHandler) {
+  public DummyExecutor(FileSystem fileSystem, Path inputDir) {
+    this.fileSystem = fileSystem;
     this.inputDir = inputDir;
-    this.eventHandler = eventHandler;
+  }
+
+  public DummyExecutor() {
+    this(/*fileSystem=*/ null, /*inputDir=*/ null);
+  }
+
+  @Override
+  public FileSystem getFileSystem() {
+    return fileSystem;
   }
 
   @Override
@@ -55,18 +53,8 @@ public final class DummyExecutor implements Executor {
   }
 
   @Override
-  public EventBus getEventBus() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
   public boolean getVerboseFailures() {
     throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public EventHandler getEventHandler() {
-    return eventHandler;
   }
 
   @Override
@@ -75,17 +63,12 @@ public final class DummyExecutor implements Executor {
   }
 
   @Override
-  public SpawnActionContext getSpawnActionContext(String mnemonic) {
+  public OptionsProvider getOptions() {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public OptionsClassProvider getOptions() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public boolean reportsSubcommands() {
+  public ShowSubcommands reportsSubcommands() {
     throw new UnsupportedOperationException();
   }
 }

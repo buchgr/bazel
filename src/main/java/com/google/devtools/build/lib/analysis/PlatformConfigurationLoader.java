@@ -14,14 +14,13 @@
 
 package com.google.devtools.build.lib.analysis;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
-import com.google.devtools.build.lib.analysis.config.ConfigurationEnvironment;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFragmentFactory;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
-import com.google.devtools.build.lib.cmdline.Label;
 
 /** A loader that creates {@link PlatformConfiguration} instances based on command-line options. */
 public class PlatformConfigurationLoader implements ConfigurationFragmentFactory {
@@ -31,27 +30,19 @@ public class PlatformConfigurationLoader implements ConfigurationFragmentFactory
   }
 
   @Override
-  public PlatformConfiguration create(ConfigurationEnvironment env, BuildOptions buildOptions)
-      throws InvalidConfigurationException, InterruptedException {
+  public PlatformConfiguration create(BuildOptions buildOptions)
+      throws InvalidConfigurationException {
     PlatformOptions platformOptions = buildOptions.get(PlatformOptions.class);
-    return create(platformOptions);
+    return new PlatformConfiguration(
+        platformOptions.computeHostPlatform(),
+        ImmutableList.copyOf(platformOptions.extraExecutionPlatforms),
+        platformOptions.computeTargetPlatform(),
+        ImmutableList.copyOf(platformOptions.extraToolchains),
+        ImmutableList.copyOf(platformOptions.enabledToolchainTypes));
   }
 
   @Override
   public Class<? extends BuildConfiguration.Fragment> creates() {
     return PlatformConfiguration.class;
-  }
-
-  private PlatformConfiguration create(PlatformOptions options)
-      throws InvalidConfigurationException {
-    // TODO(katre): This will change with remote execution.
-    Label executionPlatform = options.hostPlatform;
-
-    return new PlatformConfiguration(
-        executionPlatform,
-        options.platforms,
-        options.extraToolchains,
-        options.toolchainResolutionOverrides,
-        options.enabledToolchainTypes);
   }
 }

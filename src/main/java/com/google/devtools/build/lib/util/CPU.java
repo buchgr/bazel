@@ -24,7 +24,8 @@ public enum CPU {
   X86_32("x86_32", ImmutableSet.of("i386", "i486", "i586", "i686", "i786", "x86")),
   X86_64("x86_64", ImmutableSet.of("amd64", "x86_64", "x64")),
   PPC("ppc", ImmutableSet.of("ppc", "ppc64", "ppc64le")),
-  ARM("arm", ImmutableSet.of("aarch64", "arm", "armv7l")),
+  ARM("arm", ImmutableSet.of("arm", "armv7l")),
+  AARCH64("aarch64", ImmutableSet.of("aarch64")),
   S390X("s390x", ImmutableSet.of("s390x", "s390")),
   UNKNOWN("unknown", ImmutableSet.<String>of());
 
@@ -36,15 +37,17 @@ public enum CPU {
     this.archs = archs;
   }
 
+  public String getCanonicalName() {
+    return canonicalName;
+  }
+
+  private static final CPU HOST_CPU = determineCurrentCpu();
+
   /**
    * The current CPU.
    */
   public static CPU getCurrent() {
     return HOST_CPU;
-  }
-
-  public String getCanonicalName() {
-    return canonicalName;
   }
 
   private static CPU determineCurrentCpu() {
@@ -58,6 +61,4 @@ public enum CPU {
 
     return CPU.UNKNOWN;
   }
-
-  private static final CPU HOST_CPU = determineCurrentCpu();
 }

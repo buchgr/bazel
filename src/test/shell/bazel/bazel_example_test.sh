@@ -16,11 +16,38 @@
 #
 # Tests the examples provided in Bazel
 #
+# --- begin runfiles.bash initialization ---
+set -euo pipefail
+if [[ ! -d "${RUNFILES_DIR:-/dev/null}" && ! -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+    if [[ -f "$0.runfiles_manifest" ]]; then
+      export RUNFILES_MANIFEST_FILE="$0.runfiles_manifest"
+    elif [[ -f "$0.runfiles/MANIFEST" ]]; then
+      export RUNFILES_MANIFEST_FILE="$0.runfiles/MANIFEST"
+    elif [[ -f "$0.runfiles/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+      export RUNFILES_DIR="$0.runfiles"
+    fi
+fi
+if [[ -f "${RUNFILES_DIR:-/dev/null}/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+  source "${RUNFILES_DIR}/bazel_tools/tools/bash/runfiles/runfiles.bash"
+elif [[ -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+  source "$(grep -m1 "^bazel_tools/tools/bash/runfiles/runfiles.bash " \
+            "$RUNFILES_MANIFEST_FILE" | cut -d ' ' -f 2-)"
+else
+  echo >&2 "ERROR: cannot find @bazel_tools//tools/bash/runfiles:runfiles.bash"
+  exit 1
+fi
+# --- end runfiles.bash initialization ---
 
-# Load the test setup defined in the parent directory
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${CURRENT_DIR}/../integration_test_setup.sh" \
+source "$(rlocation "io_bazel/src/test/shell/integration_test_setup.sh")" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
+
+# $1 is equal to the $(JAVABASE) make variable
+javabase="$1"
+if [[ $javabase = external/* ]]; then
+  javabase=${javabase#external/}
+fi
+javabase="$(rlocation "${javabase}/bin/java")"
+javabase=${javabase%/bin/java}
 
 function set_up() {
   copy_examples
@@ -42,7 +69,7 @@ function test_cpp() {
 # An assertion that execute a binary from a sub directory (to test runfiles)
 function assert_binary_run_from_subdir() {
     ( # Needed to make execution from a different path work.
-    export PATH=${bazel_javabase}/bin:"$PATH" &&
+    export PATH=${javabase}/bin:"$PATH" &&
     mkdir -p x &&
     cd x &&
     unset JAVA_RUNFILES &&
@@ -66,11 +93,7 @@ function test_java_test() {
   local java_native_main=//examples/java-native/src/main/java/com/example/myproject
 
   assert_build "-- //examples/java-native/... -${java_native_main}:hello-error-prone"
-  JAVA_VERSION="1.$(bazel query  --output=build '@bazel_tools//tools/jdk:toolchain' | grep source_version | cut -d '"' -f 2)"
-  if [ "${JAVA_VERSION}" -ne "1.7" ]; then
-    assert_build_fails "${java_native_main}:hello-error-prone" \
-        "Did you mean 'result = b == -1;'?"
-  fi
+  JAVA_VERSION="1.$(bazel query  --output=build '@bazel_tools//tools/jdk:legacy_toolchain' | grep source_version | cut -d '"' -f 2)"
   assert_test_ok "${java_native_tests}:hello"
   assert_test_ok "${java_native_tests}:custom"
   assert_test_fails "${java_native_tests}:fail"
@@ -94,20 +117,20 @@ function test_genrule_and_genquery() {
   diff $want ./bazel-bin/examples/gen/genquery \
     || fail "genrule and genquery output differs"
 
-  grep -qE "^//tools/jdk:jdk$" $want || {
+  grep -qE "^@bazel_tools//tools/jdk:jdk$" $want || {
     cat $want
-    fail "//tools/jdk:jdk not found in genquery output"
+    fail "@bazel_tools//tools/jdk:jdk not found in genquery output"
   }
 }
 
 function test_native_python() {
-  assert_build //examples/py_native:bin --python2_path=python
-  assert_test_ok //examples/py_native:test --python2_path=python
-  assert_test_fails //examples/py_native:fail --python2_path=python
+  assert_build //examples/py_native:bin
+  assert_test_ok //examples/py_native:test
+  assert_test_fails //examples/py_native:fail
 }
 
 function test_native_python_with_zip() {
-  assert_build //examples/py_native:bin --python2_path=python --build_python_zip
+  assert_build //examples/py_native:bin --build_python_zip
   # run the python package directly
   ./bazel-bin/examples/py_native/bin >& $TEST_log \
     || fail "//examples/py_native:bin execution failed"
@@ -116,8 +139,8 @@ function test_native_python_with_zip() {
   python ./bazel-bin/examples/py_native/bin >& $TEST_log \
     || fail "//examples/py_native:bin execution failed"
   expect_log "Fib(5) == 8"
-  assert_test_ok //examples/py_native:test --python2_path=python --build_python_zip
-  assert_test_fails //examples/py_native:fail --python2_path=python --build_python_zip
+  assert_test_ok //examples/py_native:test --build_python_zip
+  assert_test_fails //examples/py_native:fail --build_python_zip
 }
 
 function test_shell() {

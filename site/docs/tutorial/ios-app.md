@@ -3,31 +3,14 @@ layout: documentation
 title: Build Tutorial - iOS
 ---
 
-Introduction to Bazel: Build an iOS App
-==========
+# Introduction to Bazel: Building an iOS App
 
 In this tutorial, you will learn how to build a simple iOS app. You'll do the
 following:
 
-*   [Set up your environment](#set-up-your-environment)
-    *   [Install Bazel](#install-bazel)
-    *   [Install Xcode](#install-xcode)
-    *   [Get the sample project](#get-the-sample-project)
-*   [Set up a workspace](#set-up-a-workspace)
-    *   [Create a WORKSPACE file](#create-a-workspace-file)
-    *   [Update the WORKSPACE file](#update-the-workspace-file)
-*   [Review the source files](#review-the-source-files)
-*   [Create a BUILD file](#create-a-build-file)
-    *   [Add the rule load statement](#add-the-rule-load-statement)
-    *   [Add an objc_library rule](#add-an-objc_library-rule)
-    *   [Add an ios_application rule](#add_an-ios_application-rule)
-*   [Build and deploy the app](#build-and-deploy-the-app)
-    *   [Build the app for the simulator](#build-the-app-for-the-simulator)
-    *   [Find the build outputs](#find-the-build-outputs)
-    *   [Run and debug the app in the simulator](#run-and-debug-the-app-in-the-simulator)
-    *   [Build the app for a device](#build-the-app-for-a-device)
-    *   [Install the app on a device](#install-the-app-on-a-device)
-*   [Review  your work](#review-your-work)
+* ToC
+{:toc}
+
 
 ## Set up your environment
 
@@ -40,9 +23,9 @@ its dependencies.
 
 ### Install Xcode
 
-Download and install [Xcode](https://developer.apple.com/xcode/downloads/). The
-Xcode download contains the iOS libraries, the Objective-C compiler, and other
-tools required by Bazel to build iOS apps.
+Download and install [Xcode](https://developer.apple.com/xcode/downloads/).
+Xcode contains the compilers, SDKs, and other tools required by Bazel to build
+Apple applications.
 
 ### Get the sample project
 
@@ -78,9 +61,9 @@ by the presence of the `WORKSPACE` file at its root. In this tutorial, your
 workspace directory is `$HOME/examples/tutorial/`, which contains the sample
 project files you cloned from the GitHub repo in the previous step.
 
-Note that Bazel itself doesn't make any requirements about how you organize
-source files in your workspace. The sample source files in this tutorial are
-organized according to conventions for the target platform.
+Note that Bazel itself doesn't impose any requirements for organizing source
+files in your workspace. The sample source files in this tutorial are organized
+according to conventions for the target platform.
 
 For your convenience, set the `$WORKSPACE` environment variable now to refer to
 your workspace directory. At the command line, enter:
@@ -104,23 +87,37 @@ Enter the following at the command line:
 
 ```bash
 touch $WORKSPACE/WORKSPACE
+open -a Xcode $WORKSPACE/WORKSPACE
 ```
 
-This creates the empty `WORKSPACE` file.
+This creates and opens the empty `WORKSPACE` file.
 
 ### Update the WORKSPACE file
 
 To build applications for Apple devices, Bazel needs to pull the latest
 [Apple build rules](https://github.com/bazelbuild/rules_apple) from its GitHub
-repository. To enable this, add the following to your `WORKSPACE` file:
+repository. To enable this, add the following [`git_repository`](../be/workspace.html#git_repository)
+rules to your `WORKSPACE` file:
 
 ```
 git_repository(
     name = "build_bazel_rules_apple",
     remote = "https://github.com/bazelbuild/rules_apple.git",
-    commit = "7ea0557",
+    tag = "0.4.0",
+)
+git_repository(
+    name = "bazel_skylib",
+    remote = "https://github.com/bazelbuild/bazel-skylib.git",
+    tag = "0.3.1",
 )
 ```
+
+**NOTE:** "Always use the [latest version of the build_apple rules](https://github.com/bazelbuild/rules_apple/releases)
+in the `tag` attribute. Make sure to check the latest dependencies required in
+`rules_apple`'s [project](https://github.com/bazelbuild/rules_apple)."
+
+**NOTE:** You **must** set the value of the `name` attribute in the
+`git_repository` rule to `build_bazel_rules_apple` or the build will fail.
 
 ## Review the source files
 
@@ -131,10 +128,11 @@ source files to complete this tutorial.
 
 ## Create a BUILD file
 
-At a command-line prompt, open your new `BUILD` file for editing:
+At a command-line prompt, open a new `BUILD` file for editing:
 
 ```bash
-vi $WORKSPACE/ios-app/BUILD
+touch $WORKSPACE/ios-app/BUILD
+open -a Xcode $WORKSPACE/ios-app/BUILD
 ```
 
 ### Add the rule load statement
@@ -147,13 +145,17 @@ following load statement to the beginning of your `BUILD` file:
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
 ```
 
+We only need to load the `ios_application` rule because the `objc_library` rule
+is built into the Bazel package.
+
 ### Add an objc_library rule
 
 Bazel provides several build rules that you can use to build an app for the
 iOS platform. For this tutorial, you'll first use the
 [`objc_library`](../be/objective-c.html#objc_library) rule to tell Bazel
 how to build a static library from the app source code and Xib files. Then
-you'll use the [`ios_application`](https://github.com/bazelbuild/rules_apple)
+you'll use the
+[`ios_application`](https://github.com/bazelbuild/rules_apple/tree/master/doc)
 rule to tell it how to build the application binary and the `.ipa` bundle.
 
 **NOTE:** This tutorial presents a minimal use case of the Objective-C rules in
@@ -179,8 +181,9 @@ Note the name of the rule, `UrlGetClasses`.
 
 ### Add an ios_application rule
 
-The [`ios_application`](../be/objective-c.html#ios_application) rule builds
-the application binary and creates the `.ipa` bundle file.
+The
+[`ios_application`](https://github.com/bazelbuild/rules_apple/tree/master/doc)
+rule builds the application binary and creates the `.ipa` bundle file.
 
 Add the following to your `BUILD` file:
 
@@ -192,11 +195,15 @@ ios_application(
         "iphone",
         "ipad",
     ],
+    minimum_os_version = "9.0",
     infoplists = [":UrlGet/UrlGet-Info.plist"],
     visibility = ["//visibility:public"],
     deps = [":UrlGetClasses"],
 )
 ```
+
+**NOTE:** Please update the `minimum_os_version` attribute to the minimum
+version of iOS that you plan to support.
 
 Note how the `deps` attribute references the output of the `UrlGetClasses` rule
 you added to the `BUILD` file above.
@@ -246,6 +253,7 @@ The `.ipa` file and other outputs are located in the
 ### Run and debug the app in the simulator
 
 You can now run the app from Xcode using the iOS Simulator. First, [generate an Xcode project using Tulsi](http://tulsi.bazel.io/).
+
 Then, open the project in Xcode, choose an iOS Simulator as the runtime scheme,
 and click **Run**.
 

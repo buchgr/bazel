@@ -25,11 +25,17 @@ if [[ "$1" = "--no_echo" ]]; then
   shift
 else
   echo 'exec ${PAGER:-/usr/bin/less} "$0" || exit 1'
+  echo "Executing tests from ${TEST_TARGET}"
 fi
 
 function is_absolute {
   [[ "$1" = /* ]] || [[ "$1" =~ ^[a-zA-Z]:[/\\].* ]]
 }
+
+# The original execution root. Usually this script changes directory into the
+# runfiles directory, so using $PWD is not a reliable way to find the execution
+# root.
+EXEC_ROOT="$PWD"
 
 # Bazel sets some environment vars to relative paths to improve caching and
 # support remote execution, where the absolute path may not be known to Bazel.
@@ -57,6 +63,7 @@ is_absolute "$TEST_UNDECLARED_OUTPUTS_ANNOTATIONS_DIR" ||
 
 is_absolute "$TEST_SRCDIR" || TEST_SRCDIR="$PWD/$TEST_SRCDIR"
 is_absolute "$TEST_TMPDIR" || TEST_TMPDIR="$PWD/$TEST_TMPDIR"
+is_absolute "$HOME" || HOME="$TEST_TMPDIR"
 is_absolute "$XML_OUTPUT_FILE" || XML_OUTPUT_FILE="$PWD/$XML_OUTPUT_FILE"
 
 # Set USER to the current user, unless passed by Bazel via --test_env.
@@ -104,27 +111,27 @@ GUNIT_OUTPUT="xml:${XML_OUTPUT_FILE}"
 
 RUNFILES_MANIFEST_FILE="${TEST_SRCDIR}/MANIFEST"
 
-if [ -z "$RUNFILES_MANIFEST_ONLY" ]; then
-  function rlocation() {
-    if is_absolute "$1" ; then
-      echo "$1"
-    else
-      echo "$(dirname $RUNFILES_MANIFEST_FILE)/$1"
-    fi
-  }
-else
-  function rlocation() {
-    if is_absolute "$1" ; then
-      echo "$1"
-    else
-      echo $(grep "^$1 " $RUNFILES_MANIFEST_FILE | awk '{ print $2 }')
-    fi
-  }
-fi
+function rlocation() {
+  if is_absolute "$1" ; then
+    # If the file path is already fully specified, simply return it.
+    echo "$1"
+  elif [[ -e "$TEST_SRCDIR/$1" ]]; then
+    # If the file exists in the $TEST_SRCDIR then just use it.
+    echo "$TEST_SRCDIR/$1"
+  elif [[ -e "$RUNFILES_MANIFEST_FILE" ]]; then
+    # If a runfiles manifest file exists then use it.
+    echo "$(grep "^$1 " "$RUNFILES_MANIFEST_FILE" | sed 's/[^ ]* //')"
+  fi
+}
 
 export -f rlocation
 export -f is_absolute
-export RUNFILES_MANIFEST_FILE
+# If RUNFILES_MANIFEST_ONLY is set to 1 and the manifest file does exist,
+# then test programs should use manifest file to find runfiles.
+if [[ "${RUNFILES_MANIFEST_ONLY:-}" == "1" && -e "${RUNFILES_MANIFEST_FILE:-}" ]]; then
+  export RUNFILES_MANIFEST_FILE
+  export RUNFILES_MANIFEST_ONLY
+fi
 
 DIR="$TEST_SRCDIR"
 if [ ! -z "$TEST_WORKSPACE" ]; then
@@ -145,20 +152,37 @@ if [[ -z "$no_echo" ]]; then
   echo "-----------------------------------------------------------------------------"
 fi
 
+# Unused if EXPERIMENTAL_SPLIT_XML_GENERATION is set.
+function encode_stream {
+  # See generate-xml.sh for documentation.
+  LC_ALL=C sed -E \
+      -e 's/.*/& /g' \
+      -e 's/(('\
+"$(echo -e '[\x9\x20-\x7f]')|"\
+"$(echo -e '[\xc0-\xdf][\x80-\xbf]')|"\
+"$(echo -e '[\xe0-\xec][\x80-\xbf][\x80-\xbf]')|"\
+"$(echo -e '[\xed][\x80-\x9f][\x80-\xbf]')|"\
+"$(echo -e '[\xee-\xef][\x80-\xbf][\x80-\xbf]')|"\
+"$(echo -e '[\xf0][\x80-\x8f][\x80-\xbf][\x80-\xbf]')"\
+')*)./\1?/g' \
+      -e 's/(.*)\?/\1/g' \
+      -e 's|]]>|]]>]]<![CDATA[>|g'
+}
+
 function encode_output_file {
   if [ -f "$1" ]; then
-    # Replace invalid XML characters and invalid sequence in CDATA
-    # cf. https://stackoverflow.com/a/7774512/4717701
-    perl -CSDA -pe's/[^\x9\xA\xD\x20-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]+/?/g;' "$1" \
-      | sed 's|]]>|]]>]]<![CDATA[>|g'
+    cat "$1" | encode_stream
   fi
 }
 
+# Unused if EXPERIMENTAL_SPLIT_XML_GENERATION is set.
+# Keep this in sync with generate-xml.sh!
 function write_xml_output_file {
   local duration=$(expr $(date +%s) - $start)
   local errors=0
   local error_msg=
   local signal="${1-}"
+  local test_name=
   if [ -n "${XML_OUTPUT_FILE-}" -a ! -f "${XML_OUTPUT_FILE-}" ]; then
     # Create a default XML output file if the test runner hasn't generated it
     if [ -n "${signal}" ]; then
@@ -172,17 +196,20 @@ function write_xml_output_file {
       errors=1
       error_msg="<error message=\"exited with error code $exitCode\"></error>"
     fi
+    test_name="${TEST_BINARY#./}"
     # Ensure that test shards have unique names in the xml output.
     if [[ -n "${TEST_TOTAL_SHARDS+x}" ]] && ((TEST_TOTAL_SHARDS != 0)); then
       ((shard_num=TEST_SHARD_INDEX+1))
-      TEST_NAME="$TEST_NAME"_shard_"$shard_num"/"$TEST_TOTAL_SHARDS"
+      test_name="${test_name}"_shard_"$shard_num"/"$TEST_TOTAL_SHARDS"
     fi
     cat <<EOF >${XML_OUTPUT_FILE}
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
-  <testsuite name="$TEST_NAME" tests="1" failures="0" errors="${errors}">
-    <testcase name="$TEST_NAME" status="run" duration="${duration}">${error_msg}</testcase>
-    <system-out><![CDATA[$(encode_output_file "${XML_OUTPUT_FILE}.log")]]></system-out>
+  <testsuite name="$test_name" tests="1" failures="0" errors="${errors}">
+    <testcase name="$test_name" status="run" duration="${duration}" time="${duration}">${error_msg}</testcase>
+    <system-out>Generated test.log (if the file is not UTF-8, then this may be unreadable):
+      <![CDATA[$(encode_output_file "${XML_OUTPUT_FILE}.log")]]>
+    </system-out>
   </testsuite>
 </testsuites>
 EOF
@@ -197,37 +224,99 @@ EOF
 PATH=".:$PATH"
 
 if [ -z "$COVERAGE_DIR" ]; then
-  TEST_NAME=${1#./}
+  EXE="${1#./}"
   shift
 else
-  TEST_NAME=${2#./}
+  EXE="${2#./}"
 fi
 
-if is_absolute "$TEST_NAME" ; then
-  TEST_PATH="${TEST_NAME}"
+if is_absolute "$EXE"; then
+  TEST_PATH="$EXE"
 else
-  TEST_PATH="$(rlocation $TEST_WORKSPACE/$TEST_NAME)"
+  TEST_PATH="$(rlocation $TEST_WORKSPACE/$EXE)"
 fi
-[[ -n "$RUNTEST_PRESERVE_CWD" ]] && EXE="${TEST_NAME}"
+
+# TODO(jsharpe): Use --test_env=TEST_SHORT_EXEC_PATH=true to activate this code
+# path to workaround a bug with long executable paths when executing remote
+# tests on Windows.
+if [ ! -z "$TEST_SHORT_EXEC_PATH" ]; then
+  QUALIFIER=0
+  BASE="${EXEC_ROOT}/t${QUALIFIER}"
+  while [[ -e "${BASE}" || -e "${BASE}.exe" || -e "${BASE}.zip" ]]; do
+    ((QUALIFIER++))
+    BASE="${EXEC_ROOT}/t${QUALIFIER}"
+  done
+
+  # Note for the commands below: "ln -s" is equivalent to "cp" on Windows.
+
+  # Needs to be in the same directory for sh_test. Ignore the error when it
+  # doesn't exist.
+  ln -s "${TEST_PATH%.*}" "${BASE}" 2>/dev/null
+  # Needs to be in the same directory for py_test. Ignore the error when it
+  # doesn't exist.
+  ln -s "${TEST_PATH%.*}.zip" "${BASE}.zip" 2>/dev/null
+  # Needed for all tests.
+  ln -s "${TEST_PATH}" "${BASE}.exe"
+  TEST_PATH="${BASE}.exe"
+fi
 
 exitCode=0
 signals="$(trap -l | sed -E 's/[0-9]+\)//g')"
-for signal in $signals; do
-  trap "write_xml_output_file ${signal}" ${signal}
-done
+if [[ "${EXPERIMENTAL_SPLIT_XML_GENERATION}" == "1" ]]; then
+  # If we trap here, then bash forwards the signal to the subprocess, at least
+  # for bash version 4.4.12(1) on Linux. If we don't trap here, then bash does
+  # not forward the signal. This seems to contradict the bash documentation, and
+  # also seems to contradict bug #7119, which reports the opposite behavior.
+  trap 'echo "-- Test timed out at $(date +"%F %T %Z") --"' SIGTERM
+else
+  for signal in $signals; do
+    # SIGCHLD is expected when a subprocess dies
+    [ "${signal}" = "SIGCHLD" ] && continue
+    trap "write_xml_output_file ${signal}" ${signal}
+  done
+fi
 start=$(date +%s)
 
-set -o pipefail
-if [ -z "$COVERAGE_DIR" ]; then
-  "${TEST_PATH}" "$@" 2>&1 | tee "${XML_OUTPUT_FILE}.log" || exitCode=$?
+# Check if we have tail --pid option
+dummy=1 &
+pid=$!
+has_tail=true
+tail -fq --pid $pid -s 0.001 /dev/null &> /dev/null || has_tail=false
+
+if [[ "${EXPERIMENTAL_SPLIT_XML_GENERATION}" == "1" ]]; then
+  if [ -z "$COVERAGE_DIR" ]; then
+    "${TEST_PATH}" "$@" 2>&1 || exitCode=$?
+  else
+    "$1" "$TEST_PATH" "${@:3}" 2>&1 || exitCode=$?
+  fi
+elif [ "$has_tail" == true ] && [  -z "$no_echo" ]; then
+  touch "${XML_OUTPUT_FILE}.log"
+  if [ -z "$COVERAGE_DIR" ]; then
+    ("${TEST_PATH}" "$@" &>"${XML_OUTPUT_FILE}.log") &
+    pid=$!
+  else
+    ("$1" "$TEST_PATH" "${@:3}" &> "${XML_OUTPUT_FILE}.log") &
+    pid=$!
+  fi
+  tail -fq --pid $pid -s 0.001 "${XML_OUTPUT_FILE}.log"
+  wait $pid
+  exitCode=$?
 else
-  "$1" "$TEST_PATH" "${@:3}" 2>&1 | tee "${XML_OUTPUT_FILE}.log" || exitCode=$?
+  if [ -z "$COVERAGE_DIR" ]; then
+    "${TEST_PATH}" "$@" 2> >(tee -a "${XML_OUTPUT_FILE}.log" >&2) 1> >(tee -a "${XML_OUTPUT_FILE}.log") 2>&1 || exitCode=$?
+  else
+    "$1" "$TEST_PATH" "${@:3}" 2> >(tee -a "${XML_OUTPUT_FILE}.log" >&2) 1> >(tee -a "${XML_OUTPUT_FILE}.log") 2>&1 || exitCode=$?
+  fi
 fi
 
 for signal in $signals; do
   trap - ${signal}
 done
-write_xml_output_file
+if [[ "${EXPERIMENTAL_SPLIT_XML_GENERATION}" != "1" ]]; then
+  # This call to write_xml_output_file does nothing if a a test.xml already
+  # exists, e.g., because we received SIGTERM and the trap handler created it.
+  write_xml_output_file
+fi
 
 # Add all of the files from the undeclared outputs directory to the manifest.
 if [[ -n "$TEST_UNDECLARED_OUTPUTS_DIR" && -n "$TEST_UNDECLARED_OUTPUTS_MANIFEST" ]]; then

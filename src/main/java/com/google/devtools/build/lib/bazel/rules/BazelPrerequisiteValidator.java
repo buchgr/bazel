@@ -15,16 +15,18 @@
 package com.google.devtools.build.lib.bazel.rules;
 
 import com.google.devtools.build.lib.analysis.AliasProvider;
+import com.google.devtools.build.lib.analysis.AliasProvider.TargetMode;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
-import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.packages.Attribute;
+import com.google.devtools.build.lib.packages.FunctionSplitTransitionWhitelist;
 import com.google.devtools.build.lib.packages.NonconfigurableAttributeMapper;
 import com.google.devtools.build.lib.packages.PackageGroup;
 import com.google.devtools.build.lib.packages.RawAttributeMapper;
 import com.google.devtools.build.lib.packages.RequiredProviders;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import com.google.devtools.build.lib.syntax.Type;
 
 /** Ensures that a target's prerequisites are visible to it and match its testonly status. */
@@ -33,7 +35,7 @@ public class BazelPrerequisiteValidator
 
   @Override
   public void validate(
-      RuleContext.Builder context, ConfiguredTarget prerequisite, Attribute attribute) {
+      RuleContext.Builder context, ConfiguredTargetAndData prerequisite, Attribute attribute) {
     validateDirectPrerequisiteVisibility(context, prerequisite, attribute.getName());
     validateDirectPrerequisiteForTestOnly(context, prerequisite);
     ConfiguredRuleClassProvider.DeprecationValidator.validateDirectPrerequisiteForDeprecation(
@@ -41,32 +43,36 @@ public class BazelPrerequisiteValidator
   }
 
   private void validateDirectPrerequisiteVisibility(
-      RuleContext.Builder context, ConfiguredTarget prerequisite, String attrName) {
+      RuleContext.Builder context, ConfiguredTargetAndData prerequisite, String attrName) {
     Rule rule = context.getRule();
     Target prerequisiteTarget = prerequisite.getTarget();
     if (!context
             .getRule()
             .getLabel()
             .getPackageIdentifier()
-            .equals(AliasProvider.getDependencyLabel(prerequisite).getPackageIdentifier())
-        && !context.isVisible(prerequisite)) {
+            .equals(
+                AliasProvider.getDependencyLabel(prerequisite.getConfiguredTarget())
+                    .getPackageIdentifier())
+        && !context.isVisible(prerequisite.getConfiguredTarget())) {
       String errorMessage;
       if (!context.getConfiguration().checkVisibility()) {
         errorMessage =
             String.format(
-                "Target '%s' violates visibility of target "
+                "Target '%s' violates visibility of "
                     + "%s. Continuing because --nocheck_visibility is active",
-                rule.getLabel(), AliasProvider.printLabelWithAliasChain(prerequisite));
+                rule.getLabel(), AliasProvider.describeTargetWithAliases(prerequisite,
+                    TargetMode.WITHOUT_KIND));
         context.ruleWarning(errorMessage);
       } else {
         // Oddly enough, we use reportError rather than ruleError here.
         errorMessage =
             String.format(
-                "Target %s is not visible from target '%s'. Check "
+                "%s is not visible from target '%s'. Check "
                     + "the visibility declaration of the former target if you think "
                     + "the dependency is legitimate",
-                AliasProvider.printLabelWithAliasChain(prerequisite), rule.getLabel());
-        context.reportError(rule.getLocation(), errorMessage);
+                AliasProvider.describeTargetWithAliases(prerequisite, TargetMode.WITHOUT_KIND),
+                rule.getLabel());
+        context.ruleError(errorMessage);
       }
       // We can always post the visibility error as, regardless of the value of keep going,
       // that target will not be built.
@@ -80,17 +86,19 @@ public class BazelPrerequisiteValidator
       boolean containsPackageSpecificationProvider =
           requiredProviders.getDescription().contains("PackageSpecificationProvider");
       // TODO(plf): Add the PackageSpecificationProvider to the 'visibility' attribute.
-      if (!attrName.equals("visibility") && !containsPackageSpecificationProvider) {
-        context.reportError(
-            rule.getAttributeLocation(attrName),
+      if (!attrName.equals("visibility")
+          && !attrName.equals(FunctionSplitTransitionWhitelist.WHITELIST_ATTRIBUTE_NAME)
+          && !containsPackageSpecificationProvider) {
+        context.attributeError(
+            attrName,
             "in "
                 + attrName
                 + " attribute of "
                 + rule.getRuleClass()
                 + " rule "
                 + rule.getLabel()
-                + ": package group "
-                + AliasProvider.printLabelWithAliasChain(prerequisite)
+                + ": "
+                + AliasProvider.describeTargetWithAliases(prerequisite, TargetMode.WITH_KIND)
                 + " is misplaced here "
                 + "(they are only allowed in the visibility attribute)");
       }
@@ -98,7 +106,7 @@ public class BazelPrerequisiteValidator
   }
 
   private void validateDirectPrerequisiteForTestOnly(
-      RuleContext.Builder context, ConfiguredTarget prerequisite) {
+      RuleContext.Builder context, ConfiguredTargetAndData prerequisite) {
     Rule rule = context.getRule();
 
     if (rule.getRuleClassObject().getAdvertisedProviders().canHaveAnyProvider()) {
@@ -114,8 +122,8 @@ public class BazelPrerequisiteValidator
       String message =
           "non-test target '"
               + rule.getLabel()
-              + "' depends on testonly target "
-              + AliasProvider.printLabelWithAliasChain(prerequisite)
+              + "' depends on testonly "
+              + AliasProvider.describeTargetWithAliases(prerequisite, TargetMode.WITHOUT_KIND)
               + " and doesn't have testonly attribute set";
       if (thisPackage.startsWith("experimental/")) {
         context.ruleWarning(message);
@@ -127,6 +135,7 @@ public class BazelPrerequisiteValidator
 
   private static boolean isTestOnlyRule(Target target) {
     return (target instanceof Rule)
-        && (NonconfigurableAttributeMapper.of((Rule) target)).get("testonly", Type.BOOLEAN);
+        && NonconfigurableAttributeMapper.of((Rule) target).has("testonly", Type.BOOLEAN)
+        && NonconfigurableAttributeMapper.of((Rule) target).get("testonly", Type.BOOLEAN);
   }
 }

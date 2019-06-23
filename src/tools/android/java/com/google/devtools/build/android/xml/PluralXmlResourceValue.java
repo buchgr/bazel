@@ -13,8 +13,11 @@
 // limitations under the License.
 package com.google.devtools.build.android.xml;
 
+import com.android.aapt.Resources.Plural;
+import com.android.aapt.Resources.Value;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.xml.XmlEscapers;
 import com.google.devtools.build.android.AndroidDataWritingVisitor;
 import com.google.devtools.build.android.AndroidDataWritingVisitor.ValuesResourceDefinition;
 import com.google.devtools.build.android.AndroidResourceSymbolSink;
@@ -27,7 +30,8 @@ import com.google.devtools.build.android.proto.SerializeFormat.DataValueXml.XmlT
 import com.google.protobuf.CodedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.Map.Entry;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import javax.annotation.concurrent.Immutable;
 import javax.xml.namespace.QName;
@@ -83,7 +87,7 @@ public class PluralXmlResourceValue implements XmlResourceValue {
             .addAttributesFrom(attributes.entrySet())
             .closeTag();
 
-    for (Entry<String, String> plural : values.entrySet()) {
+    for (Map.Entry<String, String> plural : values.entrySet()) {
       definition =
           definition
               .startItemTag()
@@ -131,6 +135,26 @@ public class PluralXmlResourceValue implements XmlResourceValue {
         ImmutableMap.copyOf(proto.getMappedStringValue()));
   }
 
+  public static XmlResourceValue from(Value proto) {
+    Plural plural = proto.getCompoundValue().getPlural();
+
+    Map<String, String> items = new HashMap<>();
+
+    for (Plural.Entry entry : plural.getEntryList()) {
+      String name = entry.getArity().toString().toLowerCase();
+      String value =
+          XmlEscapers.xmlContentEscaper().escape(
+              entry.getItem()
+                  .getStr()
+                  .getValue());
+      items.put(name, value);
+    }
+
+    return createWithAttributesAndValues(
+        ImmutableMap.of(),
+        ImmutableMap.copyOf(items));
+  }
+
   @Override
   public int serializeTo(int sourceId, Namespaces namespaces, OutputStream output)
       throws IOException {
@@ -155,7 +179,12 @@ public class PluralXmlResourceValue implements XmlResourceValue {
   public XmlResourceValue combineWith(XmlResourceValue value) {
     throw new IllegalArgumentException(this + " is not a combinable resource.");
   }
-  
+
+  @Override
+  public int compareMergePriorityTo(XmlResourceValue value) {
+    return 0;
+  }
+
   @Override
   public String asConflictStringWith(DataSource source) {
     return source.asConflictString();

@@ -17,13 +17,17 @@ package com.google.devtools.build.lib.analysis;
 import com.google.common.base.Objects;
 import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableList;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
-import com.google.devtools.build.lib.packages.PackageSpecification;
+import com.google.devtools.build.lib.packages.PackageSpecification.PackageGroupContents;
 import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.skyframe.BuildConfigurationValue;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import java.util.List;
+import java.util.Set;
 import javax.annotation.Nullable;
 
 /**
@@ -45,26 +49,34 @@ public class TargetContext {
    * exception of visibility (i.e., visibility is represented here, even though it is a rule
    * attribute in case of a rule). Rule attributes are handled by the {@link RuleContext} subclass.
    */
-  private final List<ConfiguredTarget> directPrerequisites;
-  private final NestedSet<PackageSpecification> visibility;
+  private final List<ConfiguredTargetAndData> directPrerequisites;
+
+  private final NestedSet<PackageGroupContents> visibility;
 
   /**
    * The constructor is intentionally package private.
    *
    * <p>directPrerequisites is expected to be ordered.
    */
-  TargetContext(AnalysisEnvironment env, Target target, BuildConfiguration configuration,
-      Iterable<ConfiguredTarget> directPrerequisites,
-      NestedSet<PackageSpecification> visibility) {
+  TargetContext(
+      AnalysisEnvironment env,
+      Target target,
+      BuildConfiguration configuration,
+      Set<ConfiguredTargetAndData> directPrerequisites,
+      NestedSet<PackageGroupContents> visibility) {
     this.env = env;
     this.target = target;
     this.configuration = configuration;
-    this.directPrerequisites = ImmutableList.<ConfiguredTarget>copyOf(directPrerequisites);
+    this.directPrerequisites = ImmutableList.copyOf(directPrerequisites);
     this.visibility = visibility;
   }
 
   public AnalysisEnvironment getAnalysisEnvironment() {
     return env;
+  }
+
+  public ActionKeyContext getActionKeyContext() {
+    return env.getActionKeyContext();
   }
 
   public Target getTarget() {
@@ -85,7 +97,11 @@ public class TargetContext {
     return configuration;
   }
 
-  public NestedSet<PackageSpecification> getVisibility() {
+  public BuildConfigurationValue.Key getConfigurationKey() {
+    return BuildConfigurationValue.key(configuration);
+  }
+
+  public NestedSet<PackageGroupContents> getVisibility() {
     return visibility;
   }
 
@@ -104,10 +120,10 @@ public class TargetContext {
    */
   public TransitiveInfoCollection maybeFindDirectPrerequisite(Label label,
       BuildConfiguration config) {
-    for (ConfiguredTarget prerequisite : directPrerequisites) {
-      if (prerequisite.getLabel().equals(label)
+    for (ConfiguredTargetAndData prerequisite : directPrerequisites) {
+      if (prerequisite.getTarget().getLabel().equals(label)
           && (Objects.equal(prerequisite.getConfiguration(), config))) {
-        return prerequisite;
+        return prerequisite.getConfiguredTarget();
       }
     }
     return null;

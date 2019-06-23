@@ -14,19 +14,25 @@
 
 package com.google.devtools.build.lib.rules.cpp;
 
-import com.google.common.collect.ImmutableList;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.actions.CommandLine;
+import com.google.devtools.build.lib.analysis.actions.ActionConstructionContext;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildOptions;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
+import com.google.devtools.build.lib.packages.RuleErrorConsumer;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.Variables;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration.Tool;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.rules.cpp.CppLinkAction.LinkArtifactFactory;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Objects;
+import javax.annotation.Nullable;
 
 /**
  * LtoBackendArtifacts represents a set of artifacts for a single ThinLTO backend compile.
@@ -35,102 +41,174 @@ import java.util.Map;
  * step process:
  *
  * <ul>
- * <li>1. Bitcode generation (N times). This is produces intermediate LLVM bitcode from a source
- *     file. For this product, it reuses the .o extension.
- * <li>2. Indexing (once on N files). This takes all bitcode .o files, and for each .o file, it
- *     decides from which other .o files symbols can be inlined. In addition, it generates an index
- *     for looking up these symbols, and an imports file for identifying new input files for each
- *     step 3 {@link LtoBackendAction}.
- * <li>3. Backend compile (N times). This is the traditional compilation, and uses the same command
- *     line as the Bitcode generation in 1). Since the compiler has many bit code files available,
- *     it can inline functions and propagate constants across .o files. This step is costly, as it
- *     will do traditional optimization. The result is a .lto.o file, a traditional ELF object file.
- * <li>4. Backend link (once). This is the traditional link, and produces the final executable.
+ *   <li>1. Bitcode generation (N times). This is produces intermediate LLVM bitcode from a source
+ *       file. For this product, it reuses the .o extension.
+ *   <li>2. Indexing (once on N files). This takes all bitcode .o files, and for each .o file, it
+ *       decides from which other .o files symbols can be inlined. In addition, it generates an
+ *       index for looking up these symbols, and an imports file for identifying new input files for
+ *       each step 3 {@link LtoBackendAction}.
+ *   <li>3. Backend compile (N times). This is the traditional compilation, and uses the same
+ *       command line as the Bitcode generation in 1). Since the compiler has many bit code files
+ *       available, it can inline functions and propagate constants across .o files. This step is
+ *       costly, as it will do traditional optimization. The result is a .lto.o file, a traditional
+ *       ELF object file.
+ *   <li>4. Backend link (once). This is the traditional link, and produces the final executable.
  * </ul>
  */
 public final class LtoBackendArtifacts {
+
   // A file containing mapping of symbol => bitcode file containing the symbol.
-  private final Artifact index;
+  // It will be null when this is a shared non-lto backend.
+  @Nullable private final Artifact index;
 
   // The bitcode file which is the input of the compile.
   private final Artifact bitcodeFile;
 
   // A file containing a list of bitcode files necessary to run the backend step.
-  private final Artifact imports;
+  // It will be null when this is a shared non-lto backend.
+  @Nullable private final Artifact imports;
 
   // The result of executing the above command line, an ELF object file.
   private final Artifact objectFile;
 
-  // A map of all of the bitcode files. This is the universe from which the .imports file
-  // distills its lists.  The map is the same across all LtoBackendArtifacts of a given
-  // binary.
-  private final Map<PathFragment, Artifact> bitcodeFiles;
-
-  // Command line arguments to apply to back-end compile action, typically from
-  // the feature configuration and user-provided linkopts.
-  private List<String> commandLine;
+  // The corresponding dwoFile if fission is used.
+  private Artifact dwoFile;
 
   LtoBackendArtifacts(
+      RuleErrorConsumer ruleErrorConsumer,
+      BuildOptions buildOptions,
+      CppConfiguration cppConfiguration,
       PathFragment ltoOutputRootPrefix,
       Artifact bitcodeFile,
-      Map<PathFragment, Artifact> allBitCodeFiles,
-      RuleContext ruleContext,
+      BitcodeFiles allBitcodeFiles,
+      ActionConstructionContext actionConstructionContext,
+      RepositoryName repositoryName,
       BuildConfiguration configuration,
-      CppLinkAction.LinkArtifactFactory linkArtifactFactory) {
+      LinkArtifactFactory linkArtifactFactory,
+      FeatureConfiguration featureConfiguration,
+      CcToolchainProvider ccToolchain,
+      FdoContext fdoContext,
+      boolean usePic,
+      boolean generateDwo,
+      List<String> userCompileFlags)
+      throws RuleErrorException {
     this.bitcodeFile = bitcodeFile;
     PathFragment obj = ltoOutputRootPrefix.getRelative(bitcodeFile.getRootRelativePath());
 
-    objectFile = linkArtifactFactory.create(ruleContext, configuration, obj);
-    imports = linkArtifactFactory.create(
-        ruleContext, configuration, FileSystemUtils.appendExtension(obj, ".imports"));
-    index = linkArtifactFactory.create(
-        ruleContext, configuration, FileSystemUtils.appendExtension(obj, ".thinlto.bc"));
+    objectFile =
+        linkArtifactFactory.create(actionConstructionContext, repositoryName, configuration, obj);
+    imports =
+        linkArtifactFactory.create(
+            actionConstructionContext,
+            repositoryName,
+            configuration,
+            FileSystemUtils.appendExtension(obj, ".imports"));
+    index =
+        linkArtifactFactory.create(
+            actionConstructionContext,
+            repositoryName,
+            configuration,
+            FileSystemUtils.appendExtension(obj, ".thinlto.bc"));
 
-    bitcodeFiles = allBitCodeFiles;
+    scheduleLtoBackendAction(
+        ruleErrorConsumer,
+        buildOptions,
+        cppConfiguration,
+        actionConstructionContext,
+        repositoryName,
+        featureConfiguration,
+        ccToolchain,
+        fdoContext,
+        usePic,
+        generateDwo,
+        configuration,
+        linkArtifactFactory,
+        userCompileFlags,
+        allBitcodeFiles);
   }
 
   // Interface to create an LTO backend that does not perform any cross-module optimization.
   public LtoBackendArtifacts(
+      RuleErrorConsumer ruleErrorConsumer,
+      BuildOptions buildOptions,
+      CppConfiguration cppConfiguration,
       PathFragment ltoOutputRootPrefix,
       Artifact bitcodeFile,
-      RuleContext ruleContext,
+      ActionConstructionContext actionConstructionContext,
+      RepositoryName repositoryName,
       BuildConfiguration configuration,
-      CppLinkAction.LinkArtifactFactory linkArtifactFactory) {
+      LinkArtifactFactory linkArtifactFactory,
+      FeatureConfiguration featureConfiguration,
+      CcToolchainProvider ccToolchain,
+      FdoContext fdoContext,
+      boolean usePic,
+      boolean generateDwo,
+      List<String> userCompileFlags)
+      throws RuleErrorException {
     this.bitcodeFile = bitcodeFile;
 
     PathFragment obj = ltoOutputRootPrefix.getRelative(bitcodeFile.getRootRelativePath());
-    objectFile = linkArtifactFactory.create(ruleContext, configuration, obj);
+    objectFile =
+        linkArtifactFactory.create(actionConstructionContext, repositoryName, configuration, obj);
     imports = null;
     index = null;
-    bitcodeFiles = null;
+
+    scheduleLtoBackendAction(
+        ruleErrorConsumer,
+        buildOptions,
+        cppConfiguration,
+        actionConstructionContext,
+        repositoryName,
+        featureConfiguration,
+        ccToolchain,
+        fdoContext,
+        usePic,
+        generateDwo,
+        configuration,
+        linkArtifactFactory,
+        userCompileFlags,
+        /*bitcodeFiles=*/ null);
   }
 
   public Artifact getObjectFile() {
     return objectFile;
   }
 
-  public Artifact getBitcodeFile() {
+  Artifact getBitcodeFile() {
     return bitcodeFile;
   }
 
-  public void addIndexingOutputs(ImmutableList.Builder<Artifact> builder) {
+  public Artifact getDwoFile() {
+    return dwoFile;
+  }
+
+  void addIndexingOutputs(ImmutableSet.Builder<Artifact> builder) {
+    // For objects from linkstatic libraries, we may not be including them in the LTO indexing
+    // step when linked into a test, but rather will use shared non-LTO backends for better
+    // scalability when running large numbers of tests.
+    if (index == null) {
+      return;
+    }
     builder.add(imports);
     builder.add(index);
   }
 
-  public void setCommandLine(List<String> cmdLine) {
-    commandLine = cmdLine;
-  }
-
-  public void scheduleLtoBackendAction(
-      RuleContext ruleContext,
+  private void scheduleLtoBackendAction(
+      RuleErrorConsumer ruleErrorConsumer,
+      BuildOptions buildOptions,
+      CppConfiguration cppConfiguration,
+      ActionConstructionContext actionConstructionContext,
+      RepositoryName repositoryName,
       FeatureConfiguration featureConfiguration,
       CcToolchainProvider ccToolchain,
-      FdoSupportProvider fdoSupport,
+      FdoContext fdoContext,
       boolean usePic,
       boolean generateDwo,
       BuildConfiguration configuration,
-      CppLinkAction.LinkArtifactFactory linkArtifactFactory) {
+      LinkArtifactFactory linkArtifactFactory,
+      List<String> userCompileFlags,
+      @Nullable BitcodeFiles bitcodeFiles)
+      throws RuleErrorException {
     LtoBackendAction.Builder builder = new LtoBackendAction.Builder();
 
     builder.addInput(bitcodeFile);
@@ -142,27 +220,21 @@ public final class LtoBackendArtifacts {
       builder.addImportsInfo(bitcodeFiles, imports);
       // Although the imports file is not used by the LTOBackendAction while the action is
       // executing, it is needed during the input discovery phase, and we must list it as an input
-      // to the action // in order for it to be preserved under
-      // --experimental_discard_orphaned_artifacts.
+      // to the action in order for it to be preserved under --discard_orphaned_artifacts.
       builder.addInput(imports);
     }
     if (index != null) {
       builder.addInput(index);
     }
-    builder.addTransitiveInputs(ccToolchain.getCompile());
+    builder.addTransitiveInputs(ccToolchain.getCompilerFiles());
 
     builder.addOutput(objectFile);
 
-    builder.setProgressMessage("LTO Backend Compile %s", objectFile.getFilename());
+    builder.setProgressMessage("LTO Backend Compile %s", objectFile.getExecPath());
     builder.setMnemonic("CcLtoBackendCompile");
 
-    // The command-line doesn't specify the full path to clang++, so we set it in the
-    // environment.
-    PathFragment compiler = ccToolchain.getToolPathFragment(Tool.GCC);
-
-    builder.setExecutable(compiler);
-    Variables.Builder buildVariablesBuilder =
-        new Variables.Builder(ccToolchain.getBuildVariables());
+    CcToolchainVariables.Builder buildVariablesBuilder =
+        CcToolchainVariables.builder(ccToolchain.getBuildVariables(buildOptions, cppConfiguration));
     if (index != null) {
       buildVariablesBuilder.addStringVariable("thinlto_index", index.getExecPath().toString());
     } else {
@@ -175,37 +247,100 @@ public final class LtoBackendArtifacts {
     // The input to the LTO backend step is the bitcode file.
     buildVariablesBuilder.addStringVariable(
         "thinlto_input_bitcode_file", bitcodeFile.getExecPath().toString());
-    Artifact autoFdoProfile = fdoSupport.getFdoSupport().buildProfileForLtoBackend(
-        fdoSupport, featureConfiguration, buildVariablesBuilder, ruleContext);
-    if (autoFdoProfile != null) {
-      builder.addInput(autoFdoProfile);
+    addProfileForLtoBackend(builder, fdoContext, featureConfiguration, buildVariablesBuilder);
+    // Add the context sensitive instrument path to the backend.
+    if (featureConfiguration.isEnabled(CppRuleClasses.CS_FDO_INSTRUMENT)) {
+      buildVariablesBuilder.addStringVariable(
+          CompileBuildVariables.CS_FDO_INSTRUMENT_PATH.getVariableName(),
+          ccToolchain.getCSFdoInstrument());
     }
 
     if (generateDwo) {
-      Artifact dwoFile =
+      dwoFile =
           linkArtifactFactory.create(
-              ruleContext,
+              actionConstructionContext,
+              repositoryName,
               configuration,
               FileSystemUtils.replaceExtension(objectFile.getRootRelativePath(), ".dwo"));
       builder.addOutput(dwoFile);
       buildVariablesBuilder.addStringVariable(
-          "per_object_debug_info_file", dwoFile.getExecPathString());
+          CompileBuildVariables.PER_OBJECT_DEBUG_INFO_FILE.getVariableName(),
+          dwoFile.getExecPathString());
+      buildVariablesBuilder.addStringVariable(
+          CompileBuildVariables.IS_USING_FISSION.getVariableName(), "");
+    }
+    buildVariablesBuilder.addStringSequenceVariable(
+        CompileBuildVariables.USER_COMPILE_FLAGS.getVariableName(), userCompileFlags);
+
+    CcToolchainVariables buildVariables = buildVariablesBuilder.build();
+
+    if (cppConfiguration.useStandaloneLtoIndexingCommandLines()) {
+      if (!featureConfiguration.actionIsConfigured(CppActionNames.LTO_BACKEND)) {
+        throw ruleErrorConsumer.throwWithRuleError(
+            "Thinlto build is requested, but the C++ toolchain doesn't define an action_config for"
+                + " 'lto-backend' action.");
+      }
+      PathFragment compiler =
+          PathFragment.create(
+              featureConfiguration.getToolPathForAction(CppActionNames.LTO_BACKEND));
+      builder.setExecutable(compiler);
+    } else {
+      PathFragment compiler = ccToolchain.getToolPathFragment(Tool.GCC, ruleErrorConsumer);
+      builder.setExecutable(compiler);
     }
 
-    List<String> execArgs = new ArrayList<>();
-    execArgs.addAll(commandLine);
-    Variables buildVariables = buildVariablesBuilder.build();
-    // Feature options should go after --copt for consistency with compile actions.
-    execArgs.addAll(featureConfiguration.getCommandLine("lto-backend", buildVariables));
-    // If this is a PIC compile (set based on the CppConfiguration), the PIC
-    // option should be added after the rest of the command line so that it
-    // cannot be overridden. This is consistent with the ordering in the
-    // CppCompileAction's compiler options.
-    if (usePic) {
-      execArgs.add("-fPIC");
-    }
-    builder.addExecutableArguments(execArgs);
+    CommandLine ltoCommandLine =
+        new LtoBackendCommandLine(featureConfiguration, buildVariables, usePic);
+    builder.addCommandLine(ltoCommandLine);
 
-    ruleContext.registerAction(builder.build(ruleContext));
+    actionConstructionContext.registerAction(builder.build(actionConstructionContext));
+  }
+
+  /**
+   * Adds the AFDO profile path to the variable builder and the profile tothe inputs of the action.
+   */
+  @ThreadSafe
+  private static void addProfileForLtoBackend(
+      LtoBackendAction.Builder builder,
+      FdoContext fdoContext,
+      FeatureConfiguration featureConfiguration,
+      CcToolchainVariables.Builder buildVariables) {
+    Artifact prefetch = fdoContext.getPrefetchHintsArtifact();
+    if (prefetch != null) {
+      buildVariables.addStringVariable("fdo_prefetch_hints_path", prefetch.getExecPathString());
+      builder.addInput(fdoContext.getPrefetchHintsArtifact());
+    }
+    if (!featureConfiguration.isEnabled(CppRuleClasses.AUTOFDO)
+        && !featureConfiguration.isEnabled(CppRuleClasses.CS_FDO_OPTIMIZE)
+        && !featureConfiguration.isEnabled(CppRuleClasses.XBINARYFDO)) {
+      return;
+    }
+
+    FdoContext.BranchFdoProfile branchFdoProfile =
+        Preconditions.checkNotNull(fdoContext.getBranchFdoProfile());
+    Artifact profile = branchFdoProfile.getProfileArtifact();
+    buildVariables.addStringVariable("fdo_profile_path", profile.getExecPathString());
+    builder.addInput(branchFdoProfile.getProfileArtifact());
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (!(o instanceof LtoBackendArtifacts)) {
+      return false;
+    }
+    LtoBackendArtifacts that = (LtoBackendArtifacts) o;
+    return Objects.equals(index, that.index)
+        && bitcodeFile.equals(that.bitcodeFile)
+        && Objects.equals(imports, that.imports)
+        && objectFile.equals(that.objectFile)
+        && Objects.equals(dwoFile, that.dwoFile);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(index, bitcodeFile, imports, objectFile, dwoFile);
   }
 }

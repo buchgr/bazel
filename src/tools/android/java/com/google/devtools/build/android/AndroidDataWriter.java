@@ -50,7 +50,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -189,7 +188,7 @@ public class AndroidDataWriter implements AndroidDataWritingVisitor {
   /**
    * Creates a new, naive writer for testing.
    *
-   * This writer has "assets" and a "res" directory from the destination directory, as well as a
+   * <p>This writer has "assets" and a "res" directory from the destination directory, as well as a
    * noop png cruncher and a {@link ExecutorService} of 1 thread.
    *
    * @param destination The base directory to derive all paths.
@@ -212,7 +211,7 @@ public class AndroidDataWriter implements AndroidDataWritingVisitor {
    * @param resourceDirectory The directory to copy resources into.
    * @param assetsDirectory The directory to copy assets into.
    * @param cruncher The cruncher for png files. If the cruncher is null, it will be replaced with a
-   *    noop cruncher.
+   *     noop cruncher.
    * @param executorService An execution service for multi-threaded writing.
    * @return A new {@link AndroidDataWriter}.
    */
@@ -268,12 +267,10 @@ public class AndroidDataWriter implements AndroidDataWritingVisitor {
     writeTasks.add(executorService.submit(new CopyTask(sourcePath, destinationPath)));
   }
 
-  /**
-   * Finalizes all operations and flushes the buffers.
-   */
+  /** Finalizes all operations and flushes the buffers. */
   @Override
   public void flush() throws IOException {
-    for (Entry<String, ResourceValuesDefinitions> entry : valueTags.entrySet()) {
+    for (Map.Entry<String, ResourceValuesDefinitions> entry : valueTags.entrySet()) {
       writeTasks.add(
           executorService.submit(
               entry.getValue().createWritingTask(resourceDirectory().resolve(entry.getKey()))));
@@ -312,9 +309,7 @@ public class AndroidDataWriter implements AndroidDataWritingVisitor {
     valueTags.get(valuesPath).addAllNamespaces(namespaces);
   }
 
-  /**
-   * A container for the {@linkplain Segment}s of a values.xml file.
-   */
+  /** A container for the {@linkplain Segment}s of a values.xml file. */
   private static class ResourceValuesDefinitions {
     private static final class WritingTask implements Callable<Boolean> {
 
@@ -349,14 +344,14 @@ public class AndroidDataWriter implements AndroidDataWritingVisitor {
                 StandardOpenOption.WRITE)) {
           writer.write(PRELUDE);
           writer.write(START_RESOURCES_TAG);
-          for (Entry<String, String> prefixToUri : namespaces) {
+          for (Map.Entry<String, String> prefixToUri : namespaces) {
             writer.write(" xmlns:");
             writer.write(prefixToUri.getKey());
             writer.write("=\"");
             writer.write(prefixToUri.getValue());
             writer.write("\"");
           }
-          for (Entry<String, String> attribute : attributes.entrySet()) {
+          for (Map.Entry<String, String> attribute : attributes.entrySet()) {
             writer.write(" ");
             writer.write(attribute.getKey());
             writer.write("=\"");
@@ -541,9 +536,9 @@ public class AndroidDataWriter implements AndroidDataWritingVisitor {
     }
 
     @Override
-    public StartTag addAttributesFrom(Iterable<Entry<String, String>> entries) {
+    public StartTag addAttributesFrom(Iterable<Map.Entry<String, String>> entries) {
       StartTag tag = this;
-      for (Entry<String, String> entry : entries) {
+      for (Map.Entry<String, String> entry : entries) {
         tag = tag.attribute(entry.getKey()).setTo(entry.getValue());
       }
       return tag;
@@ -589,8 +584,8 @@ public class AndroidDataWriter implements AndroidDataWritingVisitor {
 
     @Override
     public ValuesResourceDefinition endTag() {
-      Preconditions.checkArgument(!tagStack.isEmpty(),
-          "Unable to endTag, as no tag has been started.");
+      Preconditions.checkArgument(
+          !tagStack.isEmpty(), "Unable to endTag, as no tag has been started.");
       mapper.add("</" + tagStack.pop() + ">");
       return this;
     }
@@ -685,8 +680,11 @@ public class AndroidDataWriter implements AndroidDataWritingVisitor {
     @Override
     public Path write(Path previousSource, Writer writer) throws IOException {
       Path source = previousSource;
-      Preconditions.checkArgument(segmentsByName.containsKey(fqn), "%s has no segment in %s",
-          fqn.toPrettyString(), segmentsByName.keySet());
+      Preconditions.checkArgument(
+          segmentsByName.containsKey(fqn),
+          "%s has no segment in %s",
+          fqn.toPrettyString(),
+          segmentsByName.keySet());
       for (Segment s : segmentsByName.get(fqn)) {
         // not recording the source
         source = s.write(source, writer);

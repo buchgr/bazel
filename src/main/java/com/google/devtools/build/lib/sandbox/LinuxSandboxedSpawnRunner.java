@@ -14,60 +14,70 @@
 
 package com.google.devtools.build.lib.sandbox;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.io.ByteStreams;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
+import com.google.devtools.build.lib.actions.Spawns;
 import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
+import com.google.devtools.build.lib.exec.TreeDeleter;
 import com.google.devtools.build.lib.exec.local.LocalEnvProvider;
+import com.google.devtools.build.lib.exec.local.PosixLocalEnvProvider;
+import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
+import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxOutputs;
 import com.google.devtools.build.lib.shell.Command;
 import com.google.devtools.build.lib.shell.CommandException;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import java.io.File;
 import java.io.IOException;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
 import java.util.SortedMap;
+import javax.annotation.Nullable;
 
 /** Spawn runner that uses linux sandboxing APIs to execute a local subprocess. */
 final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
-  private static final String LINUX_SANDBOX = "linux-sandbox";
 
-  public static boolean isSupported(CommandEnvironment cmdEnv) {
+  // Since checking if sandbox is supported is expensive, we remember what we've checked.
+  private static final Map<Path, Boolean> isSupportedMap = new HashMap<>();
+
+  /**
+   * Returns whether the linux sandbox is supported on the local machine by running a small command
+   * in it.
+   */
+  public static boolean isSupported(final CommandEnvironment cmdEnv) {
     if (OS.getCurrent() != OS.LINUX) {
       return false;
     }
-    Path embeddedTool = getLinuxSandbox(cmdEnv);
-    if (embeddedTool == null) {
-      // The embedded tool does not exist, meaning that we don't support sandboxing (e.g., while
-      // bootstrapping).
+    if (!LinuxSandboxUtil.isSupported(cmdEnv)) {
       return false;
     }
+    Path linuxSandbox = LinuxSandboxUtil.getLinuxSandbox(cmdEnv);
+    return isSupportedMap.computeIfAbsent(
+        linuxSandbox, linuxSandboxPath -> computeIsSupported(cmdEnv, linuxSandboxPath));
+  }
 
-    Path execRoot = cmdEnv.getExecRoot();
-
-    List<String> args = new ArrayList<>();
-    args.add(embeddedTool.getPathString());
-    args.add("--");
-    args.add("/bin/true");
-
+  private static boolean computeIsSupported(CommandEnvironment cmdEnv, Path linuxSandbox) {
+    ImmutableList<String> linuxSandboxArgv =
+        LinuxSandboxUtil.commandLineBuilder(linuxSandbox, ImmutableList.of("/bin/true")).build();
     ImmutableMap<String, String> env = ImmutableMap.of();
+    Path execRoot = cmdEnv.getExecRoot();
     File cwd = execRoot.getPathFile();
 
-    Command cmd = new Command(args.toArray(new String[0]), env, cwd);
-    try {
+    Command cmd = new Command(linuxSandboxArgv.toArray(new String[0]), env, cwd);
+    try (SilentCloseable c = Profiler.instance().profile("LinuxSandboxedSpawnRunner.isSupported")) {
       cmd.execute(ByteStreams.nullOutputStream(), ByteStreams.nullOutputStream());
     } catch (CommandException e) {
       return false;
@@ -76,161 +86,157 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     return true;
   }
 
-  private static Path getLinuxSandbox(CommandEnvironment cmdEnv) {
-    PathFragment execPath = cmdEnv.getBlazeWorkspace().getBinTools().getExecPath(LINUX_SANDBOX);
-    return execPath != null ? cmdEnv.getExecRoot().getRelative(execPath) : null;
-  }
-
+  private final FileSystem fileSystem;
   private final BlazeDirectories blazeDirs;
   private final Path execRoot;
   private final boolean allowNetwork;
   private final Path linuxSandbox;
+  private final Path sandboxBase;
   private final Path inaccessibleHelperFile;
   private final Path inaccessibleHelperDir;
   private final LocalEnvProvider localEnvProvider;
-  private final int timeoutGraceSeconds;
-  private final String productName;
+  private final Duration timeoutKillDelay;
+  private final @Nullable SandboxfsProcess sandboxfsProcess;
+  private final boolean sandboxfsMapSymlinkTargets;
+  private final TreeDeleter treeDeleter;
 
+  /**
+   * Creates a sandboxed spawn runner that uses the {@code linux-sandbox} tool.
+   *
+   * @param cmdEnv the command environment to use
+   * @param sandboxBase path to the sandbox base directory
+   * @param inaccessibleHelperFile path to a file that is (already) inaccessible
+   * @param inaccessibleHelperDir path to a directory that is (already) inaccessible
+   * @param timeoutKillDelay an additional grace period before killing timing out commands
+   * @param sandboxfsProcess instance of the sandboxfs process to use; may be null for none, in
+   *     which case the runner uses a symlinked sandbox
+   * @param sandboxfsMapSymlinkTargets map the targets of symlinks within the sandbox if true
+   */
   LinuxSandboxedSpawnRunner(
       CommandEnvironment cmdEnv,
       Path sandboxBase,
-      String productName,
       Path inaccessibleHelperFile,
       Path inaccessibleHelperDir,
-      int timeoutGraceSeconds) {
-    super(cmdEnv, sandboxBase);
+      Duration timeoutKillDelay,
+      @Nullable SandboxfsProcess sandboxfsProcess,
+      boolean sandboxfsMapSymlinkTargets,
+      TreeDeleter treeDeleter) {
+    super(cmdEnv);
+    this.fileSystem = cmdEnv.getRuntime().getFileSystem();
     this.blazeDirs = cmdEnv.getDirectories();
     this.execRoot = cmdEnv.getExecRoot();
-    this.productName = productName;
     this.allowNetwork = SandboxHelpers.shouldAllowNetwork(cmdEnv.getOptions());
-    this.linuxSandbox = getLinuxSandbox(cmdEnv);
+    this.linuxSandbox = LinuxSandboxUtil.getLinuxSandbox(cmdEnv);
+    this.sandboxBase = sandboxBase;
     this.inaccessibleHelperFile = inaccessibleHelperFile;
     this.inaccessibleHelperDir = inaccessibleHelperDir;
-    this.timeoutGraceSeconds = timeoutGraceSeconds;
-    this.localEnvProvider = LocalEnvProvider.ADD_TEMP_POSIX;
+    this.timeoutKillDelay = timeoutKillDelay;
+    this.sandboxfsProcess = sandboxfsProcess;
+    this.sandboxfsMapSymlinkTargets = sandboxfsMapSymlinkTargets;
+    this.localEnvProvider = new PosixLocalEnvProvider(cmdEnv.getClientEnv());
+    this.treeDeleter = treeDeleter;
   }
 
   @Override
-  protected SpawnResult actuallyExec(Spawn spawn, SpawnExecutionPolicy policy)
+  protected SpawnResult actuallyExec(Spawn spawn, SpawnExecutionContext context)
       throws IOException, ExecException, InterruptedException {
-    // Each invocation of "exec" gets its own sandbox.
-    Path sandboxPath = getSandboxRoot();
+    // Each invocation of "exec" gets its own sandbox base.
+    // Note that the value returned by context.getId() is only unique inside one given SpawnRunner,
+    // so we have to prefix our name to turn it into a globally unique value.
+    Path sandboxPath =
+        sandboxBase.getRelative(getName()).getRelative(Integer.toString(context.getId()));
+    sandboxPath.getParentDirectory().createDirectory();
+    sandboxPath.createDirectory();
+
+    // b/64689608: The execroot of the sandboxed process must end with the workspace name, just like
+    // the normal execroot does.
     Path sandboxExecRoot = sandboxPath.getRelative("execroot").getRelative(execRoot.getBaseName());
+    sandboxExecRoot.getParentDirectory().createDirectory();
+    sandboxExecRoot.createDirectory();
 
-    // Each sandboxed action runs in its own execroot, so we don't need to make the temp directory's
-    // name unique (like we have to with standalone execution strategy).
-    Path tmpDir = sandboxExecRoot.getRelative("tmp");
-
-    Set<Path> writableDirs = getWritableDirs(sandboxExecRoot, spawn.getEnvironment(), tmpDir);
-    ImmutableSet<PathFragment> outputs = SandboxHelpers.getOutputFiles(spawn);
-    Duration timeout = policy.getTimeout();
-    List<String> arguments =
-        computeCommandLine(
-            spawn,
-            timeout,
-            linuxSandbox,
-            writableDirs,
-            getTmpfsPaths(),
-            getReadOnlyBindMounts(blazeDirs, sandboxExecRoot),
-            allowNetwork || SandboxHelpers.shouldAllowNetwork(spawn),
-            spawn.getExecutionInfo().containsKey("requires-fakeroot"));
     Map<String, String> environment =
-        localEnvProvider.rewriteLocalEnv(spawn.getEnvironment(), execRoot, tmpDir, productName);
+        localEnvProvider.rewriteLocalEnv(spawn.getEnvironment(), binTools, "/tmp");
 
-    SandboxedSpawn sandbox =
-        new SymlinkedSandboxedSpawn(
-            sandboxPath,
-            sandboxExecRoot,
-            arguments,
-            environment,
-            SandboxHelpers.getInputFiles(spawn, policy, execRoot),
-            outputs,
-            writableDirs);
-    return runSpawn(spawn, sandbox, policy, execRoot, tmpDir, timeout);
-  }
+    ImmutableSet<Path> writableDirs = getWritableDirs(sandboxExecRoot, environment);
+    SandboxOutputs outputs = SandboxHelpers.getOutputs(spawn);
+    Duration timeout = context.getTimeout();
 
-  private List<String> computeCommandLine(
-      Spawn spawn,
-      Duration timeout,
-      Path linuxSandbox,
-      Set<Path> writableDirs,
-      Set<Path> tmpfsPaths,
-      Map<Path, Path> bindMounts,
-      boolean allowNetwork,
-      boolean requiresFakeRoot) {
-    List<String> commandLineArgs = new ArrayList<>();
-    commandLineArgs.add(linuxSandbox.getPathString());
+    LinuxSandboxUtil.CommandLineBuilder commandLineBuilder =
+        LinuxSandboxUtil.commandLineBuilder(linuxSandbox, spawn.getArguments())
+            .setWritableFilesAndDirectories(writableDirs)
+            .setTmpfsDirectories(getTmpfsPaths())
+            .setBindMounts(getReadOnlyBindMounts(blazeDirs, sandboxExecRoot))
+            .setUseFakeHostname(getSandboxOptions().sandboxFakeHostname)
+            .setCreateNetworkNamespace(
+                !(allowNetwork
+                    || Spawns.requiresNetwork(
+                        spawn, getSandboxOptions().defaultSandboxAllowNetwork)))
+            .setUseDebugMode(getSandboxOptions().sandboxDebug)
+            .setKillDelay(timeoutKillDelay);
 
-    if (getSandboxOptions().sandboxDebug) {
-      commandLineArgs.add("-D");
-    }
-
-    // Kill the process after a timeout.
     if (!timeout.isZero()) {
-      commandLineArgs.add("-T");
-      commandLineArgs.add(Long.toString(timeout.getSeconds()));
+      commandLineBuilder.setTimeout(timeout);
     }
 
-    if (timeoutGraceSeconds != -1) {
-      commandLineArgs.add("-t");
-      commandLineArgs.add(Integer.toString(timeoutGraceSeconds));
-    }
-
-    // Create all needed directories.
-    for (Path writablePath : writableDirs) {
-      commandLineArgs.add("-w");
-      commandLineArgs.add(writablePath.getPathString());
-    }
-
-    for (Path tmpfsPath : tmpfsPaths) {
-      commandLineArgs.add("-e");
-      commandLineArgs.add(tmpfsPath.getPathString());
-    }
-
-    for (ImmutableMap.Entry<Path, Path> bindMount : bindMounts.entrySet()) {
-      commandLineArgs.add("-M");
-      commandLineArgs.add(bindMount.getValue().getPathString());
-
-      // The file is mounted in a custom location inside the sandbox.
-      if (!bindMount.getKey().equals(bindMount.getValue())) {
-        commandLineArgs.add("-m");
-        commandLineArgs.add(bindMount.getKey().getPathString());
-      }
-    }
-
-    if (!allowNetwork) {
-      // Block network access out of the namespace.
-      commandLineArgs.add("-N");
-    }
-
-    if (getSandboxOptions().sandboxFakeHostname) {
-      // Use a fake hostname ("localhost") inside the sandbox.
-      commandLineArgs.add("-H");
-    }
-
-    if (requiresFakeRoot) {
-      // Use fake root.
-      commandLineArgs.add("-R");
+    if (spawn.getExecutionInfo().containsKey(ExecutionRequirements.REQUIRES_FAKEROOT)) {
+      commandLineBuilder.setUseFakeRoot(true);
     } else if (getSandboxOptions().sandboxFakeUsername) {
-      // Use a fake username ("nobody") inside the sandbox.
-      commandLineArgs.add("-U");
+      commandLineBuilder.setUseFakeUsername(true);
     }
 
-    commandLineArgs.add("--");
-    commandLineArgs.addAll(spawn.getArguments());
-    return commandLineArgs;
+    Path statisticsPath = null;
+    if (getSandboxOptions().collectLocalSandboxExecutionStatistics) {
+      statisticsPath = sandboxPath.getRelative("stats.out");
+      commandLineBuilder.setStatisticsPath(statisticsPath);
+    }
+
+    SandboxedSpawn sandbox;
+    if (sandboxfsProcess != null) {
+      sandbox =
+          new SandboxfsSandboxedSpawn(
+              sandboxfsProcess,
+              sandboxPath,
+              commandLineBuilder.build(),
+              environment,
+              SandboxHelpers.processInputFiles(
+                  spawn,
+                  context,
+                  execRoot,
+                  getSandboxOptions().symlinkedSandboxExpandsTreeArtifactsInRunfilesTree),
+              outputs,
+              ImmutableSet.of(),
+              sandboxfsMapSymlinkTargets,
+              treeDeleter);
+    } else {
+      sandbox =
+          new SymlinkedSandboxedSpawn(
+              sandboxPath,
+              sandboxExecRoot,
+              commandLineBuilder.build(),
+              environment,
+              SandboxHelpers.processInputFiles(
+                  spawn,
+                  context,
+                  execRoot,
+                  getSandboxOptions().symlinkedSandboxExpandsTreeArtifactsInRunfilesTree),
+              outputs,
+              writableDirs,
+              treeDeleter);
+    }
+
+    return runSpawn(spawn, sandbox, context, execRoot, timeout, statisticsPath);
   }
 
   @Override
-  protected String getName() {
+  public String getName() {
     return "linux-sandbox";
   }
 
   @Override
-  protected ImmutableSet<Path> getWritableDirs(
-      Path sandboxExecRoot, Map<String, String> env, Path tmpDir) throws IOException {
+  protected ImmutableSet<Path> getWritableDirs(Path sandboxExecRoot, Map<String, String> env)
+      throws IOException {
     ImmutableSet.Builder<Path> writableDirs = ImmutableSet.builder();
-    writableDirs.addAll(super.getWritableDirs(sandboxExecRoot, env, tmpDir));
+    writableDirs.addAll(super.getWritableDirs(sandboxExecRoot, env));
 
     FileSystem fs = sandboxExecRoot.getFileSystem();
     writableDirs.add(fs.getPath("/dev/shm").resolveSymbolicLinks());
@@ -242,14 +248,14 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
   private ImmutableSet<Path> getTmpfsPaths() {
     ImmutableSet.Builder<Path> tmpfsPaths = ImmutableSet.builder();
     for (String tmpfsPath : getSandboxOptions().sandboxTmpfsPath) {
-      tmpfsPaths.add(blazeDirs.getFileSystem().getPath(tmpfsPath));
+      tmpfsPaths.add(fileSystem.getPath(tmpfsPath));
     }
     return tmpfsPaths.build();
   }
 
   private SortedMap<Path, Path> getReadOnlyBindMounts(
       BlazeDirectories blazeDirs, Path sandboxExecRoot) throws UserExecException {
-    Path tmpPath = blazeDirs.getFileSystem().getPath("/tmp");
+    Path tmpPath = fileSystem.getPath("/tmp");
     final SortedMap<Path, Path> bindMounts = Maps.newTreeMap();
     if (blazeDirs.getWorkspace().startsWith(tmpPath)) {
       bindMounts.put(blazeDirs.getWorkspace(), blazeDirs.getWorkspace());
@@ -260,7 +266,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     for (ImmutableMap.Entry<String, String> additionalMountPath :
         getSandboxOptions().sandboxAdditionalMounts) {
       try {
-        final Path mountTarget = blazeDirs.getFileSystem().getPath(additionalMountPath.getValue());
+        final Path mountTarget = fileSystem.getPath(additionalMountPath.getValue());
         // If source path is relative, treat it as a relative path inside the execution root
         final Path mountSource = sandboxExecRoot.getRelative(additionalMountPath.getKey());
         // If a target has more than one source path, the latter one will take effect.
@@ -320,5 +326,23 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
                 target));
       }
     }
+  }
+
+  @Override
+  public void cleanupSandboxBase(Path sandboxBase, TreeDeleter treeDeleter) throws IOException {
+    // Delete the inaccessible files synchronously, bypassing the treeDeleter. They are only a
+    // couple of files that can be deleted fast, and ensuring they are gone at the end of every
+    // build avoids annoying permission denied errors if the user happens to run "rm -rf" on the
+    // output base. (We have some tests that do that.)
+    if (inaccessibleHelperDir.exists()) {
+      inaccessibleHelperDir.chmod(0700);
+      inaccessibleHelperDir.deleteTree();
+    }
+    if (inaccessibleHelperFile.exists()) {
+      inaccessibleHelperFile.chmod(0600);
+      inaccessibleHelperFile.delete();
+    }
+
+    super.cleanupSandboxBase(sandboxBase, treeDeleter);
   }
 }

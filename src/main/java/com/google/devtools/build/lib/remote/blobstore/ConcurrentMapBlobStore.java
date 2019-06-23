@@ -13,8 +13,10 @@
 // limitations under the License.
 package com.google.devtools.build.lib.remote.blobstore;
 
+import com.google.common.base.Preconditions;
 import com.google.common.io.ByteStreams;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.SettableFuture;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -23,30 +25,42 @@ import java.util.concurrent.ConcurrentMap;
 /** A {@link SimpleBlobStore} implementation using a {@link ConcurrentMap}. */
 public final class ConcurrentMapBlobStore implements SimpleBlobStore {
   private final ConcurrentMap<String, byte[]> map;
+  static final String ACTION_KEY_PREFIX = "ac_";
 
   public ConcurrentMapBlobStore(ConcurrentMap<String, byte[]> map) {
     this.map = map;
   }
 
   @Override
-  public boolean containsKey(String key) {
+  public boolean contains(String key) {
     return map.containsKey(key);
   }
 
   @Override
-  public boolean get(String key, OutputStream out) throws IOException {
-    byte[] data = map.get(key);
-    if (data == null) {
-      return false;
-    }
-    out.write(data);
-    return true;
+  public boolean containsActionResult(String key) {
+    return map.containsKey(ACTION_KEY_PREFIX + key);
   }
 
   @Override
-  public boolean getActionResult(String key, OutputStream out)
-      throws IOException, InterruptedException {
-    return get(key, out);
+  public ListenableFuture<Boolean> get(String key, OutputStream out) {
+    byte[] data = map.get(key);
+    SettableFuture<Boolean> f = SettableFuture.create();
+    if (data == null) {
+      f.set(false);
+    } else {
+      try {
+        out.write(data);
+        f.set(true);
+      } catch (IOException e) {
+        f.setException(e);
+      }
+    }
+    return f;
+  }
+
+  @Override
+  public ListenableFuture<Boolean> getActionResult(String key, OutputStream out) {
+    return get(ACTION_KEY_PREFIX + key, out);
   }
 
   @Override
@@ -57,10 +71,11 @@ public final class ConcurrentMapBlobStore implements SimpleBlobStore {
   }
 
   @Override
-  public void putActionResult(String key, byte[] in) throws IOException, InterruptedException {
-    map.put(key, in);
+  public void putActionResult(String key, byte[] in) {
+    map.put(ACTION_KEY_PREFIX + key, in);
   }
 
   @Override
   public void close() {}
+
 }

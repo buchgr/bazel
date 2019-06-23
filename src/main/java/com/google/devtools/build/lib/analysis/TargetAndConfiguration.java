@@ -13,16 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis;
 
-import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.Target;
-import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
-import com.google.devtools.build.lib.util.Preconditions;
-
 import java.util.Objects;
-
 import javax.annotation.Nullable;
 
 /**
@@ -39,33 +35,12 @@ public final class TargetAndConfiguration {
     this.configuration = configuration;
   }
 
-  public TargetAndConfiguration(ConfiguredTarget configuredTarget) {
-    this.target = Preconditions.checkNotNull(configuredTarget).getTarget();
-    this.configuration = configuredTarget.getConfiguration();
-  }
-
   // The node name in the graph. The name should be unique.
   // It is not suitable for user display.
   public String getName() {
     return target.getLabel() + " "
         + (configuration == null ? "null" : configuration.checksum());
   }
-
-  public static final Function<TargetAndConfiguration, String> NAME_FUNCTION =
-      new Function<TargetAndConfiguration, String>() {
-        @Override
-        public String apply(TargetAndConfiguration node) {
-          return node.getName();
-        }
-      };
-
-  public static final Function<TargetAndConfiguration, ConfiguredTargetKey>
-      TO_LABEL_AND_CONFIGURATION = new Function<TargetAndConfiguration, ConfiguredTargetKey>() {
-        @Override
-        public ConfiguredTargetKey apply(TargetAndConfiguration input) {
-          return new ConfiguredTargetKey(input.getLabel(), input.getConfiguration());
-        }
-      };
 
   @Override
   public boolean equals(Object that) {

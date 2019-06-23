@@ -13,7 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.jimfs.Jimfs;
@@ -56,7 +56,7 @@ public class DependencyAndroidDataTest {
     otherAssets = Files.createDirectories(root.resolve("otherassets"));
   }
 
-  @Test public void flagFullParse() throws Exception{
+  @Test public void flagFullParse() {
     Truth.assertThat(
             DependencyAndroidData.valueOf(
                 "res#otherres:assets#otherassets:AndroidManifest.xml:r.txt:symbols.zip:symbols.bin",
@@ -71,7 +71,7 @@ public class DependencyAndroidDataTest {
                 compiledResources));
   }
 
-  @Test public void flagParseWithNoSymbolsFile() throws Exception{
+  @Test public void flagParseWithNoSymbolsFile() {
     Truth.assertThat(
             DependencyAndroidData.valueOf(
                 "res#otherres:assets#otherassets:AndroidManifest.xml:r.txt:", fileSystem))
@@ -85,7 +85,7 @@ public class DependencyAndroidDataTest {
                 null));
   }
 
-  @Test public void flagParseOmittedSymbolsFile() throws Exception{
+  @Test public void flagParseOmittedSymbolsFile() {
     Truth.assertThat(
             DependencyAndroidData.valueOf(
                 "res#otherres:assets#otherassets:AndroidManifest.xml:r.txt", fileSystem))
@@ -99,7 +99,7 @@ public class DependencyAndroidDataTest {
                 null));
   }
 
-  @Test public void flagParseWithEmptyResources() throws Exception{
+  @Test public void flagParseWithEmptyResources() {
     Truth.assertThat(
             DependencyAndroidData.valueOf(
                 ":assets:AndroidManifest.xml:r.txt:symbols.bin", fileSystem))
@@ -108,7 +108,7 @@ public class DependencyAndroidDataTest {
                 ImmutableList.<Path>of(), ImmutableList.of(assets), manifest, rTxt, symbols, null));
   }
 
-  @Test public void flagParseWithEmptyAssets() throws Exception{
+  @Test public void flagParseWithEmptyAssets() {
     Truth.assertThat(
             DependencyAndroidData.valueOf("res::AndroidManifest.xml:r.txt:symbols.bin", fileSystem))
         .isEqualTo(
@@ -116,7 +116,7 @@ public class DependencyAndroidDataTest {
                 ImmutableList.of(res), ImmutableList.<Path>of(), manifest, rTxt, symbols, null));
   }
 
-  @Test public void flagParseWithEmptyResourcesAndAssets() throws Exception{
+  @Test public void flagParseWithEmptyResourcesAndAssets() {
     Truth.assertThat(
             DependencyAndroidData.valueOf("::AndroidManifest.xml:r.txt:symbols.bin", fileSystem))
         .isEqualTo(
@@ -125,42 +125,38 @@ public class DependencyAndroidDataTest {
   }
 
   @Test public void flagNoManifestFails() {
-    try {
-      DependencyAndroidData.valueOf(":::r.txt", fileSystem);
-      fail("expected exception for bad flag format");
-    } catch (IllegalArgumentException expected) {
-    }
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> DependencyAndroidData.valueOf(":::r.txt", fileSystem));
   }
 
   @Test public void flagMissingManifestFails() {
-    try {
-      DependencyAndroidData.valueOf("::Manifest.xml:r.txt:symbols.bin", fileSystem);
-      fail("expected exception for bad flag format");
-    } catch (IllegalArgumentException expected) {
-    }
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> DependencyAndroidData.valueOf("::Manifest.xml:r.txt:symbols.bin", fileSystem));
   }
 
   @Test public void flagNoRTxtFails() {
-    try {
-      DependencyAndroidData.valueOf("::AndroidManifest.xml:", fileSystem);
-      fail("expected exception for bad flag format");
-    } catch (IllegalArgumentException expected) {
-    }
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> DependencyAndroidData.valueOf("::AndroidManifest.xml:", fileSystem));
+  }
+
+  @Test public void flagNoRTxtWithSymbolsFails() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> DependencyAndroidData.valueOf("::AndroidManifest.xml:::symbols.bin", fileSystem));
   }
 
   @Test public void flagMissingRTxtFails() {
-    try {
-      DependencyAndroidData.valueOf("::Manifest.xml:missing_file", fileSystem);
-      fail("expected exception for bad flag format");
-    } catch (IllegalArgumentException expected) {
-    }
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> DependencyAndroidData.valueOf("::Manifest.xml:missing_file", fileSystem));
   }
 
   @Test public void flagMissingSymbolsFails() {
-    try {
-      DependencyAndroidData.valueOf("::Manifest.xml:r.txt:missing_file", fileSystem);
-      fail("expected exception for bad flag format");
-    } catch (IllegalArgumentException expected) {
-    }
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> DependencyAndroidData.valueOf("::Manifest.xml:r.txt:missing_file", fileSystem));
   }
 }

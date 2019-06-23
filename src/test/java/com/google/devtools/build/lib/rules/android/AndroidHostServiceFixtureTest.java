@@ -26,6 +26,10 @@ import org.junit.runners.JUnit4;
 /** Tests for {@link AndroidHostServiceFixture}. */
 @RunWith(JUnit4.class)
 public class AndroidHostServiceFixtureTest extends AndroidBuildViewTestCase {
+  @Before
+  public void setupCcToolchain() throws Exception {
+    getAnalysisMock().ccSupport().setupCcToolchainConfigForCpu(mockToolsConfig, "armeabi-v7a");
+  }
 
   @Before
   public void setup() throws Exception {
@@ -65,7 +69,7 @@ public class AndroidHostServiceFixtureTest extends AndroidBuildViewTestCase {
                 hostServiceFixture
                     .getProvider(RunfilesProvider.class)
                     .getDefaultRunfiles()
-                    .getArtifactsWithoutMiddlemen()))
+                    .getArtifacts()))
         .containsExactlyElementsIn(
             ActionsTestUtil.prettyArtifactNames(
                 getConfiguredTarget("//java/com/server")

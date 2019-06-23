@@ -13,9 +13,9 @@
 // limitations under the License.
 package com.google.devtools.build.skyframe;
 
-import com.google.devtools.build.lib.events.ExtendedEventHandler;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.common.options.OptionsClassProvider;
+import com.google.common.base.Preconditions;
+import com.google.devtools.build.lib.concurrent.AbstractQueueVisitor;
+import com.google.devtools.common.options.OptionsProvider;
 import javax.annotation.Nullable;
 
 /**
@@ -32,24 +32,32 @@ public class SequentialBuildDriver implements BuildDriver {
 
   @Override
   public <T extends SkyValue> EvaluationResult<T> evaluate(
-      Iterable<? extends SkyKey> roots, boolean keepGoing, int numThreads,
-      ExtendedEventHandler reporter)
-          throws InterruptedException {
+      Iterable<? extends SkyKey> roots, EvaluationContext evaluationContext)
+      throws InterruptedException {
     try {
-      return memoizingEvaluator.evaluate(roots, curVersion, keepGoing, numThreads, reporter);
+      return memoizingEvaluator.evaluate(
+          roots,
+          curVersion,
+          evaluationContext.getExecutorServiceSupplier().isPresent()
+              ? evaluationContext
+              : EvaluationContext.newBuilder()
+                  .copyFrom(evaluationContext)
+                  .setNumThreads(evaluationContext.getParallelism())
+                  .setExecutorServiceSupplier(
+                      () ->
+                          AbstractQueueVisitor.createExecutorService(
+                              evaluationContext.getParallelism(),
+                              "skyframe-evaluator",
+                              evaluationContext.getUseForkJoinPool()))
+                  .build());
     } finally {
       curVersion = curVersion.next();
     }
   }
 
- @Override
- public String meta(Iterable<SkyKey> of, OptionsClassProvider options) {
-   return "";
- }
-
   @Override
-  public boolean alreadyEvaluated(Iterable<SkyKey> roots) {
-    return false;
+  public String meta(Iterable<SkyKey> of, OptionsProvider options) {
+    return "";
   }
 
   @Override
@@ -72,6 +80,6 @@ public class SequentialBuildDriver implements BuildDriver {
   @Nullable
   @Override
   public NodeEntry getEntryForTesting(SkyKey key) throws InterruptedException {
-    return memoizingEvaluator.getExistingEntryForTesting(key);
+    return memoizingEvaluator.getExistingEntryAtLatestVersion(key);
   }
 }

@@ -14,31 +14,43 @@
 
 package com.google.devtools.build.lib.rules.java;
 
-import com.google.common.base.Function;
-import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
-import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.rules.cpp.CcLinkParamsStore;
-import com.google.devtools.build.lib.rules.cpp.CcLinkParamsStore.CcLinkParamsStoreImpl;
+import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.packages.BuiltinProvider;
+import com.google.devtools.build.lib.packages.Info;
+import com.google.devtools.build.lib.rules.cpp.CcInfo;
+import com.google.devtools.build.lib.skylarkbuildapi.java.JavaCcLinkParamsProviderApi;
+import com.google.devtools.build.lib.syntax.EvalException;
 
-/**
- * A target that provides C++ libraries to be linked into Java targets.
- */
+/** A target that provides C++ libraries to be linked into Java targets. */
 @Immutable
-public final class JavaCcLinkParamsProvider implements TransitiveInfoProvider {
-  private final CcLinkParamsStoreImpl store;
+public final class JavaCcLinkParamsProvider extends Info
+    implements JavaCcLinkParamsProviderApi<CcInfo> {
+  public static final String PROVIDER_NAME = "JavaCcLinkParamsInfo";
+  public static final Provider PROVIDER = new Provider();
 
-  public JavaCcLinkParamsProvider(CcLinkParamsStore store) {
-    this.store = new CcLinkParamsStoreImpl(store);
+  private final CcInfo ccInfo;
+
+  public JavaCcLinkParamsProvider(CcInfo ccInfo) {
+    super(PROVIDER, Location.BUILTIN);
+    this.ccInfo = CcInfo.builder().setCcLinkingContext(ccInfo.getCcLinkingContext()).build();
   }
 
-  public CcLinkParamsStore getLinkParams() {
-    return store;
+  @Override
+  public CcInfo getCcInfo() {
+    return ccInfo;
   }
 
-  public static final Function<TransitiveInfoCollection, CcLinkParamsStore> TO_LINK_PARAMS =
-      input -> {
-        JavaCcLinkParamsProvider provider = input.getProvider(JavaCcLinkParamsProvider.class);
-        return provider == null ? null : provider.getLinkParams();
-      };
+  /** Provider class for {@link JavaCcLinkParamsProvider} objects. */
+  public static class Provider extends BuiltinProvider<JavaCcLinkParamsProvider>
+      implements JavaCcLinkParamsProviderApi.Provider<CcInfo> {
+    private Provider() {
+      super(PROVIDER_NAME, JavaCcLinkParamsProvider.class);
+    }
+
+    @Override
+    public JavaCcLinkParamsProviderApi<CcInfo> createInfo(CcInfo ccInfo) throws EvalException {
+      return new JavaCcLinkParamsProvider(ccInfo);
+    }
+  }
 }

@@ -18,8 +18,6 @@ import static java.util.stream.Collectors.toList;
 
 import com.android.utils.StdLogger;
 import com.google.common.collect.ImmutableList;
-import com.google.common.util.concurrent.ListeningExecutorService;
-import com.google.devtools.build.android.AndroidResourceMerger.MergingException;
 import com.google.devtools.build.android.AndroidResourceProcessingAction.Options;
 import com.google.devtools.build.android.aapt2.Aapt2ConfigOptions;
 import com.google.devtools.build.android.aapt2.CompiledResources;
@@ -29,14 +27,11 @@ import com.google.devtools.build.android.aapt2.ResourceLinker;
 import com.google.devtools.build.android.aapt2.StaticLibrary;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.ShellQuotedParamsFilePreProcessor;
-import java.io.Closeable;
-import java.io.IOException;
+import com.google.devtools.common.options.TriState;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
 import java.util.List;
-import java.util.logging.Logger;
 
 /**
  * Provides an entry point for the resource processing using the AOSP build tools.
@@ -46,7 +41,6 @@ import java.util.logging.Logger;
  *   java/com/google/build/android/Aapt2ResourcePackagingAction\
  *      --sdkRoot path/to/sdk\
  *      --aapt path/to/sdk/aapt\
- *      --annotationJar path/to/sdk/annotationJar\
  *      --adb path/to/sdk/adb\
  *      --zipAlign path/to/sdk/zipAlign\
  *      --androidJar path/to/sdk/androidJar\
@@ -62,143 +56,144 @@ public class Aapt2ResourcePackagingAction {
 
   private static final StdLogger STD_LOGGER = new StdLogger(StdLogger.Level.WARNING);
 
-  private static final Logger logger =
-      Logger.getLogger(Aapt2ResourcePackagingAction.class.getName());
-
   private static Aapt2ConfigOptions aaptConfigOptions;
   private static Options options;
 
   public static void main(String[] args) throws Exception {
-    Profiler profiler = LoggingProfiler.createAndStart("setup");
+    Profiler profiler = InMemoryProfiler.createAndStart("setup");
     OptionsParser optionsParser =
-        OptionsParser.newOptionsParser(Options.class, Aapt2ConfigOptions.class);
-    optionsParser.enableParamsFileSupport(
-        new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()));
+        OptionsParser.builder()
+            .optionsClasses(Options.class, Aapt2ConfigOptions.class)
+            .argsPreProcessor(new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()))
+            .build();
     optionsParser.parseAndExitUponError(args);
     aaptConfigOptions = optionsParser.getOptions(Aapt2ConfigOptions.class);
     options = optionsParser.getOptions(Options.class);
 
     try (ScopedTemporaryDirectory scopedTmp =
-        new ScopedTemporaryDirectory("android_resources_tmp")) {
+            new ScopedTemporaryDirectory("android_resources_tmp");
+        ExecutorServiceCloser executorService = ExecutorServiceCloser.createWithFixedPoolOf(15)) {
       final Path tmp = scopedTmp.getPath();
-      final Path mergedAssets = tmp.resolve("merged_assets");
-      final Path mergedResources = tmp.resolve("merged_resources");
-
       final Path densityManifest = tmp.resolve("manifest-filtered/AndroidManifest.xml");
-
       final Path processedManifest = tmp.resolve("manifest-processed/AndroidManifest.xml");
+      final Path symbols = tmp.resolve("symbols/symbols.bin");
       final Path databindingResourcesRoot =
           Files.createDirectories(tmp.resolve("android_data_binding_resources"));
       final Path compiledResources = Files.createDirectories(tmp.resolve("compiled"));
       final Path linkedOut = Files.createDirectories(tmp.resolve("linked"));
+      final AndroidDataDeserializer dataDeserializer =
+          aaptConfigOptions.useCompiledResourcesForMerge
+              ? AndroidCompiledDataDeserializer.withFilteredResources(options.prefilteredResources)
+              : AndroidParsedDataDeserializer.withFilteredResources(options.prefilteredResources);
+      final ResourceCompiler compiler =
+          ResourceCompiler.create(
+              executorService,
+              compiledResources,
+              aaptConfigOptions.aapt2,
+              aaptConfigOptions.buildToolsVersion,
+              aaptConfigOptions.generatePseudoLocale);
 
-      profiler.recordEndOf("setup").startTask("merging");
+      profiler.recordEndOf("setup").startTask("compile");
+      CompiledResources compiled =
+          options
+              .primaryData
+              .processDataBindings(
+                  options.dataBindingInfoOut, options.packageForR, databindingResourcesRoot)
+              .compile(compiler, compiledResources)
+              .processManifest(
+                  manifest ->
+                      AndroidManifestProcessor.with(STD_LOGGER)
+                          .processManifest(
+                              options.applicationId,
+                              options.versionCode,
+                              options.versionName,
+                              manifest,
+                              processedManifest))
+              .processManifest(
+                  manifest ->
+                      new DensitySpecificManifestProcessor(options.densities, densityManifest)
+                          .process(manifest));
 
-      // Checks for merge conflicts.
-      MergedAndroidData mergedAndroidData =
-          AndroidResourceMerger.mergeData(
-              options.primaryData,
-              options.directData,
-              options.transitiveData,
-              mergedResources,
-              mergedAssets,
-              null /* cruncher. Aapt2 automatically chooses to crunch or not. */,
+      profiler.recordEndOf("compile").startTask("merge");
+
+      // Checks for merge conflicts, and write the merged data out.
+      final Path symbolsBin =
+          AndroidResourceMerger.mergeDataToSymbols(
+              ParsedAndroidData.loadedFrom(
+                  ImmutableList.of(SerializedAndroidData.from(compiled)),
+                  executorService,
+                  // TODO(b/112848607): Remove when compiled merging is the default for aapt2.
+                  aaptConfigOptions.useCompiledResourcesForMerge
+                      ? dataDeserializer
+                      : AndroidCompiledDataDeserializer.withFilteredResources(
+                          options.prefilteredResources)),
+              new DensitySpecificManifestProcessor(options.densities, densityManifest)
+                  .process(options.primaryData.getManifest()),
+              ImmutableList.<SerializedAndroidData>builder()
+                  .addAll(options.directData)
+                  .addAll(options.directAssets)
+                  .build(),
+              ImmutableList.<SerializedAndroidData>builder()
+                  .addAll(options.transitiveData)
+                  .addAll(options.transitiveAssets)
+                  .build(),
               options.packageType,
-              options.symbolsOut,
-              options.prefilteredResources,
-              false /* throwOnResourceConflict */);
-
-      profiler.recordEndOf("merging");
-
-      final List<String> densitiesToFilter =
-          options.prefilteredResources.isEmpty()
-              ? options.densities
-              : Collections.<String>emptyList();
-      final ListeningExecutorService executorService = ExecutorServiceCloser.createDefaultService();
-      try (final Closeable closeable = ExecutorServiceCloser.createWith(executorService)) {
-        profiler.startTask("compile");
-        final ResourceCompiler compiler =
-            ResourceCompiler.create(
-                executorService,
-                compiledResources,
-                aaptConfigOptions.aapt2,
-                aaptConfigOptions.buildToolsVersion);
-
-        CompiledResources compiled =
-            options
-                .primaryData
-                .processDataBindings(options.dataBindingInfoOut, options.packageForR,
-                    databindingResourcesRoot)
-                .compile(compiler, compiledResources)
-                .processManifest(
-                    manifest ->
-                        AndroidManifestProcessor.with(STD_LOGGER)
-                            .processManifest(
-                                options.applicationId,
-                                options.versionCode,
-                                options.versionName,
-                                manifest,
-                                processedManifest))
-                .processManifest(
-                    manifest ->
-                        new DensitySpecificManifestProcessor(options.densities, densityManifest)
-                            .process(manifest));
-        profiler.recordEndOf("compile").startTask("link");
-        // Write manifestOutput now before the dummy manifest is created.
-        if (options.manifestOutput != null) {
-          AndroidResourceOutputs.copyManifestToOutput(compiled, options.manifestOutput);
-        }
-
-        List<CompiledResources> compiledResourceDeps =
-            // Last defined dependencies will overwrite previous one, so always place direct
-            // after transitive.
-            concat(options.transitiveData.stream(), options.directData.stream())
-                .map(DependencyAndroidData::getCompiledSymbols)
-                .collect(toList());
-
-        List<Path> assetDirs =
-            concat(options.transitiveData.stream(), options.directData.stream())
-                .flatMap(dep -> dep.assetDirs.stream())
-                .collect(toList());
-        assetDirs.addAll(options.primaryData.assetDirs);
-
-        final PackagedResources packagedResources =
-            ResourceLinker.create(aaptConfigOptions.aapt2, linkedOut)
-                .profileUsing(profiler)
-                .dependencies(ImmutableList.of(StaticLibrary.from(aaptConfigOptions.androidJar)))
-                .include(compiledResourceDeps)
-                .withAssets(assetDirs)
-                .buildVersion(aaptConfigOptions.buildToolsVersion)
-                .filterToDensity(densitiesToFilter)
-                .link(compiled)
-                .copyPackageTo(options.packagePath)
-                .copyProguardTo(options.proguardOutput)
-                .copyMainDexProguardTo(options.mainDexProguardOutput)
-                .createSourceJar(options.srcJarOutput)
-                .copyRTxtTo(options.rOutput);
-        profiler.recordEndOf("link");
-        if (options.resourcesOutput != null) {
-          profiler.startTask("package");
-          // The compiled resources and the merged resources should be the same.
-          // TODO(corysmith): Decompile or otherwise provide the exact resources in the apk.
-          ResourcesZip.from(
-                  mergedAndroidData.getResourceDir(),
-                  mergedAndroidData.getAssetDir(),
-                  packagedResources.resourceIds())
-              .writeTo(options.resourcesOutput, false /* compress */);
-          profiler.recordEndOf("package");
-        }
+              symbols,
+              dataDeserializer,
+              options.throwOnResourceConflict,
+              executorService);
+      if (options.symbolsOut != null) {
+        Files.copy(symbolsBin, options.symbolsOut);
       }
-    } catch (MergingException e) {
-      logger.severe("Merging exception: " + e.getMessage());
-      // throw an error, as system.exit will fail tests.
-      throw new RuntimeException();
-    } catch (IOException e) {
-      logger.severe("File error: " + e.getMessage());
-      // throw an error, as system.exit will fail tests.
-      throw new RuntimeException();
-    } catch (Exception e) {
-      throw e;
+
+      profiler.recordEndOf("merge").startTask("link");
+      // Write manifestOutput now before the dummy manifest is created.
+      if (options.manifestOutput != null) {
+        AndroidResourceOutputs.copyManifestToOutput(compiled, options.manifestOutput);
+      }
+
+      List<CompiledResources> compiledResourceDeps =
+          // Last defined dependencies will overwrite previous one, so always place direct
+          // after transitive.
+          concat(options.transitiveData.stream(), options.directData.stream())
+              .map(DependencyAndroidData::getCompiledSymbols)
+              .collect(toList());
+
+      List<Path> assetDirs =
+          concat(
+                  options.transitiveData.stream(),
+                  options.transitiveAssets.stream(),
+                  options.directData.stream(),
+                  options.directAssets.stream())
+              .flatMap(dep -> dep.assetDirs.stream())
+              .collect(toList());
+      assetDirs.addAll(options.primaryData.assetDirs);
+
+      final PackagedResources packagedResources =
+          ResourceLinker.create(aaptConfigOptions.aapt2, executorService, linkedOut)
+              .profileUsing(profiler)
+              .customPackage(options.packageForR)
+              .outputAsProto(aaptConfigOptions.resourceTableAsProto)
+              .dependencies(ImmutableList.of(StaticLibrary.from(aaptConfigOptions.androidJar)))
+              .include(compiledResourceDeps)
+              .withAssets(assetDirs)
+              .buildVersion(aaptConfigOptions.buildToolsVersion)
+              .conditionalKeepRules(aaptConfigOptions.conditionalKeepRules == TriState.YES)
+              .filterToDensity(options.densities)
+              .storeUncompressed(aaptConfigOptions.uncompressedExtensions)
+              .debug(aaptConfigOptions.debug)
+              .includeGeneratedLocales(aaptConfigOptions.generatePseudoLocale)
+              .includeOnlyConfigs(aaptConfigOptions.resourceConfigs)
+              .link(compiled)
+              .copyPackageTo(options.packagePath)
+              .copyProguardTo(options.proguardOutput)
+              .copyMainDexProguardTo(options.mainDexProguardOutput)
+              .createSourceJar(options.srcJarOutput)
+              .copyRTxtTo(options.rOutput);
+      profiler.recordEndOf("link");
+      if (options.resourcesOutput != null) {
+        packagedResources.asArchive().writeTo(options.resourcesOutput, /* compress= */ false);
+      }
     }
   }
 }

@@ -13,33 +13,40 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.android;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static com.google.devtools.build.lib.actions.util.ActionsTestUtil.getFirstArtifactEndingWith;
 import static com.google.devtools.build.lib.actions.util.ActionsTestUtil.prettyArtifactNames;
-import static com.google.devtools.build.lib.testutil.MoreAsserts.expectThrows;
+import static com.google.devtools.build.lib.rules.java.JavaCompileActionTestHelper.getJavacArguments;
+import static com.google.devtools.build.lib.rules.java.JavaCompileActionTestHelper.getProcessorpath;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
+import com.google.common.base.Ascii;
 import com.google.common.base.Joiner;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Streams;
-import com.google.common.eventbus.EventBus;
 import com.google.common.truth.Truth;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
+import com.google.devtools.build.lib.analysis.OutputGroupInfo;
 import com.google.devtools.build.lib.analysis.actions.FileWriteAction;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.packages.BuildType;
+import com.google.devtools.build.lib.packages.FileTarget;
+import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.util.BazelMockAndroidSupport;
 import com.google.devtools.build.lib.rules.android.AndroidRuleClasses.MultidexMode;
 import com.google.devtools.build.lib.rules.android.deployinfo.AndroidDeployInfoOuterClass.AndroidDeployInfo;
@@ -48,6 +55,7 @@ import com.google.devtools.build.lib.rules.java.JavaCompilationArgsProvider;
 import com.google.devtools.build.lib.rules.java.JavaCompileAction;
 import com.google.devtools.build.lib.rules.java.JavaInfo;
 import com.google.devtools.build.lib.rules.java.JavaSemantics;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import com.google.devtools.build.lib.testutil.MoreAsserts;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
@@ -68,7 +76,12 @@ import org.junit.runners.JUnit4;
 public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
   @Before
-  public void createFiles() throws Exception {
+  public void setupCcToolchain() throws Exception {
+    getAnalysisMock().ccSupport().setupCcToolchainConfigForCpu(mockToolsConfig, "armeabi-v7a");
+  }
+
+  @Before
+  public void setup() throws Exception {
     scratch.file("java/android/BUILD",
         "android_binary(name = 'app',",
         "               srcs = ['A.java'],",
@@ -79,6 +92,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "<resources><string name = 'hello'>Hello Android!</string></resources>");
     scratch.file("java/android/A.java",
         "package android; public class A {};");
+    setSkylarkSemanticsOptions("--experimental_google_legacy_api");
   }
 
   @Test
@@ -86,12 +100,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     scratch.file(
         "test/skylark/my_rule.bzl",
         "def impl(ctx): ",
-        "  return struct(",
-        "    split_attr_deps = ctx.split_attr.deps,",
-        "    split_attr_dep = ctx.split_attr.dep,",
-        "    k8_deps = ctx.split_attr.deps.get('k8', None),",
-        "    attr_deps = ctx.attr.deps,",
-        "    attr_dep = ctx.attr.dep)",
+        "  return []",
         "my_rule = rule(",
         "  implementation = impl,",
         "  attrs = {",
@@ -101,7 +110,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     scratch.file(
         "test/skylark/BUILD",
-        "load('/test/skylark/my_rule', 'my_rule')",
+        "load('//test/skylark:my_rule.bzl', 'my_rule')",
         "my_rule(name = 'test', deps = [':main'], dep = ':main')",
         "cc_binary(name = 'main', srcs = ['main.c'])");
     BazelMockAndroidSupport.setupNdk(mockToolsConfig);
@@ -111,10 +120,10 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "--android_crosstool_top=//android/crosstool:everything");
 
     AssertionError noToolchainError =
-        expectThrows(AssertionError.class, () -> getConfiguredTarget("//test/skylark:test"));
+        assertThrows(AssertionError.class, () -> getConfiguredTarget("//test/skylark:test"));
     assertThat(noToolchainError)
         .hasMessageThat()
-        .contains("No toolchain found for cpu 'doesnotexist'");
+        .contains("does not contain a toolchain for cpu 'doesnotexist'");
   }
 
   @Test
@@ -175,6 +184,34 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
   }
 
   @Test
+  public void testMainDexListObfuscation() throws Exception {
+    useConfiguration("--noincremental_dexing");
+    scratch.file("/java/a/list.txt");
+    ConfiguredTarget ct =
+        scratchConfiguredTarget(
+            "java/a",
+            "a",
+            "android_binary(",
+            "    name = 'a',",
+            "    srcs = ['A.java'],",
+            "    manifest = 'AndroidManifest.xml',",
+            "    multidex = 'manual_main_dex',",
+            "    proguard_generate_mapping = 1,",
+            "    main_dex_list = 'list.txt')");
+
+    Artifact obfuscatedDexList =
+        artifactByPath(
+            ImmutableList.of(getCompressedUnsignedApk(ct)),
+            ".apk",
+            ".dex.zip",
+            ".dex.zip",
+            "main_dex_list_obfuscated.txt");
+    List<String> args = getGeneratingSpawnActionArgs(obfuscatedDexList);
+    assertThat(args.get(0)).contains("dex_list_obfuscator");
+    MoreAsserts.assertContainsSublist(args, "--input", "java/a/list.txt");
+  }
+
+  @Test
   public void testNonLegacyNativeDepsDoesNotPolluteDexSharding() throws Exception {
     scratch.file("java/a/BUILD",
         "android_binary(name = 'a',",
@@ -187,7 +224,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     Artifact jarShard = artifactByPath(
         ImmutableList.of(getCompressedUnsignedApk(getConfiguredTarget("//java/a:a"))),
-        ".apk", "classes.dex.zip", "shard1.dex.zip", "shard1.jar");
+        ".apk", "classes.dex.zip", "shard1.dex.zip", "shard1.jar.dex.zip");
     Iterable<Artifact> shardInputs = getGeneratingAction(jarShard).getInputs();
     assertThat(getFirstArtifactEndingWith(shardInputs, ".txt")).isNull();
   }
@@ -206,14 +243,16 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "    plugins = [':plugin'],",
         "    srcs = ['ToBeProcessed.java'])");
     ConfiguredTarget target = getConfiguredTarget("//java/test:to_be_processed");
-    JavaCompileAction javacAction = (JavaCompileAction) getGeneratingAction(
-        getBinArtifact("libto_be_processed.jar", target));
+    JavaCompileAction javacAction =
+        (JavaCompileAction) getGeneratingAction(getBinArtifact("libto_be_processed.jar", target));
 
-    assertThat(javacAction.getProcessorNames()).contains("com.google.process.stuff");
-    assertThat(javacAction.getProcessorNames()).hasSize(1);
+    assertThat(getProcessorNames(javacAction)).contains("com.google.process.stuff");
+    assertThat(getProcessorNames(javacAction)).hasSize(1);
 
-    assertThat(ActionsTestUtil.baseNamesOf(javacAction.getProcessorpath()))
-        .isEqualTo("libplugin.jar libplugin_dep.jar");
+    assertThat(
+            ActionsTestUtil.baseArtifactNames(
+                getInputs(javacAction, getProcessorpath(javacAction))))
+        .containsExactly("libplugin.jar", "libplugin_dep.jar");
     assertThat(
             actionsTestUtil()
                 .predecessorClosureOf(getFilesToBuild(target), JavaSemantics.JAVA_SOURCE))
@@ -236,13 +275,15 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     useConfiguration("--plugin=//java/test:plugin");
     ConfiguredTarget target = getConfiguredTarget("//java/test:to_be_processed");
-    JavaCompileAction javacAction = (JavaCompileAction) getGeneratingAction(
-        getBinArtifact("libto_be_processed.jar", target));
+    JavaCompileAction javacAction =
+        (JavaCompileAction) getGeneratingAction(getBinArtifact("libto_be_processed.jar", target));
 
-    assertThat(javacAction.getProcessorNames()).contains("com.google.process.stuff");
-    assertThat(javacAction.getProcessorNames()).hasSize(1);
-    assertThat(ActionsTestUtil.baseNamesOf(javacAction.getProcessorpath()))
-        .isEqualTo("libplugin.jar libplugin_dep.jar");
+    assertThat(getProcessorNames(javacAction)).contains("com.google.process.stuff");
+    assertThat(getProcessorNames(javacAction)).hasSize(1);
+    assertThat(
+            ActionsTestUtil.baseArtifactNames(
+                getInputs(javacAction, getProcessorpath(javacAction))))
+        .containsExactly("libplugin.jar", "libplugin_dep.jar");
     assertThat(
             actionsTestUtil()
                 .predecessorClosureOf(getFilesToBuild(target), JavaSemantics.JAVA_SOURCE))
@@ -328,8 +369,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         // If that's desired then we'll need to make sure dependency checking is done in another
         // action that APK artifacts depend on, in addition to the check that happens when building
         // deploy.jars, which we assert above.
-        assertThat(actionsTestUtil().artifactClosureOf(built))
-            .named("%s dependency on deploy.jar", built.getFilename())
+        assertWithMessage("%s dependency on deploy.jar", built.getFilename())
+            .that(actionsTestUtil().artifactClosureOf(built))
             .contains(singlejar.getPrimaryOutput());
         ++found;
       }
@@ -405,7 +446,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "               srcs = ['A.java'],",
         "               deps = [':native', '//java/android/common:common'],",
         "               manifest = 'AndroidManifest.xml',",
-        "               legacy_native_support = 0,",
         "              )");
   }
 
@@ -418,7 +458,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         .that(getGeneratingLabelForArtifact(linkedLib))
         .isEqualTo(target.getLabel());
     assertThat(artifactsToStrings(actionsTestUtil().artifactClosureOf(linkedLib)))
-        .containsAllIn(ImmutableSet.copyOf(Arrays.asList(srcNames)));
+        .containsAtLeastElementsIn(ImmutableSet.copyOf(Arrays.asList(srcNames)));
   }
 
   @Test
@@ -498,20 +538,36 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
       "              )");
       ConfiguredTarget app = getConfiguredTarget("//java/android/app:app");
       Iterable<Artifact> nativeLibraries = getNativeLibrariesInApk(app);
-      assertThat(artifactsToStrings(nativeLibraries))
-          .containsAllOf(
-              "src java/android/app/native_prebuilt.so",
-              "src java/android/app/dep.so");
+    assertThat(artifactsToStrings(nativeLibraries))
+        .containsAtLeast("src java/android/app/native_prebuilt.so", "src java/android/app/dep.so");
       assertThat(FileType.filter(nativeLibraries, CppFileTypes.INTERFACE_SHARED_LIBRARY))
           .isEmpty();
+  }
+
+  @Test
+  public void testNativeLibrary_ProvidesLinkerScriptToLinkAction() throws Exception {
+    scratch.file("java/android/app/BUILD",
+        "cc_library(name = 'native',",
+        "           srcs = ['native.cc'],",
+        "           linkopts = ['-Wl,-version-script', '$(location jni.lds)'],",
+        "           deps = ['jni.lds'],)",
+        "android_binary(name = 'app',",
+        "               srcs = ['A.java'],",
+        "               deps = [':native'],",
+        "               manifest = 'AndroidManifest.xml',",
+        "              )");
+
+    ConfiguredTarget app = getConfiguredTarget("//java/android/app:app");
+    Artifact copiedLib = getOnlyElement(getNativeLibrariesInApk(app));
+    Artifact linkedLib = getOnlyElement(getGeneratingAction(copiedLib).getInputs());
+    Iterable<Artifact> linkInputs = getGeneratingAction(linkedLib).getInputs();
+    assertThat(ActionsTestUtil.baseArtifactNames(linkInputs)).contains("jni.lds");
   }
 
   /** Regression test for http://b/33173461. */
   @Test
   public void testIncrementalDexingUsesDexArchives_binaryDependingOnAliasTarget()
       throws Exception {
-    useConfiguration("--incremental_dexing", "--incremental_dexing_binary_types=all",
-        "--experimental_desugar_for_android");
     scratch.file(
         "java/com/google/android/BUILD",
         "android_library(",
@@ -540,8 +596,9 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     for (Artifact input : getNonToolInputs(shardAction)) {
       String basename = input.getFilename();
       // all jars are converted to dex archives
-      assertThat(!basename.contains(".jar") || basename.endsWith(".jar.dex.zip"))
-          .named(basename).isTrue();
+      assertWithMessage(basename)
+          .that(!basename.contains(".jar") || basename.endsWith(".jar.dex.zip"))
+          .isTrue();
       // all jars are desugared before being converted
       if (basename.endsWith(".jar.dex.zip")) {
         assertThat(getGeneratingAction(input).getPrimaryInput().getFilename())
@@ -561,8 +618,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
             "libtop.jar.dex.zip",
             "top_resources.jar.dex.zip",
             // dep's dex archives
-            "libdep.jar.dex.zip",
-            "dep_resources.jar.dex.zip");
+            "libdep.jar.dex.zip");
   }
 
   @Test
@@ -595,7 +651,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
   @Test
   public void testIncrementalDexingDisabledWithProguard() throws Exception {
-    useConfiguration("--incremental_dexing", "--incremental_dexing_binary_types=all");
     scratch.file(
         "java/com/google/android/BUILD",
         "android_binary(",
@@ -616,7 +671,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
   }
 
   @Test
-  public void testIncrementalDexing_attributeIncompatibleWithProguard() throws Exception {
+  public void testIncrementalDexing_incompatibleWithProguardWhenDisabled() throws Exception {
+    useConfiguration("--experimental_incremental_dexing_after_proguard=0"); // disable with Proguard
     checkError("java/com/google/android", "top", "target cannot be incrementally dexed",
         "android_binary(",
         "  name = 'top',",
@@ -625,6 +681,147 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "  proguard_specs = ['proguard.cfg'],",
         "  incremental_dexing = 1,",
         ")");
+  }
+
+  @Test
+  public void testIncrementalDexingAfterProguard_unsharded() throws Exception {
+    useConfiguration("--experimental_incremental_dexing_after_proguard=1");
+    // Use "legacy" multidex mode so we get a main dex list file and can test that it's passed to
+    // the splitter action (similar to _withDexShards below), unlike without the dex splitter where
+    // the main dex list goes to the merging action.
+    scratch.file(
+        "java/com/google/android/BUILD",
+        "android_binary(",
+        "  name = 'top',",
+        "  srcs = ['foo.java', 'bar.srcjar'],",
+        "  manifest = 'AndroidManifest.xml',",
+        "  incremental_dexing = 1,",
+        "  multidex = 'legacy',",
+        "  dexopts = ['--minimal-main-dex', '--positions=none'],",
+        "  proguard_specs = ['b.pro'],",
+        ")");
+
+    ConfiguredTarget topTarget = getConfiguredTarget("//java/com/google/android:top");
+    assertNoEvents();
+
+    SpawnAction shardAction =
+        getGeneratingSpawnAction(getBinArtifact("_dx/top/classes.dex.zip", topTarget));
+    assertThat(shardAction.getArguments()).contains("--main-dex-list");
+    assertThat(shardAction.getArguments()).contains("--minimal-main-dex");
+    assertThat(ActionsTestUtil.baseArtifactNames(getNonToolInputs(shardAction)))
+        .containsExactly("classes.jar", "main_dex_list.txt");
+
+    // --positions dexopt is supported after Proguard, even though not normally otherwise
+    assertThat(
+            paramFileArgsForAction(
+                getGeneratingSpawnAction(getBinArtifact("_dx/top/classes.jar", topTarget))))
+        .contains("--positions=none");
+  }
+
+  @Test
+  public void testIncrementalDexingAfterProguard_autoShardedMultidexAutoOptIn() throws Exception {
+    useConfiguration("--experimental_incremental_dexing_after_proguard=3",
+        "--experimental_incremental_dexing_after_proguard_by_default");
+    // Use "legacy" multidex mode so we get a main dex list file and can test that it's passed to
+    // the splitter action (similar to _withDexShards below), unlike without the dex splitter where
+    // the main dex list goes to the merging action.
+    scratch.file(
+        "java/com/google/android/BUILD",
+        "android_binary(",
+        "  name = 'top',",
+        "  srcs = ['foo.java', 'bar.srcjar'],",
+        "  manifest = 'AndroidManifest.xml',",
+        "  multidex = 'legacy',",
+        "  dexopts = ['--minimal-main-dex', '--positions=none'],",
+        "  proguard_specs = ['b.pro'],",
+        ")"); // incremental_dexing = 1 attribute not needed
+
+    ConfiguredTarget topTarget = getConfiguredTarget("//java/com/google/android:top");
+    assertNoEvents();
+
+    SpawnAction splitAction =
+        getGeneratingSpawnAction(getTreeArtifact("dexsplits/top", topTarget));
+    assertThat(splitAction.getArguments()).contains("--main-dex-list");
+    assertThat(splitAction.getArguments()).contains("--minimal-main-dex");
+    assertThat(ActionsTestUtil.baseArtifactNames(getNonToolInputs(splitAction)))
+        .containsExactly("shard1.jar.dex.zip", "shard2.jar.dex.zip", "shard3.jar.dex.zip",
+              "main_dex_list.txt");
+
+    SpawnAction shuffleAction =
+        getGeneratingSpawnAction(getBinArtifact("_dx/top/shard1.jar", topTarget));
+    assertThat(shuffleAction.getArguments()).doesNotContain("--main-dex-list");
+    assertThat(ActionsTestUtil.baseArtifactNames(getNonToolInputs(shuffleAction)))
+        .containsExactly("top_proguard.jar");
+
+    // --positions dexopt is supported after Proguard, even though not normally otherwise
+    assertThat(
+            paramFileArgsForAction(
+                getGeneratingSpawnAction(getBinArtifact("_dx/top/shard3.jar.dex.zip", topTarget))))
+        .contains("--positions=none");
+  }
+
+  @Test
+  public void testIncrementalDexingAfterProguard_explicitDexShards() throws Exception {
+    useConfiguration("--experimental_incremental_dexing_after_proguard=2");
+    // Use "legacy" multidex mode so we get a main dex list file and can test that it's passed to
+    // the shardAction, not to the subsequent dexMerger action.  Without dex_shards, main dex list
+    // file goes to the dexMerger instead (see _multidex test).
+    scratch.file(
+        "java/com/google/android/BUILD",
+        "android_binary(",
+        "  name = 'top',",
+        "  srcs = ['foo.java', 'bar.srcjar'],",
+        "  manifest = 'AndroidManifest.xml',",
+        "  dex_shards = 25,",
+        "  incremental_dexing = 1,",
+        "  multidex = 'legacy',",
+        "  proguard_specs = ['b.pro'],",
+        ")");
+
+    ConfiguredTarget topTarget = getConfiguredTarget("//java/com/google/android:top");
+    assertNoEvents();
+    SpawnAction shardAction =
+        getGeneratingSpawnAction(getBinArtifact("_dx/top/shard25.jar", topTarget));
+    assertThat(shardAction.getArguments()).contains("--main_dex_filter");
+    assertThat(ActionsTestUtil.baseArtifactNames(getNonToolInputs(shardAction)))
+        .containsExactly("top_proguard.jar", "main_dex_list.txt");
+    SpawnAction mergeAction =
+        getGeneratingSpawnAction(getBinArtifact("_dx/top/shard1.jar.dex.zip", topTarget));
+    assertThat(mergeAction.getArguments()).doesNotContain("--main-dex-list");
+    assertThat(ActionsTestUtil.baseArtifactNames(getNonToolInputs(mergeAction)))
+        .contains("shard1.jar");
+  }
+
+  @Test
+  public void testIncrementalDexingAfterProguard_autoShardedMonodex()
+      throws Exception {
+    useConfiguration("--experimental_incremental_dexing_after_proguard=3");
+    // Use "legacy" multidex mode so we get a main dex list file and can test that it's passed to
+    // the splitter action (similar to _withDexShards below), unlike without the dex splitter where
+    // the main dex list goes to the merging action.
+    scratch.file(
+        "java/com/google/android/BUILD",
+        "android_binary(",
+        "  name = 'top',",
+        "  srcs = ['foo.java', 'bar.srcjar'],",
+        "  manifest = 'AndroidManifest.xml',",
+        "  incremental_dexing = 1,",
+        "  multidex = 'off',",
+        "  proguard_specs = ['b.pro'],",
+        ")");
+
+    ConfiguredTarget topTarget = getConfiguredTarget("//java/com/google/android:top");
+    assertNoEvents();
+    SpawnAction mergeAction =
+        getGeneratingSpawnAction(getBinArtifact("_dx/top/classes.dex.zip", topTarget));
+    assertThat(mergeAction.getArguments()).doesNotContain("--main-dex-list");
+    assertThat(ActionsTestUtil.baseArtifactNames(getNonToolInputs(mergeAction)))
+        .containsExactly("shard1.jar.dex.zip", "shard2.jar.dex.zip", "shard3.jar.dex.zip");
+    SpawnAction shuffleAction =
+        getGeneratingSpawnAction(getBinArtifact("_dx/top/shard1.jar", topTarget));
+    assertThat(shuffleAction.getArguments()).doesNotContain("--main-dex-list");
+    assertThat(ActionsTestUtil.baseArtifactNames(getNonToolInputs(shuffleAction)))
+        .containsExactly("top_proguard.jar");
   }
 
   @Test
@@ -658,14 +855,14 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     assertThat(
             Streams.stream(unsignedApkAction.getInputs())
                 .map(Artifact::getFilename)
-                .anyMatch("SingleJar_deploy.jar"::equals))
+                .anyMatch(filename -> Ascii.toLowerCase(filename).contains("singlejar")))
         .isTrue();
     SpawnAction compressedUnsignedApkAction = (SpawnAction) actionsTestUtil()
         .getActionForArtifactEndingWith(artifacts, "compressed_hello_unsigned.apk");
     assertThat(
             Streams.stream(compressedUnsignedApkAction.getInputs())
                 .map(Artifact::getFilename)
-                .anyMatch("SingleJar_deploy.jar"::equals))
+                .anyMatch(filename -> Ascii.toLowerCase(filename).contains("singlejar")))
         .isTrue();
     SpawnAction zipalignAction = (SpawnAction) actionsTestUtil()
         .getActionForArtifactEndingWith(artifacts, "zipaligned_hello.apk");
@@ -687,16 +884,18 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "               inline_constants = 0,",
         "               resource_files = ['res/values/strings.xml'],",
         "               shrink_resources = 1,",
+        "               resource_configuration_filters = ['en'],",
         "               proguard_specs = ['proguard-spec.pro'],)");
 
     ConfiguredTarget binary = getConfiguredTarget("//java/com/google/android/hello:hello");
 
     Set<Artifact> artifacts = actionsTestUtil().artifactClosureOf(getFilesToBuild(binary));
 
-    assertThat(artifacts).containsAllOf(
-        getFirstArtifactEndingWith(artifacts, "resource_files.zip"),
-        getFirstArtifactEndingWith(artifacts, "proguard.jar"),
-        getFirstArtifactEndingWith(artifacts, "shrunk.ap_"));
+    assertThat(artifacts)
+        .containsAtLeast(
+            getFirstArtifactEndingWith(artifacts, "resource_files.zip"),
+            getFirstArtifactEndingWith(artifacts, "proguard.jar"),
+            getFirstArtifactEndingWith(artifacts, "shrunk.ap_"));
 
     List<String> processingArgs =
         getGeneratingSpawnActionArgs(getFirstArtifactEndingWith(artifacts, "resource_files.zip"));
@@ -722,6 +921,47 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         .isEqualTo(flagValue("--rOutput", processingArgs));
     assertThat(flagValue("--primaryManifest", shrinkingArgs))
         .isEqualTo(flagValue("--manifestOutput", processingArgs));
+
+    assertThat(flagValue("--resourceConfigs", shrinkingArgs))
+        .isEqualTo(flagValue("--resourceConfigs", processingArgs));
+
+    List<String> packageArgs =
+        getGeneratingSpawnActionArgs(getFirstArtifactEndingWith(artifacts, "_hello_proguard.cfg"));
+
+    assertThat(flagValue("--tool", packageArgs)).isEqualTo("PACKAGE");
+    assertThat(packageArgs).doesNotContain("--conditionalKeepRules");
+  }
+
+  @Test
+  public void testResourceCycleShrinking() throws Exception {
+    useConfiguration("--experimental_android_resource_cycle_shrinking=true");
+    checkError(
+        "java/a",
+        "a",
+        "resource cycle shrinking can only be enabled for builds with aapt2",
+        "android_binary(",
+        "    name = 'a',",
+        "    srcs = ['A.java'],",
+        "    manifest = 'AndroidManifest.xml',",
+        "    resource_files = [ 'res/values/values.xml' ], ",
+        "    shrink_resources = 1,",
+        ")");
+  }
+
+  @Test
+  public void testResourceCycleShrinkingWithoutResourceShinking() throws Exception {
+    useConfiguration("--experimental_android_resource_cycle_shrinking=true");
+    checkError(
+        "java/a",
+        "a",
+        "resource cycle shrinking can only be enabled when resource shrinking is enabled",
+        "android_binary(",
+        "    name = 'a',",
+        "    srcs = ['A.java'],",
+        "    manifest = 'AndroidManifest.xml',",
+        "    resource_files = [ 'res/values/values.xml' ], ",
+        "    shrink_resources = 0,",
+        ")");
   }
 
   @Test
@@ -771,7 +1011,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
                 }))
         .isTrue();
     assertThat(args)
-        .containsAllOf(
+        .containsAtLeast(
             "-injars",
             execPathEndingWith(action.getInputs(), "b_deploy.jar"),
             "-printseeds",
@@ -817,10 +1057,72 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
   }
 
   @Test
+  public void enforceProguardFileExtension_disabled_allowsOtherExtensions() throws Exception {
+    useConfiguration("--noenforce_proguard_file_extension");
+    scratch.file(
+        "java/android/hello/BUILD",
+        "android_binary(name = 'b',",
+        "               srcs = ['HelloApp.java'],",
+        "               manifest = 'AndroidManifest.xml',",
+        "               proguard_specs = ['proguard-spec.pro'])");
+
+    ConfiguredTarget unused = getConfiguredTarget("//java/android/hello:b");
+  }
+
+  @Test
+  public void enforceProguardFileExtension_enabled_disallowsOtherExtensions() throws Exception {
+    useConfiguration("--enforce_proguard_file_extension");
+    scratch.file(
+        "java/android/hello/BUILD",
+        "android_binary(name = 'b',",
+        "               srcs = ['HelloApp.java'],",
+        "               manifest = 'AndroidManifest.xml',",
+        "               proguard_specs = ['proguard-spec.pro'])");
+
+    AssertionError assertionError =
+        assertThrows(AssertionError.class, () -> getConfiguredTarget("//java/android/hello:b"));
+
+    assertThat(assertionError).hasMessageThat().contains("These files do not end in .pgcfg");
+  }
+
+  @Test
+  public void enforceProguardFileExtension_enabled_allowsPgcfg() throws Exception {
+    useConfiguration("--enforce_proguard_file_extension");
+    scratch.file(
+        "java/android/hello/BUILD",
+        "android_binary(name = 'b',",
+        "               srcs = ['HelloApp.java'],",
+        "               manifest = 'AndroidManifest.xml',",
+        "               proguard_specs = [':proguard.pgcfg'])");
+
+    ConfiguredTarget unused = getConfiguredTarget("//java/android/hello:b");
+  }
+
+  @Test
+  public void enforceProguardFileExtension_enabled_ignoresThirdParty() throws Exception {
+    useConfiguration("--enforce_proguard_file_extension");
+    scratch.file(
+        "third_party/bar/BUILD", "licenses(['unencumbered'])", "exports_files(['proguard.pro'])");
+    scratch.file(
+        "java/android/hello/BUILD",
+        "android_binary(name = 'b',",
+        "               srcs = ['HelloApp.java'],",
+        "               manifest = 'AndroidManifest.xml',",
+        "               proguard_specs = ['//third_party/bar:proguard.pro'])");
+
+    ConfiguredTarget unused = getConfiguredTarget("//java/android/hello:b");
+  }
+
+  @Test
   public void testNeverlinkTransitivity() throws Exception {
-    scratch.file("java/com/google/android/neversayneveragain/BUILD",
+    useConfiguration("--android_fixed_resource_neverlinking");
+
+    scratch.file(
+        "java/com/google/android/neversayneveragain/BUILD",
         "android_library(name = 'l1',",
-        "                srcs = ['l1.java'])",
+        "                srcs = ['l1.java'],",
+        "                manifest = 'AndroidManifest.xml',",
+        "                resource_files = ['res/values/resource.xml'])",
         "android_library(name = 'l2',",
         "                srcs = ['l2.java'],",
         "                deps = [':l1'],",
@@ -846,7 +1148,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     ConfiguredTarget b1 = getConfiguredTarget("//java/com/google/android/neversayneveragain:b1");
     Action b1DeployAction = actionsTestUtil().getActionForArtifactEndingWith(
         actionsTestUtil().artifactClosureOf(getFilesToBuild(b1)), "b1_deploy.jar");
-    List<String> b1Inputs = ActionsTestUtil.prettyArtifactNames(b1DeployAction.getInputs());
+    List<String> b1Inputs = prettyArtifactNames(b1DeployAction.getInputs());
 
     assertThat(b1Inputs).containsNoneOf(
         "java/com/google/android/neversayneveragain/libl1.jar_desugared.jar",
@@ -855,32 +1157,46 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "java/com/google/android/neversayneveragain/libl4.jar_desugared.jar");
     assertThat(b1Inputs).contains(
         "java/com/google/android/neversayneveragain/libb1.jar_desugared.jar");
+    assertThat(
+            resourceInputPaths(
+                "java/com/google/android/neversayneveragain", getValidatedResources(b1)))
+        .doesNotContain("res/values/resource.xml");
 
     ConfiguredTarget b2 = getConfiguredTarget("//java/com/google/android/neversayneveragain:b2");
     Action b2DeployAction = actionsTestUtil().getActionForArtifactEndingWith(
         actionsTestUtil().artifactClosureOf(getFilesToBuild(b2)), "b2_deploy.jar");
-    List<String> b2Inputs = ActionsTestUtil.prettyArtifactNames(b2DeployAction.getInputs());
+    List<String> b2Inputs = prettyArtifactNames(b2DeployAction.getInputs());
 
     assertThat(b2Inputs).containsNoneOf(
         "java/com/google/android/neversayneveragain/libl1.jar_desugared.jar",
         "java/com/google/android/neversayneveragain/libl2.jar_desugared.jar",
         "java/com/google/android/neversayneveragain/libl4.jar_desugared.jar");
-    assertThat(b2Inputs).containsAllOf(
-        "java/com/google/android/neversayneveragain/_dx/l3/libl3.jar_desugared.jar",
-        "java/com/google/android/neversayneveragain/libb2.jar_desugared.jar");
+    assertThat(b2Inputs)
+        .containsAtLeast(
+            "java/com/google/android/neversayneveragain/_dx/l3/libl3.jar_desugared.jar",
+            "java/com/google/android/neversayneveragain/libb2.jar_desugared.jar");
+    assertThat(
+            resourceInputPaths(
+                "java/com/google/android/neversayneveragain", getValidatedResources(b2)))
+        .doesNotContain("res/values/resource.xml");
 
     ConfiguredTarget b3 = getConfiguredTarget("//java/com/google/android/neversayneveragain:b3");
     Action b3DeployAction = actionsTestUtil().getActionForArtifactEndingWith(
         actionsTestUtil().artifactClosureOf(getFilesToBuild(b3)), "b3_deploy.jar");
-    List<String> b3Inputs = ActionsTestUtil.prettyArtifactNames(b3DeployAction.getInputs());
+    List<String> b3Inputs = prettyArtifactNames(b3DeployAction.getInputs());
 
-    assertThat(b3Inputs).containsAllOf(
-        "java/com/google/android/neversayneveragain/_dx/l1/libl1.jar_desugared.jar",
-        "java/com/google/android/neversayneveragain/_dx/l3/libl3.jar_desugared.jar",
-        "java/com/google/android/neversayneveragain/_dx/l4/libl4.jar_desugared.jar",
-        "java/com/google/android/neversayneveragain/libb3.jar_desugared.jar");
+    assertThat(b3Inputs)
+        .containsAtLeast(
+            "java/com/google/android/neversayneveragain/_dx/l1/libl1.jar_desugared.jar",
+            "java/com/google/android/neversayneveragain/_dx/l3/libl3.jar_desugared.jar",
+            "java/com/google/android/neversayneveragain/_dx/l4/libl4.jar_desugared.jar",
+            "java/com/google/android/neversayneveragain/libb3.jar_desugared.jar");
     assertThat(b3Inputs)
         .doesNotContain("java/com/google/android/neversayneveragain/libl2.jar_desugared.jar");
+    assertThat(
+            resourceInputPaths(
+                "java/com/google/android/neversayneveragain", getValidatedResources(b3)))
+        .contains("res/values/resource.xml");
   }
 
   @Test
@@ -963,6 +1279,38 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
   }
 
   @Test
+  public void omitResourcesInfoProviderFromAndroidBinary_enabled() throws Exception {
+    useConfiguration("--experimental_omit_resources_info_provider_from_android_binary");
+    ConfiguredTarget binary =
+        scratchConfiguredTarget(
+            "java/com/pkg/myapp",
+            "myapp",
+            "android_binary(",
+            "  name = 'myapp',",
+            "  manifest = 'AndroidManifest.xml',",
+            "  resource_files = glob(['res/**/*']),",
+            ")");
+
+    assertThat(binary.get(AndroidResourcesInfo.PROVIDER)).isNull();
+  }
+
+  @Test
+  public void omitResourcesInfoProviderFromAndroidBinary_disabled() throws Exception {
+    useConfiguration("--noexperimental_omit_resources_info_provider_from_android_binary");
+    ConfiguredTarget binary =
+        scratchConfiguredTarget(
+            "java/com/pkg/myapp",
+            "myapp",
+            "android_binary(",
+            "  name = 'myapp',",
+            "  manifest = 'AndroidManifest.xml',",
+            "  resource_files = glob(['res/**/*']),",
+            ")");
+
+    assertThat(binary.get(AndroidResourcesInfo.PROVIDER)).isNotNull();
+  }
+
+  @Test
   public void testResourceConfigurationFilters() throws Exception {
     scratch.file("java/com/google/android/BUILD",
         "android_binary(name = 'b',",
@@ -972,15 +1320,13 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     // Ensure that the args are present
     ConfiguredTarget binary = getConfiguredTarget("//java/com/google/android:b");
-    List<String> args = resourceArguments(getResourceContainer(binary));
+    List<String> args = resourceArguments(getValidatedResources(binary));
     assertThat(flagValue("--resourceConfigs", args)).contains("en,fr");
   }
 
   @Test
   public void testFilteredResourcesInvalidFilter() throws Exception {
     String badQualifier = "invalid-qualifier";
-
-    useConfiguration("--experimental_android_resource_filtering_method", "filter_in_analysis");
 
     checkError(
         "java/r/android",
@@ -996,8 +1342,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
   public void testFilteredResourcesInvalidResourceDir() throws Exception {
     String badQualifierDir = "values-invalid-qualifier";
 
-    useConfiguration("--experimental_android_resource_filtering_method", "filter_in_execution");
-
     checkError(
         "java/r/android",
         "r",
@@ -1005,17 +1349,19 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "android_binary(name = 'r',",
         "  manifest = 'AndroidManifest.xml',",
         "  resource_files = ['res/" + badQualifierDir + "/foo.xml'],",
-        "  prefilter_resources = 1,",
         "  resource_configuration_filters = ['en'])");
   }
 
+  /** Test that resources are not filtered in analysis under aapt2. */
   @Test
-  public void testFilteredResourcesFilteringDisabled() throws Exception {
+  public void testFilteredResourcesFilteringAapt2() throws Exception {
     List<String> resources =
         ImmutableList.of("res/values/foo.xml", "res/values-en/foo.xml", "res/values-fr/foo.xml");
     String dir = "java/r/android";
 
-    useConfiguration("--experimental_android_resource_filtering_method", "filter_in_execution");
+    mockAndroidSdkWithAapt2();
+
+    useConfiguration("--android_sdk=//sdk:sdk");
 
     ConfiguredTarget binary =
         scratchConfiguredTarget(
@@ -1024,46 +1370,22 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
             "android_binary(name = 'r',",
             "  manifest = 'AndroidManifest.xml',",
             "  resource_configuration_filters = ['', 'en, es, '],",
+            "  aapt_version = 'aapt2',",
             "  densities = ['hdpi, , ', 'xhdpi'],",
             "  resource_files = ['" + Joiner.on("', '").join(resources) + "'])");
-    ResourceContainer directResources = getResourceContainer(binary, /* transitive= */ false);
+    ValidatedAndroidResources directResources =
+        getValidatedResources(binary, /* transitive= */ false);
 
     // Validate that the AndroidResourceProvider for this binary contains all values.
     assertThat(resourceContentsPaths(dir, directResources)).containsExactlyElementsIn(resources);
 
     // Validate that the input to resource processing contains all values.
-    assertThat(resourceInputPaths(dir, directResources)).containsAllIn(resources);
+    assertThat(resourceInputPaths(dir, directResources)).containsAtLeastElementsIn(resources);
 
     // Validate that the filters are correctly passed to the resource processing action
     // This includes trimming whitespace and ignoring empty filters.
     assertThat(resourceArguments(directResources)).contains("en,es");
     assertThat(resourceArguments(directResources)).contains("hdpi,xhdpi");
-  }
-
-  @Test
-  public void testFilteredResourcesFilteringNotSpecified() throws Exception {
-    // TODO(asteinb): Once prefiltering is run by default, remove this test and remove the
-    // prefilter_resources flag from tests that currently explicitly specify to filter
-    List<String> resources =
-        ImmutableList.of("res/values/foo.xml", "res/values-en/foo.xml", "res/values-fr/foo.xml");
-    String dir = "java/r/android";
-
-    ConfiguredTarget binary =
-        scratchConfiguredTarget(
-            dir,
-            "r",
-            "android_binary(name = 'r',",
-            "  manifest = 'AndroidManifest.xml',",
-            "  resource_configuration_filters = ['en'],",
-            "  resource_files = ['" + Joiner.on("', '").join(resources) + "'])");
-
-    ResourceContainer directResources = getResourceContainer(binary, /* transitive= */ false);
-
-    // Validate that the AndroidResourceProvider for this binary contains all values.
-    assertThat(resourceContentsPaths(dir, directResources)).containsExactlyElementsIn(resources);
-
-    // Validate that the input to resource processing contains all values.
-    assertThat(resourceInputPaths(dir, directResources)).containsAllIn(resources);
   }
 
   @Test
@@ -1321,19 +1643,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "png");
   }
 
-  private void testDirectResourceFiltering(
-      String filters, List<String> unexpectedQualifiers, ImmutableList<String> expectedQualifiers)
-      throws Exception {
-    testDirectResourceFiltering(
-        filters,
-        /* densities= */ "",
-        unexpectedQualifiers,
-        expectedQualifiers,
-        /* expectUnqualifiedResource= */ true,
-        "drawable",
-        "png");
-  }
-
   private void testDensityResourceFiltering(
       String densities, List<String> unexpectedQualifiers, List<String> expectedQualifiers)
       throws Exception {
@@ -1343,6 +1652,19 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         unexpectedQualifiers,
         expectedQualifiers,
         /* expectUnqualifiedResource= */ false,
+        "drawable",
+        "png");
+  }
+
+  private void testDirectResourceFiltering(
+      String filters, List<String> unexpectedQualifiers, ImmutableList<String> expectedQualifiers)
+      throws Exception {
+    testDirectResourceFiltering(
+        filters,
+        /* densities= */ "",
+        unexpectedQualifiers,
+        expectedQualifiers,
+        /* expectUnqualifiedResource= */ true,
         "drawable",
         "png");
   }
@@ -1358,9 +1680,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
       throws Exception {
 
     List<String> unexpectedResources = new ArrayList<>();
-    List<String> expectedFiltered = new ArrayList<>();
     for (String qualifier : unexpectedQualifiers) {
-      expectedFiltered.add(folderType + "-" + qualifier + "/foo." + suffix);
       unexpectedResources.add("res/" + folderType + "-" + qualifier + "/foo." + suffix);
     }
 
@@ -1374,7 +1694,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
       expectedResources.add(unqualifiedResource);
     } else {
       unexpectedResources.add(unqualifiedResource);
-      expectedFiltered.add(folderType + "/foo." + suffix);
     }
 
     // Default resources should never be filtered
@@ -1383,8 +1702,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     Iterable<String> allResources = Iterables.concat(unexpectedResources, expectedResources);
 
     String dir = "java/r/android";
-
-    useConfiguration("--experimental_android_resource_filtering_method", "filter_in_analysis");
 
     ConfiguredTarget binary =
         scratchConfiguredTarget(
@@ -1398,41 +1715,43 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     // No prefix should be added because of resource filtering.
     assertThat(
-            binary
-                .getConfiguration()
+            getConfiguration(binary)
                 .getFragment(AndroidConfiguration.class)
                 .getOutputDirectoryName())
         .isNull();
 
-    ResourceContainer directResources = getResourceContainer(binary, /* transitive= */ false);
+    ValidatedAndroidResources directResources =
+        getValidatedResources(binary, /* transitive= */ false);
 
     // Validate that the AndroidResourceProvider for this binary contains only the filtered values.
     assertThat(resourceContentsPaths(dir, directResources))
         .containsExactlyElementsIn(expectedResources);
 
     // Validate that the input to resource processing contains only the filtered values.
-    assertThat(resourceInputPaths(dir, directResources)).containsAllIn(expectedResources);
+    assertThat(resourceInputPaths(dir, directResources))
+        .containsAtLeastElementsIn(expectedResources);
     assertThat(resourceInputPaths(dir, directResources)).containsNoneIn(unexpectedResources);
 
-    if (expectedFiltered.isEmpty()) {
-      assertThat(resourceArguments(directResources)).doesNotContain("--prefilteredResources");
+    // Only transitive resources need to be ignored when filtered,, and there aren't any here.
+    assertThat(resourceArguments(directResources)).doesNotContain("--prefilteredResources");
+
+    // Validate resource filters are passed to execution
+    List<String> args = resourceArguments(directResources);
+
+    // Remove whitespace and quotes from the resourceConfigurationFilters attribute value to get the
+    // value we expect to pass to the resource processing action
+    String fixedResourceConfigFilters = resourceConfigurationFilters.replaceAll("[ ']", "");
+    if (resourceConfigurationFilters.isEmpty()) {
+      assertThat(args).containsNoneOf("--resourceConfigs", fixedResourceConfigFilters);
     } else {
-      String[] flagValues =
-          flagValue("--prefilteredResources", resourceArguments(directResources)).split(",");
-      assertThat(flagValues).asList().containsAllIn(expectedFiltered);
-      assertThat(flagValues).hasLength(expectedFiltered.size());
+      assertThat(args).containsAtLeast("--resourceConfigs", fixedResourceConfigFilters).inOrder();
     }
 
-    // Validate resource filters are not passed to execution, since they were applied in analysis
-    List<String> args = resourceArguments(directResources);
-    assertThat(args)
-        .doesNotContain(ResourceFilter.RESOURCE_CONFIGURATION_FILTERS_NAME);
-    assertThat(args).doesNotContain(ResourceFilter.DENSITIES_NAME);
     if (densities.isEmpty()) {
-      assertThat(args).doesNotContain("--densitiesForManifest");
+      assertThat(args).containsNoneOf("--densities", densities);
     } else {
       // We still expect densities only for the purposes of adding information to manifests
-      assertThat(args).containsAllOf("--densitiesForManifest", densities);
+      assertThat(args).containsAtLeast("--densities", densities).inOrder();
     }
   }
 
@@ -1443,8 +1762,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     String notMatchingResource = "res/values-fr/foo.xml";
 
     String dir = "java/r/android";
-
-    useConfiguration("--experimental_android_resource_filtering_method", "filter_in_analysis");
 
     ConfiguredTarget binary =
         scratchConfiguredTarget(
@@ -1462,8 +1779,10 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
             "  deps = [':lib'],",
             "  resource_configuration_filters = ['en'])");
 
-    ResourceContainer directResources = getResourceContainer(binary, /* transitive= */ false);
-    ResourceContainer transitiveResources = getResourceContainer(binary, /* transitive= */ true);
+    ValidatedAndroidResources directResources =
+        getValidatedResources(binary, /* transitive= */ false);
+    ValidatedAndroidResources transitiveResources =
+        getValidatedResources(binary, /* transitive= */ true);
 
     assertThat(resourceContentsPaths(dir, directResources)).isEmpty();
 
@@ -1471,7 +1790,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         .containsExactly(matchingResource, unqualifiedResource);
 
     assertThat(resourceInputPaths(dir, directResources))
-        .containsAllOf(matchingResource, unqualifiedResource);
+        .containsExactly(matchingResource, unqualifiedResource);
 
     String[] flagValues =
         flagValue("--prefilteredResources", resourceArguments(directResources)).split(",");
@@ -1479,10 +1798,55 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
   }
 
   @Test
-  public void testFilteredResourcesAllFilteredOut() throws Exception {
+  public void testFilteredTransitiveResourcesDifferentDensities() throws Exception {
     String dir = "java/r/android";
 
-    useConfiguration("--experimental_android_resource_filtering_method", "filter_in_analysis");
+    ConfiguredTarget binary =
+        scratchConfiguredTarget(
+            dir,
+            "bin",
+            "android_binary(name = 'bin',",
+            "  manifest = 'AndroidManifest.xml',",
+            "  resource_configuration_filters = ['en'],",
+            "  densities = ['hdpi'],",
+            "  deps = [':invalid', ':best', ':other', ':multiple'],",
+            ")",
+            "android_library(name = 'invalid',",
+            "  manifest = 'AndroidManifest.xml',",
+            "  resource_files = ['invalid/res/drawable-fr-hdpi/foo.png'],",
+            ")",
+            "android_library(name = 'best',",
+            "  manifest = 'AndroidManifest.xml',",
+            "  resource_files = ['best/res/drawable-en-hdpi/foo.png'],",
+            ")",
+            "android_library(name = 'other',",
+            "  manifest = 'AndroidManifest.xml',",
+            "  resource_files = ['other/res/drawable-en-mdpi/foo.png'],",
+            ")",
+            "android_library(name = 'multiple',",
+            "  manifest = 'AndroidManifest.xml',",
+            "  resource_files = [",
+            "    'multiple/res/drawable-en-hdpi/foo.png',",
+            "    'multiple/res/drawable-en-mdpi/foo.png'],",
+            ")");
+
+    ValidatedAndroidResources directResources =
+        getValidatedResources(binary, /* transitive= */ false);
+
+    // All of the resources are transitive
+    assertThat(resourceContentsPaths(dir, directResources)).isEmpty();
+
+    // Only the best matches should be used. This includes multiple best matches, even given a
+    // single density filter, since they are each from a different dependency. This duplication
+    // would be resolved during merging.
+    assertThat(resourceInputPaths(dir, directResources))
+        .containsExactly(
+            "best/res/drawable-en-hdpi/foo.png", "multiple/res/drawable-en-hdpi/foo.png");
+  }
+
+  @Test
+  public void testFilteredResourcesAllFilteredOut() throws Exception {
+    String dir = "java/r/android";
 
     final String keptBaseDir = "partly_filtered_dir";
     String removedLibraryDir = "fully_filtered_library_dir";
@@ -1521,7 +1885,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
             "  ])");
 
     List<String> resourceProcessingArgs =
-        getGeneratingSpawnActionArgs(getResourceContainer(binary).getRTxt());
+        getGeneratingSpawnActionArgs(getValidatedResources(binary).getRTxt());
 
     assertThat(
             Iterables.filter(
@@ -1553,9 +1917,9 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
             "  manifest = 'AndroidManifest.xml')");
 
     List<String> resourceProcessingArgs =
-        getGeneratingSpawnActionArgs(getResourceContainer(binary).getRTxt());
+        getGeneratingSpawnActionArgs(getValidatedResources(binary).getRTxt());
 
-    assertThat(resourceProcessingArgs).containsAllOf("--resourceConfigs", "ar-rXB,en,en-rXA");
+    assertThat(resourceProcessingArgs).containsAtLeast("--resourceConfigs", "ar-rXB,en,en-rXA");
   }
 
   @Test
@@ -1570,67 +1934,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     useConfiguration("--experimental_android_throw_on_resource_conflict");
     ConfiguredTarget binary = getConfiguredTarget("//java/r/android:r");
 
-    List<String> resourceProcessingArgs = resourceArguments(getResourceContainer(binary));
+    List<String> resourceProcessingArgs = resourceArguments(getValidatedResources(binary));
     assertThat(resourceProcessingArgs).contains("--throwOnResourceConflict");
-  }
-
-  @Test
-  public void testFilteredTransitiveResourcesDynamicConfiguration() throws Exception {
-    String enResource = "res/values-en/foo.xml";
-    String unqualifiedResource = "res/values/foo.xml";
-    String frResource = "res/values-fr/foo.xml";
-
-    String dir = "java/r/android";
-    scratch.file(
-        dir + "/BUILD",
-        "android_library(name = 'lib',",
-        "  manifest = 'AndroidManifest.xml',",
-        "  resource_files = [",
-        "    '" + enResource + "',",
-        "    '" + frResource + "',",
-        "    '" + unqualifiedResource + "',",
-        "])",
-        "android_binary(name = 'en',",
-        "  manifest = 'AndroidManifest.xml',",
-        "  resource_configuration_filters = ['en'],",
-        "  deps = [':lib'])");
-
-    useConfiguration(
-        "--experimental_android_resource_filtering_method",
-        "filter_in_analysis_with_dynamic_configuration");
-
-    ConfiguredTarget binary =
-        Iterables.getOnlyElement(
-            update(
-                    ImmutableList.of("//" + dir + ":en"),
-                    /* keepGoing= */ false,
-                    /* loadingPhaseThreads= */ 1,
-                    /* doAnalysis= */ true,
-                    new EventBus())
-                .getTargetsToBuild());
-
-    // Assert the resources were still filtered in analysis in the binary.
-    String expectedQualifiedResource =
-        binary.getLabel().toString().endsWith("en") ? enResource : frResource;
-
-    assertThat(resourceContentsPaths(dir, getResourceContainer(binary, /* transitive=*/ true)))
-        .containsExactly(expectedQualifiedResource, unqualifiedResource);
-
-    ConfiguredTarget library = getDirectPrerequisite(binary, "//" + dir + ":lib");
-
-    // Assert the resources were filtered in the library.
-    // This is only possible if the filters are correctly being passed using dynamic
-    // configuration.
-    assertThat(resourceContentsPaths(dir, getResourceContainer(library)))
-        .containsExactly(expectedQualifiedResource, unqualifiedResource);
-
-    // assert the correct prefix is used for library outputs
-    assertThat(
-            library
-                .getConfiguration()
-                .getFragment(AndroidConfiguration.class)
-                .getOutputDirectoryName())
-        .contains("en_");
   }
 
   /**
@@ -1641,7 +1946,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
    * @return the paths to all artifacts from the input that are contained within the given
    *     directory, relative to that directory.
    */
-  private List<String> resourceContentsPaths(String dir, ResourceContainer resource) {
+  private List<String> resourceContentsPaths(String dir, ValidatedAndroidResources resource) {
     return pathsToArtifacts(dir, resource.getArtifacts());
   }
 
@@ -1649,12 +1954,11 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
    * Gets the paths of matching artifacts that are used as input to resource processing
    *
    * @param dir the directory to look for artifacts in
-   * @param resource the ResourceContainer output from the resource processing that uses these
-   *     artifacts as inputs
+   * @param resource the output from the resource processing that uses these artifacts as inputs
    * @return the paths to all artifacts used as inputs to resource processing that are contained
    *     within the given directory, relative to that directory.
    */
-  private List<String> resourceInputPaths(String dir, ResourceContainer resource) {
+  private List<String> resourceInputPaths(String dir, ValidatedAndroidResources resource) {
     return pathsToArtifacts(dir, resourceGeneratingAction(resource).getInputs());
   }
 
@@ -1706,62 +2010,19 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "               srcs =['bin.java'],",
         "               )");
 
-    // TODO(b/37087277): Remove this once this behavior is the default
-    useConfiguration("--noexperimental_android_include_library_resource_jars");
-
     Action deployJarAction =
         getGeneratingAction(
             getFileConfiguredTarget("//java/r/android:bin_deploy.jar").getArtifact());
     List<String> inputs = ActionsTestUtil.baseArtifactNames(deployJarAction.getInputs());
 
     assertThat(inputs)
-        .containsAllOf(
+        .containsAtLeast(
             "libsublib.jar_desugared.jar",
             "liblib.jar_desugared.jar",
             "libbin.jar_desugared.jar",
             "bin_resources.jar_desugared.jar");
     assertThat(inputs)
         .containsNoneOf("lib_resources.jar_desugared.jar", "sublib_resources.jar_desugared.jar");
-  }
-
-  @Test
-  public void testInheritedRInRuntimeJarsWhenSpecified() throws Exception {
-    String dir = "java/r/android/";
-    scratch.file(
-        dir + "BUILD",
-        "android_library(name = 'sublib',",
-        "                manifest = 'AndroidManifest.xml',",
-        "                resource_files = glob(['res3/**']),",
-        "                srcs =['sublib.java'],",
-        "                )",
-        "android_library(name = 'lib',",
-        "                manifest = 'AndroidManifest.xml',",
-        "                resource_files = glob(['res2/**']),",
-        "                deps = [':sublib'],",
-        "                srcs =['lib.java'],",
-        "                )",
-        "android_binary(name = 'bin',",
-        "               manifest = 'AndroidManifest.xml',",
-        "               resource_files = glob(['res/**']),",
-        "               deps = [':lib'],",
-        "               srcs =['bin.java'],",
-        "               )");
-
-    useConfiguration("--experimental_android_include_library_resource_jars");
-
-    Action deployJarAction =
-        getGeneratingAction(
-            getFileConfiguredTarget("//java/r/android:bin_deploy.jar").getArtifact());
-    List<String> inputs = ActionsTestUtil.baseArtifactNames(deployJarAction.getInputs());
-
-    assertThat(inputs)
-        .containsAllOf(
-            "libsublib.jar_desugared.jar",
-            "liblib.jar_desugared.jar",
-            "libbin.jar_desugared.jar",
-            "bin_resources.jar_desugared.jar",
-            "lib_resources.jar_desugared.jar",
-            "sublib_resources.jar_desugared.jar");
   }
 
   @Test
@@ -1780,10 +2041,10 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "<resources><string name = 'lib_string'>Libs!</string></resources>");
     scratch.file("java/r/android/res/values/strings.xml",
         "<resources><string name = 'hello'>Hello Android!</string></resources>");
-    Artifact jar = getResourceClassJar(getConfiguredTarget("//java/r/android:r"));
+    Artifact jar = getResourceClassJar(getConfiguredTargetAndData("//java/r/android:r"));
     assertThat(getGeneratingAction(jar).getMnemonic()).isEqualTo("RClassGenerator");
     assertThat(getGeneratingSpawnActionArgs(jar))
-        .containsAllOf("--primaryRTxt", "--primaryManifest", "--library", "--classJarOutput");
+        .containsAtLeast("--primaryRTxt", "--primaryManifest", "--library", "--classJarOutput");
   }
 
   @Test
@@ -1795,10 +2056,10 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "               )");
     scratch.file("java/r/android/res/values/strings.xml",
         "<resources><string name = 'hello'>Hello Android!</string></resources>");
-    Artifact jar = getResourceClassJar(getConfiguredTarget("//java/r/android:r"));
+    Artifact jar = getResourceClassJar(getConfiguredTargetAndData("//java/r/android:r"));
     assertThat(getGeneratingAction(jar).getMnemonic()).isEqualTo("RClassGenerator");
     List<String> args = getGeneratingSpawnActionArgs(jar);
-    assertThat(args).containsAllOf("--primaryRTxt", "--primaryManifest", "--classJarOutput");
+    assertThat(args).containsAtLeast("--primaryRTxt", "--primaryManifest", "--classJarOutput");
     assertThat(args).doesNotContain("--libraries");
   }
 
@@ -1820,13 +2081,64 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "<resources><string name = 'lib_string'>Libs!</string></resources>");
     scratch.file("java/r/android/res/values/strings.xml",
         "<resources><string name = 'hello'>Hello Android!</string></resources>");
-    ConfiguredTarget binary = getConfiguredTarget("//java/r/android:r");
+    ConfiguredTargetAndData binary = getConfiguredTargetAndData("//java/r/android:r");
     Artifact jar = getResourceClassJar(binary);
     assertThat(getGeneratingAction(jar).getMnemonic()).isEqualTo("RClassGenerator");
     List<String> args = getGeneratingSpawnActionArgs(jar);
     assertThat(args)
-        .containsAllOf("--primaryRTxt", "--primaryManifest", "--library", "--classJarOutput",
-            "--packageForR", "com.binary.custom");
+        .containsAtLeast(
+            "--primaryRTxt",
+            "--primaryManifest",
+            "--library",
+            "--classJarOutput",
+            "--packageForR",
+            "com.binary.custom");
+  }
+
+  @Test
+  public void testUseRClassGeneratorMultipleDeps() throws Exception {
+    scratch.file(
+        "java/r/android/BUILD",
+        "android_library(name = 'lib1',",
+        "                manifest = 'AndroidManifest.xml',",
+        "                resource_files = glob(['res1/**']),",
+        "                )",
+        "android_library(name = 'lib2',",
+        "                manifest = 'AndroidManifest.xml',",
+        "                resource_files = glob(['res2/**']),",
+        "                )",
+        "android_binary(name = 'r',",
+        "               manifest = 'AndroidManifest.xml',",
+        "               resource_files = glob(['res/**']),",
+        "               deps = [':lib1', ':lib2'],",
+        "               )");
+    ConfiguredTargetAndData binary = getConfiguredTargetAndData("//java/r/android:r");
+    Artifact jar = getResourceClassJar(binary);
+    assertThat(getGeneratingAction(jar).getMnemonic()).isEqualTo("RClassGenerator");
+    List<String> args = getGeneratingSpawnActionArgs(jar);
+
+    AndroidResourcesInfo resourcesInfo =
+        binary.getConfiguredTarget().get(AndroidResourcesInfo.PROVIDER);
+    assertThat(resourcesInfo.getTransitiveAndroidResources()).hasSize(2);
+    ValidatedAndroidResources firstDep =
+        resourcesInfo.getTransitiveAndroidResources().toList().get(0);
+    ValidatedAndroidResources secondDep =
+        resourcesInfo.getTransitiveAndroidResources().toList().get(1);
+
+    assertThat(args)
+        .containsAtLeast(
+            "--primaryRTxt",
+            "--primaryManifest",
+            "--library",
+            firstDep.getRTxt().getExecPathString()
+                + ","
+                + firstDep.getManifest().getExecPathString(),
+            "--library",
+            secondDep.getRTxt().getExecPathString()
+                + ","
+                + secondDep.getManifest().getExecPathString(),
+            "--classJarOutput")
+        .inOrder();
   }
 
   @Test
@@ -1954,7 +2266,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "/AndroidManifest.xml");
     assertThat(deployInfo.getAdditionalMergedManifestsList()).isEmpty();
     assertThat(deployInfo.getApksToDeploy(0).getExecRootPath()).endsWith("/app.apk");
-    assertThat(deployInfo.getDataToDeployList()).isEmpty();
   }
 
   /**
@@ -2223,7 +2534,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "    adb = 'adb',",
         "    aidl = 'aidl',",
         "    android_jar = 'android.jar',",
-        "    annotations_jar = 'annotations_jar',",
         "    apksigner = 'apksigner',",
         "    dx = 'dx',",
         "    framework_aidl = 'framework_aidl',",
@@ -2231,7 +2541,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "    main_dex_list_creator = 'main_dex_list_creator',",
         "    proguard = 'proguard',",
         "    shrinked_android_jar = 'shrinked_android_jar',",
-        "    zipalign = 'zipalign')");
+        "    zipalign = 'zipalign',",
+        "    tags = ['__ANDROID_RULES_MIGRATION__'])");
 
     scratch.file("java/a/BUILD",
         "android_binary(",
@@ -2246,7 +2557,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     Artifact mainDexList = ActionsTestUtil.getFirstArtifactEndingWith(
         actionsTestUtil().artifactClosureOf(getFilesToBuild(a)), "main_dex_list.txt");
     List<String> args = getGeneratingSpawnActionArgs(mainDexList);
-    assertThat(args).containsAllOf("--hello", "--world");
+    assertThat(args).containsAtLeast("--hello", "--world");
   }
 
   @Test
@@ -2261,7 +2572,6 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "    adb = 'adb',",
         "    aidl = 'aidl',",
         "    android_jar = 'android.jar',",
-        "    annotations_jar = 'annotations_jar',",
         "    apksigner = 'apksigner',",
         "    dx = 'dx',",
         "    framework_aidl = 'framework_aidl',",
@@ -2269,7 +2579,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "    main_dex_list_creator = 'main_dex_list_creator',",
         "    proguard = 'proguard',",
         "    shrinked_android_jar = 'shrinked_android_jar',",
-        "    zipalign = 'zipalign')");
+        "    zipalign = 'zipalign',",
+        "    tags = ['__ANDROID_RULES_MIGRATION__'])");
 
     scratch.file("java/a/BUILD",
         "android_binary(",
@@ -2311,17 +2622,24 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
   // regression test for b/14288948
   @Test
   public void testEmptyListAsProguardSpec() throws Exception {
-    scratchConfiguredTarget("java/foo", "abin",
+    scratch.file(
+        "java/foo/BUILD",
         "android_binary(",
         "    name = 'abin',",
         "    srcs = ['a.java'],",
         "    proguard_specs = [],",
         "    manifest = 'AndroidManifest.xml')");
+    Rule rule = getTarget("//java/foo:abin").getAssociatedRule();
+    assertNoEvents();
+    ImmutableList<String> implicitOutputFilenames =
+        rule.getOutputFiles().stream().map(FileTarget::getName).collect(toImmutableList());
+    assertThat(implicitOutputFilenames).doesNotContain("abin_proguard.jar");
   }
 
   @Test
   public void testConfigurableProguardSpecsEmptyList() throws Exception {
-    scratchConfiguredTarget("java/foo", "abin",
+    scratch.file(
+        "java/foo/BUILD",
         "android_binary(",
         "    name = 'abin',",
         "    srcs = ['a.java'],",
@@ -2329,7 +2647,11 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "        '" + BuildType.Selector.DEFAULT_CONDITION_KEY + "': [],",
         "    }),",
         "    manifest = 'AndroidManifest.xml')");
+    Rule rule = getTarget("//java/foo:abin").getAssociatedRule();
     assertNoEvents();
+    ImmutableList<String> implicitOutputFilenames =
+        rule.getOutputFiles().stream().map(FileTarget::getName).collect(toImmutableList());
+    assertThat(implicitOutputFilenames).contains("abin_proguard.jar");
   }
 
   @Test
@@ -2442,7 +2764,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     List<String> args = getGeneratingSpawnActionArgs(getResourceApk(resource));
     assertPrimaryResourceDirs(ImmutableList.of("java/android/resources/bin-res"), args);
     assertThat(getDirectDependentResourceDirs(args))
-        .containsAllOf("java/android/resources/d1/d1-res", "java/android/resources/d2/d2-res");
+        .containsAtLeast("java/android/resources/d1/d1-res", "java/android/resources/d2/d2-res");
     assertNoEvents();
   }
 
@@ -2483,7 +2805,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     checkError("java/android/resources", "r",
         "'java/android/resources/res/somefile.xml' is not in the expected resource directory "
         + "structure of <resource directory>/{"
-        + Joiner.on(',').join(LocalResourceContainer.RESOURCE_DIRECTORY_TYPES) + "}",
+        + Joiner.on(',').join(AndroidResources.RESOURCE_DIRECTORY_TYPES) + "}",
         "android_binary(name = 'r',",
         "                manifest = 'AndroidManifest.xml',",
         "                resource_files = ['res/somefile.xml', 'r/t/f/m/raw/fold']",
@@ -2497,7 +2819,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "r",
         "'java/android/resources/res/other/somefile.xml' is not in the expected resource directory "
         + "structure of <resource directory>/{"
-        + Joiner.on(',').join(LocalResourceContainer.RESOURCE_DIRECTORY_TYPES) + "}",
+        + Joiner.on(',').join(AndroidResources.RESOURCE_DIRECTORY_TYPES) + "}",
         "android_binary(name = 'r',",
         "               manifest = 'AndroidManifest.xml',",
         "               resource_files = ['res/other/somefile.xml', 'r/t/f/m/raw/fold']",
@@ -2589,11 +2911,63 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     Artifact deployJar = getFileConfiguredTarget("//java/foo:a_deploy.jar").getArtifact();
     Action deployAction = getGeneratingAction(deployJar);
-    JavaCompileAction javacAction = (JavaCompileAction)
-        actionsTestUtil().getActionForArtifactEndingWith(
-              actionsTestUtil().artifactClosureOf(deployAction.getInputs()), "liba.jar");
+    JavaCompileAction javacAction =
+        (JavaCompileAction)
+            actionsTestUtil()
+                .getActionForArtifactEndingWith(
+                    actionsTestUtil().artifactClosureOf(deployAction.getInputs()), "liba.jar");
 
-    assertThat(javacAction.buildCommandLine()).contains("-g:lines,source");
+    assertThat(getJavacArguments(javacAction)).contains("-g:lines,source");
+  }
+
+  @Test
+  public void testFixDepsToolFlag() throws Exception {
+    useConfiguration("--experimental_fix_deps_tool=autofixer");
+
+    scratch.file("java/foo/A.java", "foo");
+    scratch.file(
+        "java/foo/BUILD",
+        "android_binary(name = 'a', manifest = 'AndroidManifest.xml', ",
+        "  srcs = ['A.java'])");
+
+    Iterable<String> commandLine =
+        getJavacArguments(
+            ((JavaCompileAction)
+                actionsTestUtil()
+                    .getActionForArtifactEndingWith(
+                        actionsTestUtil()
+                            .artifactClosureOf(
+                                getGeneratingAction(
+                                        getFileConfiguredTarget("//java/foo:a_deploy.jar")
+                                            .getArtifact())
+                                    .getInputs()),
+                        "liba.jar")));
+
+    assertThat(commandLine).containsAtLeast("--experimental_fix_deps_tool", "autofixer").inOrder();
+  }
+
+  @Test
+  public void testFixDepsToolFlagEmpty() throws Exception {
+    scratch.file("java/foo/A.java", "foo");
+    scratch.file(
+        "java/foo/BUILD",
+        "android_binary(name = 'a', manifest = 'AndroidManifest.xml', ",
+        "  srcs = ['A.java'])");
+
+    Iterable<String> commandLine =
+        getJavacArguments(
+            ((JavaCompileAction)
+                actionsTestUtil()
+                    .getActionForArtifactEndingWith(
+                        actionsTestUtil()
+                            .artifactClosureOf(
+                                getGeneratingAction(
+                                        getFileConfiguredTarget("//java/foo:a_deploy.jar")
+                                            .getArtifact())
+                                    .getInputs()),
+                        "liba.jar")));
+
+    assertThat(commandLine).containsAtLeast("--experimental_fix_deps_tool", "add_dep").inOrder();
   }
 
   @Test
@@ -2635,6 +3009,59 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "    srcs = [':jar'])",
         "filegroup(name = 'jar',",
         "    srcs = ['lib.jar'])");
+  }
+
+  @Test
+  public void testDesugarJava8Libs_noProguard() throws Exception {
+    useConfiguration("--experimental_desugar_java8_libs");
+    scratch.file(
+        "java/com/google/android/BUILD",
+        "android_binary(",
+        "  name = 'foo',",
+        "  srcs = ['foo.java'],",
+        "  manifest = 'AndroidManifest.xml',",
+        "  multidex = 'native',",
+        ")");
+
+    ConfiguredTarget top = getConfiguredTarget("//java/com/google/android:foo");
+    Artifact artifact = getBinArtifact("_dx/foo/_final_classes.dex.zip", top);
+    assertWithMessage("_final_classes.dex.zip").that(artifact).isNotNull();
+    Action generatingAction = getGeneratingAction(artifact);
+    assertThat(ActionsTestUtil.baseArtifactNames(generatingAction.getInputs()))
+        .containsAtLeast("classes.dex.zip", /*canned*/ "java8_legacy.dex.zip");
+  }
+
+  @Test
+  public void testDesugarJava8Libs_withProguard() throws Exception {
+    useConfiguration("--experimental_desugar_java8_libs");
+    scratch.file(
+        "java/com/google/android/BUILD",
+        "android_binary(",
+        "  name = 'foo',",
+        "  srcs = ['foo.java'],",
+        "  manifest = 'AndroidManifest.xml',",
+        "  multidex = 'native',",
+        "  proguard_specs = ['foo.cfg'],",
+        ")");
+
+    ConfiguredTarget top = getConfiguredTarget("//java/com/google/android:foo");
+    Artifact artifact = getBinArtifact("_dx/foo/_final_classes.dex.zip", top);
+    assertWithMessage("_final_classes.dex.zip").that(artifact).isNotNull();
+    Action generatingAction = getGeneratingAction(artifact);
+    assertThat(ActionsTestUtil.baseArtifactNames(generatingAction.getInputs()))
+        .containsAtLeast("classes.dex.zip", /*built*/ "_java8_legacy.dex.zip");
+  }
+
+  @Test
+  public void testDesugarJava8Libs_noMultidexError() throws Exception {
+    useConfiguration("--experimental_desugar_java8_libs");
+    checkError(/*packageName=*/ "java/com/google/android", /*ruleName=*/ "foo",
+        /*expectedErrorMessage=*/ "multidex",
+        "android_binary(",
+        "  name = 'foo',",
+        "  srcs = ['foo.java'],",
+        "  manifest = 'AndroidManifest.xml',",
+        ")");
   }
 
   @Test
@@ -2722,7 +3149,9 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
   @Test
   public void testFeatureFlagsAttributeSetsSelectInDependency() throws Exception {
-    useConfiguration("--experimental_dynamic_configs=notrim");
+    useConfiguration(
+        "--experimental_dynamic_configs=notrim",
+        "--enforce_transitive_configs_for_config_feature_flag");
     scratch.file(
         "java/com/foo/BUILD",
         "config_feature_flag(",
@@ -2733,6 +3162,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "config_setting(",
         "  name = 'flag1@on',",
         "  flag_values = {':flag1': 'on'},",
+        "  transitive_configs = [':flag1'],",
         ")",
         "config_feature_flag(",
         "  name = 'flag2',",
@@ -2742,6 +3172,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "config_setting(",
         "  name = 'flag2@on',",
         "  flag_values = {':flag2': 'on'},",
+        "  transitive_configs = [':flag2'],",
         ")",
         "android_library(",
         "  name = 'lib',",
@@ -2752,6 +3183,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "    ':flag2@on': ['Flag2On.java'],",
         "    '//conditions:default': ['Flag2Off.java'],",
         "  }),",
+        "  transitive_configs = [':flag1', ':flag2'],",
         ")",
         "android_binary(",
         "  name = 'foo',",
@@ -2759,19 +3191,22 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "  deps = [':lib'],",
         "  feature_flags = {",
         "    'flag1': 'on',",
-        "  }",
+        "  },",
+        "  transitive_configs = [':flag1', ':flag2'],",
         ")");
     ConfiguredTarget binary = getConfiguredTarget("//java/com/foo");
     List<String> inputs =
         prettyArtifactNames(actionsTestUtil().artifactClosureOf(getFinalUnsignedApk(binary)));
 
-    assertThat(inputs).containsAllOf("java/com/foo/Flag1On.java", "java/com/foo/Flag2Off.java");
+    assertThat(inputs).containsAtLeast("java/com/foo/Flag1On.java", "java/com/foo/Flag2Off.java");
     assertThat(inputs).containsNoneOf("java/com/foo/Flag1Off.java", "java/com/foo/Flag2On.java");
   }
 
   @Test
   public void testFeatureFlagsAttributeSetsSelectInBinary() throws Exception {
-    useConfiguration("--experimental_dynamic_configs=notrim");
+    useConfiguration(
+        "--experimental_dynamic_configs=notrim",
+        "--enforce_transitive_configs_for_config_feature_flag");
     scratch.file(
         "java/com/foo/BUILD",
         "config_feature_flag(",
@@ -2782,6 +3217,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "config_setting(",
         "  name = 'flag1@on',",
         "  flag_values = {':flag1': 'on'},",
+        "  transitive_configs = [':flag1'],",
         ")",
         "config_feature_flag(",
         "  name = 'flag2',",
@@ -2791,6 +3227,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "config_setting(",
         "  name = 'flag2@on',",
         "  flag_values = {':flag2': 'on'},",
+        "  transitive_configs = [':flag2'],",
         ")",
         "android_binary(",
         "  name = 'foo',",
@@ -2804,20 +3241,22 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "  }),",
         "  feature_flags = {",
         "    'flag1': 'on',",
-        "  }",
+        "  },",
+        "  transitive_configs = [':flag1', ':flag2'],",
         ")");
     ConfiguredTarget binary = getConfiguredTarget("//java/com/foo");
     List<String> inputs =
         prettyArtifactNames(actionsTestUtil().artifactClosureOf(getFinalUnsignedApk(binary)));
 
-    assertThat(inputs).containsAllOf("java/com/foo/Flag1On.java", "java/com/foo/Flag2Off.java");
+    assertThat(inputs).containsAtLeast("java/com/foo/Flag1On.java", "java/com/foo/Flag2Off.java");
     assertThat(inputs).containsNoneOf("java/com/foo/Flag1Off.java", "java/com/foo/Flag2On.java");
   }
 
   @Test
-  public void testFeatureFlagsAttributeFailsAnalysisIfFlagValueIsInvalid() throws Exception {
-    reporter.removeHandler(failFastHandler);
-    useConfiguration("--experimental_dynamic_configs=on");
+  public void testFeatureFlagsAttributeSetsSelectInBinaryAlias() throws Exception {
+    useConfiguration(
+        "--experimental_dynamic_configs=notrim",
+        "--enforce_transitive_configs_for_config_feature_flag");
     scratch.file(
         "java/com/foo/BUILD",
         "config_feature_flag(",
@@ -2828,13 +3267,57 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "config_setting(",
         "  name = 'flag1@on',",
         "  flag_values = {':flag1': 'on'},",
+        "  transitive_configs = [':flag1'],",
+        ")",
+        "android_binary(",
+        "  name = 'foo',",
+        "  manifest = 'AndroidManifest.xml',",
+        "  srcs = select({",
+        "    ':flag1@on': ['Flag1On.java'],",
+        "    '//conditions:default': ['Flag1Off.java'],",
+        "  }),",
+        "  feature_flags = {",
+        "    'flag1': 'on',",
+        "  },",
+        "  transitive_configs = [':flag1'],",
+        ")",
+        "alias(",
+        "  name = 'alias',",
+        "  actual = ':foo',",
+        ")");
+    ConfiguredTarget binary = getConfiguredTarget("//java/com/foo:alias");
+    List<String> inputs =
+        prettyArtifactNames(actionsTestUtil().artifactClosureOf(getFinalUnsignedApk(binary)));
+
+    assertThat(inputs).contains("java/com/foo/Flag1On.java");
+    assertThat(inputs).doesNotContain("java/com/foo/Flag1Off.java");
+  }
+
+  @Test
+  public void testFeatureFlagsAttributeFailsAnalysisIfFlagValueIsInvalid() throws Exception {
+    reporter.removeHandler(failFastHandler);
+    useConfiguration(
+        "--experimental_dynamic_configs=on",
+        "--enforce_transitive_configs_for_config_feature_flag");
+    scratch.file(
+        "java/com/foo/BUILD",
+        "config_feature_flag(",
+        "  name = 'flag1',",
+        "  allowed_values = ['on', 'off'],",
+        "  default_value = 'off',",
+        ")",
+        "config_setting(",
+        "  name = 'flag1@on',",
+        "  flag_values = {':flag1': 'on'},",
+        "  transitive_configs = [':flag1'],",
         ")",
         "android_library(",
         "  name = 'lib',",
         "  srcs = select({",
         "    ':flag1@on': ['Flag1On.java'],",
         "    '//conditions:default': ['Flag1Off.java'],",
-        "  })",
+        "  }),",
+        "  transitive_configs = [':flag1'],",
         ")",
         "android_binary(",
         "  name = 'foo',",
@@ -2842,7 +3325,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "  deps = [':lib'],",
         "  feature_flags = {",
         "    'flag1': 'invalid',",
-        "  }",
+        "  },",
+        "  transitive_configs = [':flag1'],",
         ")");
     assertThat(getConfiguredTarget("//java/com/foo")).isNull();
     assertContainsEvent(
@@ -2854,7 +3338,9 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
   public void testFeatureFlagsAttributeFailsAnalysisIfFlagValueIsInvalidEvenIfNotUsed()
       throws Exception {
     reporter.removeHandler(failFastHandler);
-    useConfiguration("--experimental_dynamic_configs=on");
+    useConfiguration(
+        "--experimental_dynamic_configs=on",
+        "--enforce_transitive_configs_for_config_feature_flag");
     scratch.file(
         "java/com/foo/BUILD",
         "config_feature_flag(",
@@ -2865,13 +3351,15 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "config_setting(",
         "  name = 'flag1@on',",
         "  flag_values = {':flag1': 'on'},",
+        "  transitive_configs = [':flag1'],",
         ")",
         "android_binary(",
         "  name = 'foo',",
         "  manifest = 'AndroidManifest.xml',",
         "  feature_flags = {",
         "    'flag1': 'invalid',",
-        "  }",
+        "  },",
+        "  transitive_configs = [':flag1'],",
         ")");
     assertThat(getConfiguredTarget("//java/com/foo")).isNull();
     assertContainsEvent(
@@ -2883,7 +3371,9 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
   public void testFeatureFlagsAttributeFailsAnalysisIfFlagIsAliased()
       throws Exception {
     reporter.removeHandler(failFastHandler);
-    useConfiguration("--experimental_dynamic_configs=notrim");
+    useConfiguration(
+        "--experimental_dynamic_configs=notrim",
+        "--enforce_transitive_configs_for_config_feature_flag");
     scratch.file(
         "java/com/foo/BUILD",
         "config_feature_flag(",
@@ -2894,13 +3384,15 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "alias(",
         "  name = 'alias',",
         "  actual = 'flag1',",
+        "  transitive_configs = [':flag1'],",
         ")",
         "android_binary(",
         "  name = 'foo',",
         "  manifest = 'AndroidManifest.xml',",
         "  feature_flags = {",
         "    'alias': 'on',",
-        "  }",
+        "  },",
+        "  transitive_configs = [':flag1'],",
         ")");
     assertThat(getConfiguredTarget("//java/com/foo")).isNull();
     assertContainsEvent(
@@ -2911,7 +3403,9 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
   @Test
   public void testFeatureFlagsAttributeSetsFeatureFlagProviderValues() throws Exception {
-    useConfiguration("--experimental_dynamic_configs=notrim");
+    useConfiguration(
+        "--experimental_dynamic_configs=notrim",
+        "--enforce_transitive_configs_for_config_feature_flag");
     scratch.file(
         "java/com/foo/reader.bzl",
         "def _impl(ctx):",
@@ -2920,7 +3414,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "      '\\n'.join([",
         "          str(target.label) + ': ' + target[config_common.FeatureFlagInfo].value",
         "          for target in ctx.attr.flags]))",
-        "  return struct(files=depset([ctx.outputs.java]))",
+        "  return [DefaultInfo(files=depset([ctx.outputs.java]))]",
         "flag_reader = rule(",
         "  implementation=_impl,",
         "  attrs={'flags': attr.label_list(providers=[config_common.FeatureFlagInfo])},",
@@ -2942,6 +3436,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "flag_reader(",
         "  name = 'FooFlags',",
         "  flags = [':flag1', ':flag2'],",
+        "  transitive_configs = [':flag1', ':flag2'],",
         ")",
         "android_binary(",
         "  name = 'foo',",
@@ -2949,7 +3444,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "  srcs = [':FooFlags.java'],",
         "  feature_flags = {",
         "    'flag1': 'on',",
-        "  }",
+        "  },",
+        "  transitive_configs = [':flag1', ':flag2'],",
         ")");
     Artifact flagList =
         getFirstArtifactEndingWith(
@@ -2973,7 +3469,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "  nocompress_extensions = ['.apk', '.so'],",
         ")");
     ConfiguredTarget binary = getConfiguredTarget("//java/r/android:r");
-    ResourceContainer resource = getResourceContainer(binary);
+    ValidatedAndroidResources resource = getValidatedResources(binary);
     List<String> args = resourceArguments(resource);
     Artifact inputManifest =
         getFirstArtifactEndingWith(
@@ -2985,55 +3481,17 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     assertThat(args).contains("--uncompressedExtensions");
     assertThat(args.get(args.indexOf("--uncompressedExtensions") + 1)).isEqualTo(".apk,.so");
     assertThat(getGeneratingSpawnActionArgs(getCompressedUnsignedApk(binary)))
-        .containsAllOf("--nocompress_suffixes", ".apk", ".so")
+        .containsAtLeast("--nocompress_suffixes", ".apk", ".so")
         .inOrder();
     assertThat(getGeneratingSpawnActionArgs(getFinalUnsignedApk(binary)))
-        .containsAllOf("--nocompress_suffixes", ".apk", ".so")
+        .containsAtLeast("--nocompress_suffixes", ".apk", ".so")
         .inOrder();
-  }
-
-  @Test
-  public void testAndroidBinaryWithTestOnlySetsTestOnly() throws Exception {
-    scratch.file(
-        "java/com/google/android/foo/BUILD",
-        "android_binary(",
-        "  name = 'foo',",
-        "  srcs = ['Foo.java'],",
-        "  testonly = 1,",
-        "  manifest = 'AndroidManifest.xml',",
-        "  resource_files = ['res/raw/foo.apk'],",
-        "  nocompress_extensions = ['.apk', '.so'],",
-        ")");
-    JavaCompileAction javacAction =
-        (JavaCompileAction)
-            getGeneratingAction(
-                getBinArtifact("libfoo.jar", getConfiguredTarget("//java/com/google/android/foo")));
-
-    assertThat(javacAction.buildCommandLine()).contains("--testonly");
-  }
-
-  @Test
-  public void testAndroidBinaryWithoutTestOnlyDoesntSetTestOnly() throws Exception {
-    scratch.file(
-        "java/com/google/android/foo/BUILD",
-        "android_binary(",
-        "  name = 'foo',",
-        "  srcs = ['Foo.java'],",
-        "  manifest = 'AndroidManifest.xml',",
-        "  resource_files = ['res/raw/foo.apk'],",
-        "  nocompress_extensions = ['.apk', '.so'],",
-        ")");
-    JavaCompileAction javacAction =
-        (JavaCompileAction)
-            getGeneratingAction(
-                getBinArtifact("libfoo.jar", getConfiguredTarget("//java/com/google/android/foo")));
-
-    assertThat(javacAction.buildCommandLine()).doesNotContain("--testonly");
   }
 
   @Test
   public void testFeatureFlagPolicyMustContainRuleToUseFeatureFlags() throws Exception {
     reporter.removeHandler(failFastHandler); // expecting an error
+    useConfiguration("--enforce_transitive_configs_for_config_feature_flag");
     scratch.overwriteFile(
         "tools/whitelists/config_feature_flag/BUILD",
         "package_group(",
@@ -3055,7 +3513,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "  srcs = [':FooFlags.java'],",
         "  feature_flags = {",
         "    '//flag:flag': 'right',",
-        "  }",
+        "  },",
+        "  transitive_configs = ['//flag:flag'],",
         ")");
     assertThat(getConfiguredTarget("//java/com/google/android/foo:foo")).isNull();
     assertContainsEvent(
@@ -3066,6 +3525,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
   @Test
   public void testFeatureFlagPolicyDoesNotBlockRuleIfInPolicy() throws Exception {
+    useConfiguration("--enforce_transitive_configs_for_config_feature_flag");
     scratch.overwriteFile(
         "tools/whitelists/config_feature_flag/BUILD",
         "package_group(",
@@ -3087,7 +3547,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "  srcs = [':FooFlags.java'],",
         "  feature_flags = {",
         "    '//flag:flag': 'right',",
-        "  }",
+        "  },",
+        "  transitive_configs = ['//flag:flag'],",
         ")");
     assertThat(getConfiguredTarget("//java/com/google/android/foo:foo")).isNotNull();
     assertNoEvents();
@@ -3119,6 +3580,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
   @Test
   public void testAapt2WithoutAndroidSdk() throws Exception {
+    useConfiguration("--android_aapt=aapt2");
     checkError(
         "java/a",
         "a",
@@ -3149,25 +3611,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
   @Test
   public void testAapt2WithAndroidSdk() throws Exception {
-    scratch.file(
-        "sdk/BUILD",
-        "android_sdk(",
-        "    name = 'sdk',",
-        "    aapt = 'aapt',",
-        "    aapt2 = 'aapt2',",
-        "    adb = 'adb',",
-        "    aidl = 'aidl',",
-        "    android_jar = 'android.jar',",
-        "    annotations_jar = 'annotations_jar',",
-        "    apksigner = 'apksigner',",
-        "    dx = 'dx',",
-        "    framework_aidl = 'framework_aidl',",
-        "    main_dex_classes = 'main_dex_classes',",
-        "    main_dex_list_creator = 'main_dex_list_creator',",
-        "    proguard = 'proguard',",
-        "    shrinked_android_jar = 'shrinked_android_jar',",
-        "    zipalign = 'zipalign')");
-
+    mockAndroidSdkWithAapt2();
     scratch.file(
         "java/a/BUILD",
         "android_binary(",
@@ -3183,30 +3627,12 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     Artifact apk = getImplicitOutputArtifact(a, AndroidRuleClasses.ANDROID_RESOURCES_APK);
 
     assertThat(getGeneratingSpawnActionArgs(apk))
-        .containsAllOf("--aapt2", "sdk/aapt2", "--tool", "AAPT2_PACKAGE");
+        .containsAtLeast("--aapt2", "sdk/aapt2", "--tool", "AAPT2_PACKAGE");
   }
 
   @Test
   public void testAapt2WithAndroidSdkAndDependencies() throws Exception {
-    scratch.file(
-        "sdk/BUILD",
-        "android_sdk(",
-        "    name = 'sdk',",
-        "    aapt = 'aapt',",
-        "    aapt2 = 'aapt2',",
-        "    adb = 'adb',",
-        "    aidl = 'aidl',",
-        "    android_jar = 'android.jar',",
-        "    annotations_jar = 'annotations_jar',",
-        "    apksigner = 'apksigner',",
-        "    dx = 'dx',",
-        "    framework_aidl = 'framework_aidl',",
-        "    main_dex_classes = 'main_dex_classes',",
-        "    main_dex_list_creator = 'main_dex_list_creator',",
-        "    proguard = 'proguard',",
-        "    shrinked_android_jar = 'shrinked_android_jar',",
-        "    zipalign = 'zipalign')");
-
+    mockAndroidSdkWithAapt2();
     scratch.file(
         "java/b/BUILD",
         "android_library(",
@@ -3238,7 +3664,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     SpawnAction apkAction = getGeneratingSpawnAction(apk);
     assertThat(getGeneratingSpawnActionArgs(apk))
-        .containsAllOf("--aapt2", "sdk/aapt2", "--tool", "AAPT2_PACKAGE");
+        .containsAtLeast("--aapt2", "sdk/aapt2", "--tool", "AAPT2_PACKAGE");
 
     assertThat(apkAction.getInputs())
         .contains(
@@ -3246,31 +3672,13 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     SpawnAction classAction = getGeneratingSpawnAction(classJar);
     assertThat(classAction.getInputs())
-        .containsAllOf(
+        .containsAtLeast(
             rTxt, getImplicitOutputArtifact(b, AndroidRuleClasses.ANDROID_RESOURCES_AAPT2_R_TXT));
   }
 
   @Test
   public void testAapt2ResourceShrinkingAction() throws Exception {
-    scratch.file(
-        "sdk/BUILD",
-        "android_sdk(",
-        "    name = 'sdk',",
-        "    aapt = 'aapt',",
-        "    aapt2 = 'aapt2',",
-        "    adb = 'adb',",
-        "    aidl = 'aidl',",
-        "    android_jar = 'android.jar',",
-        "    annotations_jar = 'annotations_jar',",
-        "    apksigner = 'apksigner',",
-        "    dx = 'dx',",
-        "    framework_aidl = 'framework_aidl',",
-        "    main_dex_classes = 'main_dex_classes',",
-        "    main_dex_list_creator = 'main_dex_list_creator',",
-        "    proguard = 'proguard',",
-        "    shrinked_android_jar = 'shrinked_android_jar',",
-        "    zipalign = 'zipalign')");
-
+    mockAndroidSdkWithAapt2();
     scratch.file(
         "java/com/google/android/hello/BUILD",
         "android_binary(name = 'hello',",
@@ -3283,12 +3691,18 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         "               proguard_specs = ['proguard-spec.pro'],)");
 
     useConfiguration("--android_sdk=//sdk:sdk");
-    ConfiguredTarget binary = getConfiguredTarget("//java/com/google/android/hello:hello");
+    ConfiguredTargetAndData targetAndData =
+        getConfiguredTargetAndData("//java/com/google/android/hello:hello");
+    ConfiguredTarget binary = targetAndData.getConfiguredTarget();
+
+    Artifact jar = getResourceClassJar(targetAndData);
+    assertThat(getGeneratingAction(jar).getMnemonic()).isEqualTo("RClassGenerator");
+    assertThat(getGeneratingSpawnActionArgs(jar)).contains("--finalFields");
 
     Set<Artifact> artifacts = actionsTestUtil().artifactClosureOf(getFilesToBuild(binary));
 
     assertThat(artifacts)
-        .containsAllOf(
+        .containsAtLeast(
             getFirstArtifactEndingWith(artifacts, "resource_files.zip"),
             getFirstArtifactEndingWith(artifacts, "proguard.jar"),
             getFirstArtifactEndingWith(artifacts, "shrunk.ap_"));
@@ -3318,8 +3732,64 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         .isEqualTo(flagValue("-printmapping", proguardArgs));
     assertThat(flagValue("--rTxt", shrinkingArgs))
         .isEqualTo(flagValue("--rOutput", processingArgs));
-    assertThat(flagValue("--primaryManifest", shrinkingArgs))
-        .isEqualTo(flagValue("--manifestOutput", processingArgs));
+
+    List<String> packageArgs =
+        getGeneratingSpawnActionArgs(getFirstArtifactEndingWith(artifacts, "_hello_proguard.cfg"));
+
+    assertThat(flagValue("--tool", packageArgs)).isEqualTo("AAPT2_PACKAGE");
+    assertThat(packageArgs).doesNotContain("--conditionalKeepRules");
+  }
+
+  @Test
+  public void testAapt2ResourceCycleShrinking() throws Exception {
+    mockAndroidSdkWithAapt2();
+    useConfiguration(
+        "--android_sdk=//sdk:sdk", "--experimental_android_resource_cycle_shrinking=true");
+    scratch.file(
+        "java/com/google/android/hello/BUILD",
+        "android_binary(name = 'hello',",
+        "               srcs = ['Foo.java'],",
+        "               manifest = 'AndroidManifest.xml',",
+        "               inline_constants = 0,",
+        "               aapt_version='aapt2',",
+        "               resource_files = ['res/values/strings.xml'],",
+        "               shrink_resources = 1,",
+        "               proguard_specs = ['proguard-spec.pro'],)");
+
+    ConfiguredTargetAndData targetAndData =
+        getConfiguredTargetAndData("//java/com/google/android/hello:hello");
+    ConfiguredTarget binary = targetAndData.getConfiguredTarget();
+
+    Artifact jar = getResourceClassJar(targetAndData);
+    assertThat(getGeneratingAction(jar).getMnemonic()).isEqualTo("RClassGenerator");
+    assertThat(getGeneratingSpawnActionArgs(jar)).contains("--nofinalFields");
+
+    Set<Artifact> artifacts = actionsTestUtil().artifactClosureOf(getFilesToBuild(binary));
+
+    List<String> packageArgs =
+        getGeneratingSpawnActionArgs(getFirstArtifactEndingWith(artifacts, "_hello_proguard.cfg"));
+
+    assertThat(flagValue("--tool", packageArgs)).isEqualTo("AAPT2_PACKAGE");
+    assertThat(packageArgs).contains("--conditionalKeepRules");
+  }
+
+  @Test
+  public void testAapt2ResourceCycleShinkingWithoutResourceShrinking() throws Exception {
+    mockAndroidSdkWithAapt2();
+    useConfiguration(
+        "--android_sdk=//sdk:sdk", "--experimental_android_resource_cycle_shrinking=true");
+    checkError(
+        "java/a",
+        "a",
+        "resource cycle shrinking can only be enabled when resource shrinking is enabled",
+        "android_binary(",
+        "    name = 'a',",
+        "    srcs = ['A.java'],",
+        "    manifest = 'AndroidManifest.xml',",
+        "    resource_files = [ 'res/values/values.xml' ], ",
+        "    shrink_resources = 0,",
+        "    aapt_version = 'aapt2'",
+        ")");
   }
 
   @Test
@@ -3418,8 +3888,8 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
         getFilesToBuild(binary), "_proguard.jar");
 
     assertWithMessage("Proguard action does not contain expected inputs.")
-        .that(ActionsTestUtil.prettyArtifactNames(action.getInputs()))
-        .containsAllOf(
+        .that(prettyArtifactNames(action.getInputs()))
+        .containsAtLeast(
             "java/com/google/android/hello/proguard-spec.pro",
             "java/com/google/android/hello/proguard-spec1.pro",
             "java/com/google/android/hello/proguard-spec2.pro");
@@ -3529,12 +3999,12 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     ConfiguredTarget output = getConfiguredTarget("//java/com/google/android/hello:b1");
     assertProguardUsed(output);
     Artifact mappingArtifact = getBinArtifact("b1_proguard.map", output);
-    ProguardMappingProvider mappingProvider = output.getProvider(ProguardMappingProvider.class);
+    ProguardMappingProvider mappingProvider = output.get(ProguardMappingProvider.PROVIDER);
     assertThat(mappingProvider.getProguardMapping()).isEqualTo(mappingArtifact);
 
     output = getConfiguredTarget("//java/com/google/android/hello:b2");
     assertProguardUsed(output);
-    assertThat(output.getProvider(ProguardMappingProvider.class)).isNull();
+    assertThat(output.get(ProguardMappingProvider.PROVIDER)).isNull();
   }
 
   @Test
@@ -3551,7 +4021,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     SpawnAction action = (SpawnAction) actionsTestUtil().getActionForArtifactEndingWith(
         getFilesToBuild(getConfiguredTarget("//java/com/google/android/hello:b")), "_proguard.jar");
-    assertThat(ActionsTestUtil.prettyArtifactNames(action.getInputs())).containsNoDuplicates();
+    assertThat(prettyArtifactNames(action.getInputs())).containsNoDuplicates();
     assertThat(Collections2.filter(action.getArguments(), arg -> arg.startsWith("@")))
         .containsExactly(
             "@" + execPathEndingWith(action.getInputs(), "/proguard-spec.pro"),
@@ -3572,7 +4042,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     SpawnAction action = (SpawnAction) actionsTestUtil().getActionForArtifactEndingWith(
         getFilesToBuild(getConfiguredTarget("//java/com/google/android/hello:b")), "_proguard.jar");
-    assertThat(ActionsTestUtil.prettyArtifactNames(action.getInputs())).containsNoDuplicates();
+    assertThat(prettyArtifactNames(action.getInputs())).containsNoDuplicates();
     assertThat(Collections2.filter(action.getArguments(), arg -> arg.startsWith("@")))
         .containsExactly(
             "@java/com/google/android/hello/proguard-spec.pro",
@@ -3670,7 +4140,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     SpawnAction action = (SpawnAction) actionsTestUtil().getActionForArtifactEndingWith(
         getFilesToBuild(getConfiguredTarget("//java/com/google/android/hello:b")), "_proguard.jar");
-    assertThat(ActionsTestUtil.prettyArtifactNames(action.getInputs())).containsNoDuplicates();
+    assertThat(prettyArtifactNames(action.getInputs())).containsNoDuplicates();
     return action;
   }
 
@@ -3696,11 +4166,12 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
     assertProguardGenerated(getConfiguredTarget("//java/com/google/android/hello:b"));
     SpawnAction action = (SpawnAction) actionsTestUtil().getActionForArtifactEndingWith(
         getFilesToBuild(getConfiguredTarget("//java/com/google/android/hello:b")), "_proguard.jar");
-    assertThat(prettyArtifactNames(action.getInputs())).contains(
-        "java/com/google/android/hello/proguard-spec.pro");
-    assertThat(prettyArtifactNames(action.getInputs())).contains(
-        "java/com/google/android/hello/validated_proguard/l2/java/com/google/android/hello/library_spec.cfg_valid");
-    assertThat(ActionsTestUtil.prettyArtifactNames(action.getInputs())).containsNoDuplicates();
+    assertThat(prettyArtifactNames(action.getInputs()))
+        .contains("java/com/google/android/hello/proguard-spec.pro");
+    assertThat(prettyArtifactNames(action.getInputs()))
+        .contains(
+            "java/com/google/android/hello/validated_proguard/l2/java/com/google/android/hello/library_spec.cfg_valid");
+    assertThat(prettyArtifactNames(action.getInputs())).containsNoDuplicates();
   }
 
   @Test
@@ -3720,7 +4191,7 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     assertProguardGenerated(binary);
     assertWithMessage("Generate proguard action does not contain expected input.")
-        .that(ActionsTestUtil.prettyArtifactNames(action.getInputs()))
+        .that(prettyArtifactNames(action.getInputs()))
         .contains("java/com/google/android/hello/res/values/strings.xml");
   }
 
@@ -3758,4 +4229,526 @@ public class AndroidBinaryTest extends AndroidBuildViewTestCase {
 
     checkProguardLibJars(action, getAndroidJarPath());
   }
+
+  @Test
+  public void testApkInfoAccessibleFromSkylark() throws Exception {
+    scratch.file(
+        "java/com/google/android/BUILD",
+        "load(':postprocess.bzl', 'postprocess')",
+        "android_binary(name = 'b1',",
+        "               srcs = ['b1.java'],",
+        "               manifest = 'AndroidManifest.xml')",
+        "postprocess(name = 'postprocess', dep = ':b1')");
+    scratch.file(
+        "java/com/google/android/postprocess.bzl",
+        "def _impl(ctx):",
+        "  return [DefaultInfo(files=depset([ctx.attr.dep[ApkInfo].signed_apk]))]",
+        "postprocess = rule(implementation=_impl,",
+        "              attrs={'dep': attr.label(providers=[ApkInfo])})");
+    ConfiguredTarget postprocess = getConfiguredTarget("//java/com/google/android:postprocess");
+    assertThat(postprocess).isNotNull();
+    assertThat(
+            prettyArtifactNames(postprocess.getProvider(FilesToRunProvider.class).getFilesToRun()))
+        .containsExactly("java/com/google/android/b1.apk");
+  }
+
+  @Test
+  public void testInstrumentationInfoAccessibleFromSkylark() throws Exception {
+    scratch.file(
+        "java/com/google/android/instr/BUILD",
+        "load(':instr.bzl', 'instr')",
+        "android_binary(name = 'b1',",
+        "               srcs = ['b1.java'],",
+        "               instruments = ':b2',",
+        "               manifest = 'AndroidManifest.xml')",
+        "android_binary(name = 'b2',",
+        "               srcs = ['b2.java'],",
+        "               manifest = 'AndroidManifest.xml')",
+        "instr(name = 'instr', dep = ':b1')");
+    scratch.file(
+        "java/com/google/android/instr/instr.bzl",
+        "def _impl(ctx):",
+        "  target = ctx.attr.dep[AndroidInstrumentationInfo].target.signed_apk",
+        "  return [DefaultInfo(files=depset([target]))]",
+        "instr = rule(implementation=_impl,",
+        "             attrs={'dep': attr.label(providers=[AndroidInstrumentationInfo])})");
+    ConfiguredTarget instr = getConfiguredTarget("//java/com/google/android/instr");
+    assertThat(instr).isNotNull();
+    assertThat(prettyArtifactNames(instr.getProvider(FilesToRunProvider.class).getFilesToRun()))
+        .containsExactly("java/com/google/android/instr/b2.apk");
+  }
+
+  @Test
+  public void testInstrumentationInfoCreatableFromSkylark() throws Exception {
+    scratch.file(
+        "java/com/google/android/instr/BUILD",
+        "load(':instr.bzl', 'instr')",
+        "android_binary(name = 'b1',",
+        "               srcs = ['b1.java'],",
+        "               instruments = ':b2',",
+        "               manifest = 'AndroidManifest.xml')",
+        "android_binary(name = 'b2',",
+        "               srcs = ['b2.java'],",
+        "               manifest = 'AndroidManifest.xml')",
+        "instr(name = 'instr', dep = ':b1')");
+    scratch.file(
+        "java/com/google/android/instr/instr.bzl",
+        "def _impl(ctx):",
+        "  target = ctx.attr.dep[AndroidInstrumentationInfo].target",
+        "  return [AndroidInstrumentationInfo(target=target)]",
+        "instr = rule(implementation=_impl,",
+        "             attrs={'dep': attr.label(providers=[AndroidInstrumentationInfo])})");
+    ConfiguredTarget instr = getConfiguredTarget("//java/com/google/android/instr");
+    assertThat(instr).isNotNull();
+    assertThat(instr.get(AndroidInstrumentationInfo.PROVIDER).getTarget().getApk().prettyPrint())
+        .isEqualTo("java/com/google/android/instr/b2.apk");
+  }
+
+  @Test
+  public void testInstrumentationInfoProviderHasApks() throws Exception {
+    scratch.file(
+        "java/com/google/android/instr/BUILD",
+        "android_binary(name = 'b1',",
+        "               srcs = ['b1.java'],",
+        "               instruments = ':b2',",
+        "               manifest = 'AndroidManifest.xml')",
+        "android_binary(name = 'b2',",
+        "               srcs = ['b2.java'],",
+        "               manifest = 'AndroidManifest.xml')");
+    ConfiguredTarget b1 = getConfiguredTarget("//java/com/google/android/instr:b1");
+    AndroidInstrumentationInfo provider = b1.get(AndroidInstrumentationInfo.PROVIDER);
+    assertThat(provider.getTarget()).isNotNull();
+    assertThat(provider.getTarget().getApk().prettyPrint())
+        .isEqualTo("java/com/google/android/instr/b2.apk");
+  }
+
+  @Test
+  public void testNoInstrumentationInfoProviderIfNotInstrumenting() throws Exception {
+    scratch.file(
+        "java/com/google/android/instr/BUILD",
+        "android_binary(name = 'b1',",
+        "               srcs = ['b1.java'],",
+        "               manifest = 'AndroidManifest.xml')");
+    ConfiguredTarget b1 = getConfiguredTarget("//java/com/google/android/instr:b1");
+    AndroidInstrumentationInfo provider = b1.get(AndroidInstrumentationInfo.PROVIDER);
+    assertThat(provider).isNull();
+  }
+
+  @Test
+  public void testFilterActionWithInstrumentedBinary() throws Exception {
+    scratch.file(
+        "java/com/google/android/instr/BUILD",
+        "android_binary(name = 'b1',",
+        "               srcs = ['b1.java'],",
+        "               instruments = ':b2',",
+        "               manifest = 'AndroidManifest.xml')",
+        "android_binary(name = 'b2',",
+        "               srcs = ['b2.java'],",
+        "               manifest = 'AndroidManifest.xml')");
+    ConfiguredTarget b1 = getConfiguredTarget("//java/com/google/android/instr:b1");
+    SpawnAction action =
+        (SpawnAction)
+            actionsTestUtil().getActionForArtifactEndingWith(getFilesToBuild(b1), "_filtered.jar");
+    assertThat(action.getArguments())
+        .containsAtLeast(
+            "--inputZip",
+            getFirstArtifactEndingWith(action.getInputs(), "b1_deploy.jar").getExecPathString(),
+            "--filterZips",
+            getFirstArtifactEndingWith(action.getInputs(), "b2_deploy.jar").getExecPathString(),
+            "--outputZip",
+            getFirstArtifactEndingWith(action.getOutputs(), "b1_filtered.jar").getExecPathString(),
+            "--filterTypes",
+            ".class",
+            "--checkHashMismatch",
+            "IGNORE",
+            "--explicitFilters",
+            "/BR\\.class$,/databinding/[^/]+Binding\\.class$,R\\.class,R\\$.*\\.class",
+            "--outputMode",
+            "DONT_CARE");
+  }
+
+  /**
+   * 'proguard_specs' attribute gets read by an implicit outputs function: the
+   * current heuristic is that if this attribute is configurable, we assume its
+   * contents are non-empty and thus create the mybinary_proguard.jar output.
+   * Test that here.
+   */
+  @Test
+  public void testConfigurableProguardSpecs() throws Exception {
+    scratch.file("conditions/BUILD",
+        "config_setting(",
+        "    name = 'a',",
+        "    values = {'test_arg': 'a'})",
+        "config_setting(",
+        "    name = 'b',",
+        "    values = {'test_arg': 'b'})");
+    scratchConfiguredTarget("java/foo", "abin",
+        "android_binary(",
+        "    name = 'abin',",
+        "    srcs = ['a.java'],",
+        "    proguard_specs = select({",
+        "        '//conditions:a': [':file1.pro'],",
+        "        '//conditions:b': [],",
+        "        '//conditions:default': [':file3.pro'],",
+        "    }) + [",
+        // Add a long list here as a regression test for b/68238721
+        "        'file4.pro',",
+        "        'file5.pro',",
+        "        'file6.pro',",
+        "        'file7.pro',",
+        "        'file8.pro',",
+        "    ],",
+        "    manifest = 'AndroidManifest.xml')");
+    checkProguardUse(
+        "//java/foo:abin",
+        "abin_proguard.jar",
+        /*expectMapping=*/ false,
+        /*passes=*/ null,
+        getAndroidJarPath());
+  }
+
+  @Test
+  public void testSkipParsingActionFlagGetsPropagated() throws Exception {
+    mockAndroidSdkWithAapt2();
+    scratch.file(
+        "java/b/BUILD",
+        "android_library(",
+        "    name = 'b',",
+        "    srcs = ['B.java'],",
+        "    manifest = 'AndroidManifest.xml',",
+        "    resource_files = [ 'res/values/values.xml' ], ",
+        ")");
+
+    scratch.file(
+        "java/a/BUILD",
+        "android_binary(",
+        "    name = 'a',",
+        "    srcs = ['A.java'],",
+        "    manifest = 'AndroidManifest.xml',",
+        "    deps = [ '//java/b:b' ],",
+        "    resource_files = [ 'res/values/values.xml' ], ",
+        "    aapt_version = 'aapt2'",
+        ")");
+
+    useConfiguration("--android_sdk=//sdk:sdk", "--experimental_skip_parsing_action");
+    ConfiguredTarget a = getConfiguredTarget("//java/a:a");
+    ConfiguredTarget b = getDirectPrerequisite(a, "//java/b:b");
+
+    List<String> resourceProcessingArgs =
+        getGeneratingSpawnActionArgs(getValidatedResources(a).getApk());
+
+    assertThat(resourceProcessingArgs).contains("AAPT2_PACKAGE");
+    String directData =
+        resourceProcessingArgs.get(
+            resourceProcessingArgs.indexOf("--directData") + 1);
+    assertThat(directData).contains("symbols.zip");
+    assertThat(directData).doesNotContain("merged.bin");
+    assertThat(resourceProcessingArgs).contains("--useCompiledResourcesForMerge");
+
+    List<String> resourceMergingArgs =
+        getGeneratingSpawnActionArgs(getValidatedResources(b).getJavaClassJar());
+
+    assertThat(resourceMergingArgs).contains("MERGE_COMPILED");
+  }
+
+  @Test
+  public void alwaysSkipParsingActionWithAapt2() throws Exception {
+    mockAndroidSdkWithAapt2();
+    scratch.file(
+        "java/b/BUILD",
+        "android_library(",
+        "    name = 'b',",
+        "    srcs = ['B.java'],",
+        "    manifest = 'AndroidManifest.xml',",
+        "    resource_files = [ 'res/values/values.xml' ], ",
+        ")");
+
+    scratch.file(
+        "java/a/BUILD",
+        "android_binary(",
+        "    name = 'a',",
+        "    srcs = ['A.java'],",
+        "    manifest = 'AndroidManifest.xml',",
+        "    deps = [ '//java/b:b' ],",
+        "    resource_files = [ 'res/values/values.xml' ], ",
+        "    aapt_version = 'aapt2'",
+        ")");
+
+    useConfiguration("--android_sdk=//sdk:sdk");
+    ConfiguredTarget a = getConfiguredTarget("//java/a:a");
+    ConfiguredTarget b = getDirectPrerequisite(a, "//java/b:b");
+
+    List<String> resourceProcessingArgs =
+        getGeneratingSpawnActionArgs(getValidatedResources(a).getApk());
+
+    assertThat(resourceProcessingArgs).contains("AAPT2_PACKAGE");
+    String directData =
+        resourceProcessingArgs.get(resourceProcessingArgs.indexOf("--directData") + 1);
+    assertThat(directData).contains("symbols.zip");
+    assertThat(directData).doesNotContain("merged.bin");
+    assertThat(resourceProcessingArgs).contains("--useCompiledResourcesForMerge");
+
+    // Libraries will still need to merge the xml until skip parsing is on by default.
+    List<String> resourceMergingArgs =
+        getGeneratingSpawnActionArgs(getValidatedResources(b).getJavaClassJar());
+
+    assertThat(resourceMergingArgs).contains("MERGE");
+  }
+
+  @Test
+  public void testAapt1BuildsWithAapt2Sdk() throws Exception {
+    mockAndroidSdkWithAapt2();
+    scratch.file(
+        "java/b/BUILD",
+        "android_library(",
+        "    name = 'b',",
+        "    srcs = ['B.java'],",
+        "    manifest = 'AndroidManifest.xml',",
+        "    resource_files = [ 'res/values/values.xml' ], ",
+        ")");
+
+    scratch.file(
+        "java/a/BUILD",
+        "android_binary(",
+        "    name = 'a',",
+        "    srcs = ['A.java'],",
+        "    manifest = 'AndroidManifest.xml',",
+        "    deps = [ '//java/b:b' ],",
+        "    resource_files = [ 'res/values/values.xml' ], ",
+        "    aapt_version = 'aapt'",
+        ")");
+
+    useConfiguration("--android_sdk=//sdk:sdk", "--experimental_skip_parsing_action");
+    ConfiguredTarget a = getConfiguredTarget("//java/a:a");
+    ConfiguredTarget b = getDirectPrerequisite(a, "//java/b:b");
+
+    List<String> resourceProcessingArgs =
+        getGeneratingSpawnActionArgs(getValidatedResources(a).getRTxt());
+
+    assertThat(resourceProcessingArgs).contains("PACKAGE");
+    String directData =
+        resourceProcessingArgs.get(
+            resourceProcessingArgs.indexOf("--directData") + 1);
+    assertThat(directData).doesNotContain("symbols.zip");
+    assertThat(directData).contains("merged.bin");
+
+    List<String> compiledResourceMergingArgs =
+        getGeneratingSpawnActionArgs(getValidatedResources(b).getJavaClassJar());
+
+    assertThat(compiledResourceMergingArgs).contains("MERGE_COMPILED");
+
+    Set<Artifact> artifacts = actionsTestUtil().artifactClosureOf(getFilesToBuild(b));
+    List<String> parsedResourceMergingArgs =
+        getGeneratingSpawnActionArgs(getFirstArtifactEndingWith(artifacts, "resource_files.zip"));
+    assertThat(parsedResourceMergingArgs).contains("MERGE");
+  }
+
+  @Test
+  public void skylarkJavaInfoToAndroidBinaryAttributes() throws Exception {
+    scratch.file(
+        "java/r/android/extension.bzl",
+        "def _impl(ctx):",
+        "  dep_params = ctx.attr.dep[JavaInfo]",
+        "  return [dep_params]",
+        "my_rule = rule(",
+        "    _impl,",
+        "    attrs = {",
+        "        'dep': attr.label(),",
+        "    },",
+        ")");
+    scratch.file(
+        "java/r/android/BUILD",
+        "load(':extension.bzl', 'my_rule')",
+        "android_library(",
+        "    name = 'al_bottom_for_deps',",
+        "    srcs = ['java/A.java'],",
+        ")",
+        "my_rule(",
+        "    name = 'mya',",
+        "    dep = ':al_bottom_for_deps',",
+        ")",
+        "android_binary(",
+        "    name = 'foo_app',",
+        "    srcs = ['java/B.java'],",
+        "    deps = [':mya'],",
+        "    manifest = 'AndroidManifest.xml',",
+        // TODO(b/75051107): Remove the following line when fixed.
+        "    incremental_dexing = 0,",
+        ")");
+    // Test that all bottom jars are on the runtime classpath of the app.
+    ConfiguredTarget target = getConfiguredTarget("//java/r/android:foo_app");
+    ImmutableList<Artifact> transitiveSrcJars =
+        OutputGroupInfo.get(target).getOutputGroup(JavaSemantics.SOURCE_JARS_OUTPUT_GROUP).toList();
+    assertThat(ActionsTestUtil.baseArtifactNames(transitiveSrcJars)).containsExactly(
+        "libal_bottom_for_deps-src.jar",
+        "libfoo_app-src.jar");
+  }
+
+  @Test
+  public void androidManifestMergerOrderAlphabetical_MergeesSortedByExecPath() throws Exception {
+    // Hack: Avoid the Android split transition by turning off fat_apk_cpu/android_cpu.
+    // This is necessary because the transition would change the configuration directory, causing
+    // the manifest paths in the assertion not to match.
+    // TODO(mstaib): Get the library manifests in the same configuration as the binary gets them.
+    useConfiguration(
+        "--fat_apk_cpu=", "--android_cpu=", "--android_manifest_merger_order=alphabetical");
+    scratch.overwriteFile(
+        "java/android/BUILD",
+        "android_library(",
+        "    name = 'core',",
+        "    manifest = 'core/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    resource_files = ['core/res/values/strings.xml'],",
+        ")",
+        "android_library(",
+        "    name = 'utility',",
+        "    manifest = 'utility/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    resource_files = ['utility/res/values/values.xml'],",
+        "    deps = ['//java/common:common'],",
+        ")");
+    scratch.file(
+        "java/binary/BUILD",
+        "android_binary(",
+        "    name = 'application',",
+        "    srcs = ['App.java'],",
+        "    manifest = 'app/AndroidManifest.xml',",
+        "    deps = [':library'],",
+        ")",
+        "android_library(",
+        "    name = 'library',",
+        "    manifest = 'library/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    deps = ['//java/common:theme', '//java/android:utility'],",
+        ")");
+    scratch.file(
+        "java/common/BUILD",
+        "android_library(",
+        "    name = 'common',",
+        "    manifest = 'common/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    resource_files = ['common/res/values/common.xml'],",
+        "    deps = ['//java/android:core'],",
+        ")",
+        "android_library(",
+        "    name = 'theme',",
+        "    manifest = 'theme/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    resource_files = ['theme/res/values/values.xml'],",
+        ")");
+    Artifact androidCoreManifest = getLibraryManifest(getConfiguredTarget("//java/android:core"));
+    Artifact androidUtilityManifest =
+        getLibraryManifest(getConfiguredTarget("//java/android:utility"));
+    Artifact binaryLibraryManifest =
+        getLibraryManifest(getConfiguredTarget("//java/binary:library"));
+    Artifact commonManifest = getLibraryManifest(getConfiguredTarget("//java/common:common"));
+    Artifact commonThemeManifest = getLibraryManifest(getConfiguredTarget("//java/common:theme"));
+
+    assertThat(getBinaryMergeeManifests(getConfiguredTarget("//java/binary:application")))
+        .containsExactlyEntriesIn(
+            ImmutableMap.of(
+                androidCoreManifest.getExecPath().toString(), "//java/android:core",
+                androidUtilityManifest.getExecPath().toString(), "//java/android:utility",
+                binaryLibraryManifest.getExecPath().toString(), "//java/binary:library",
+                commonManifest.getExecPath().toString(), "//java/common:common",
+                commonThemeManifest.getExecPath().toString(), "//java/common:theme"))
+        .inOrder();
+  }
+
+  @Test
+  public void androidManifestMergerOrderAlphabeticalByConfiguration_MergeesSortedByPathInBinOrGen()
+      throws Exception {
+    // Hack: Avoid the Android split transition by turning off fat_apk_cpu/android_cpu.
+    // This is necessary because the transition would change the configuration directory, causing
+    // the manifest paths in the assertion not to match.
+    // TODO(mstaib): Get the library manifests in the same configuration as the binary gets them.
+    useConfiguration(
+        "--fat_apk_cpu=",
+        "--android_cpu=",
+        "--android_manifest_merger_order=alphabetical_by_configuration");
+    scratch.overwriteFile(
+        "java/android/BUILD",
+        "android_library(",
+        "    name = 'core',",
+        "    manifest = 'core/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    resource_files = ['core/res/values/strings.xml'],",
+        ")",
+        "android_library(",
+        "    name = 'utility',",
+        "    manifest = 'utility/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    resource_files = ['utility/res/values/values.xml'],",
+        "    deps = ['//java/common:common'],",
+        "    transitive_configs = ['//flags:a', '//flags:b'],",
+        ")");
+    scratch.file(
+        "java/binary/BUILD",
+        "android_binary(",
+        "    name = 'application',",
+        "    srcs = ['App.java'],",
+        "    manifest = 'app/AndroidManifest.xml',",
+        "    deps = [':library'],",
+        "    feature_flags = {",
+        "        '//flags:a': 'on',",
+        "        '//flags:b': 'on',",
+        "        '//flags:c': 'on',",
+        "    },",
+        "    transitive_configs = ['//flags:a', '//flags:b', '//flags:c'],",
+        ")",
+        "android_library(",
+        "    name = 'library',",
+        "    manifest = 'library/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    deps = ['//java/common:theme', '//java/android:utility'],",
+        "    transitive_configs = ['//flags:a', '//flags:b', '//flags:c'],",
+        ")");
+    scratch.file(
+        "java/common/BUILD",
+        "android_library(",
+        "    name = 'common',",
+        "    manifest = 'common/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    resource_files = ['common/res/values/common.xml'],",
+        "    deps = ['//java/android:core'],",
+        "    transitive_configs = ['//flags:a'],",
+        ")",
+        "android_library(",
+        "    name = 'theme',",
+        "    manifest = 'theme/AndroidManifest.xml',",
+        "    exports_manifest = 1,",
+        "    resource_files = ['theme/res/values/values.xml'],",
+        "    transitive_configs = ['//flags:a', '//flags:b', '//flags:c'],",
+        ")");
+    scratch.file(
+        "flags/BUILD",
+        "config_feature_flag(",
+        "    name = 'a',",
+        "    allowed_values = ['on', 'off'],",
+        "    default_value = 'off',",
+        ")",
+        "config_feature_flag(",
+        "    name = 'b',",
+        "    allowed_values = ['on', 'off'],",
+        "    default_value = 'off',",
+        ")",
+        "config_feature_flag(",
+        "    name = 'c',",
+        "    allowed_values = ['on', 'off'],",
+        "    default_value = 'off',",
+        ")");
+
+    assertThat(getBinaryMergeeManifests(getConfiguredTarget("//java/binary:application")).values())
+        .containsExactly(
+            "//java/android:core",
+            "//java/android:utility",
+            "//java/binary:library",
+            "//java/common:common",
+            "//java/common:theme")
+        .inOrder();
+  }
+
+  // DEPENDENCY order is not tested; the incorrect order of dependencies means the test would
+  // have to enforce incorrect behavior.
+  // TODO(b/117338320): Add a test when dependency order is fixed.
 }

@@ -15,13 +15,14 @@
 package com.google.devtools.build.lib.syntax;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.packages.NativeProvider;
+import com.google.devtools.build.lib.packages.StructProvider;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkPrinter;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
 import com.google.devtools.build.lib.syntax.EvalUtils.ComparisonException;
 import com.google.devtools.build.lib.syntax.SkylarkList.MutableList;
 import com.google.devtools.build.lib.syntax.SkylarkList.Tuple;
@@ -43,28 +44,6 @@ public class EvalUtilsTest extends EvaluationTestCase {
 
   private static SkylarkDict<Object, Object> makeDict(Environment env) {
     return SkylarkDict.of(env, 1, 1, 2, 2);
-  }
-
-  @Test
-  public void testEmptyStringToIterable() throws Exception {
-    assertThat(EvalUtils.toIterable("", null, null)).isEmpty();
-  }
-
-  @Test
-  public void testStringToIterable() throws Exception {
-    assertThat(EvalUtils.toIterable("abc", null, null)).hasSize(3);
-  }
-
-  @Test
-  public void testSize() throws Exception {
-    assertThat(EvalUtils.size("abc")).isEqualTo(3);
-    assertThat(EvalUtils.size(ImmutableMap.of(1, 2, 3, 4))).isEqualTo(2);
-    assertThat(EvalUtils.size(SkylarkList.Tuple.of(1, 2, 3))).isEqualTo(3);
-    SkylarkNestedSet set = SkylarkNestedSet.of(
-        Object.class,
-        NestedSetBuilder.stableOrder().add(1).add(2).add(3).build());
-    assertThat(EvalUtils.size(set)).isEqualTo(3);
-    assertThat(EvalUtils.size(ImmutableList.of(1, 2, 3))).isEqualTo(3);
   }
 
   /** MockClassA */
@@ -126,18 +105,16 @@ public class EvalUtilsTest extends EvaluationTestCase {
       SkylarkDict.of(env, "key", 123),
       SkylarkDict.of(env, 123, "value"),
       NestedSetBuilder.stableOrder().add(1).add(2).add(3).build(),
-      NativeProvider.STRUCT.create(ImmutableMap.of("key", (Object) "value"), "no field %s"),
+      StructProvider.STRUCT.create(ImmutableMap.of("key", (Object) "value"), "no field %s"),
     };
 
     for (int i = 0; i < objects.length; ++i) {
       for (int j = 0; j < objects.length; ++j) {
         if (i != j) {
-          try {
-            EvalUtils.SKYLARK_COMPARATOR.compare(objects[i], objects[j]);
-            fail("Shouldn't have compared different types");
-          } catch (ComparisonException e) {
-            // expected
-          }
+          Object first = objects[i];
+          Object second = objects[j];
+          assertThrows(
+              ComparisonException.class, () -> EvalUtils.SKYLARK_COMPARATOR.compare(first, second));
         }
       }
     }
@@ -145,11 +122,45 @@ public class EvalUtilsTest extends EvaluationTestCase {
 
   @Test
   public void testComparatorWithNones() throws Exception {
-    try {
-      EvalUtils.SKYLARK_COMPARATOR.compare(Runtime.NONE, Runtime.NONE);
-      fail("Shouldn't have compared nones");
-    } catch (ComparisonException e) {
-      // expected
+    assertThrows(
+        ComparisonException.class,
+        () -> EvalUtils.SKYLARK_COMPARATOR.compare(Runtime.NONE, Runtime.NONE));
+  }
+
+  @SkylarkModule(
+      name = "ParentType",
+      doc = "A parent class annotated with @SkylarkModule."
+  )
+  private static class ParentClassWithSkylarkModule {}
+
+  private static class ChildClass extends ParentClassWithSkylarkModule {}
+
+  private static class SkylarkValueSubclass implements SkylarkValue {
+    @Override
+    public void repr(SkylarkPrinter printer) {
+      printer.append("SkylarkValueSubclass");
     }
+  }
+
+  private static class NonSkylarkValueSubclass {}
+
+  @Test
+  public void testGetSkylarkType() {
+    assertThat(EvalUtils.getSkylarkType(ParentClassWithSkylarkModule.class))
+        .isEqualTo(ParentClassWithSkylarkModule.class);
+    assertThat(EvalUtils.getSkylarkType(ChildClass.class))
+        .isEqualTo(ParentClassWithSkylarkModule.class);
+    assertThat(EvalUtils.getSkylarkType(SkylarkValueSubclass.class))
+        .isEqualTo(SkylarkValueSubclass.class);
+
+    IllegalArgumentException expected =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> EvalUtils.getSkylarkType(NonSkylarkValueSubclass.class));
+    assertThat(expected)
+        .hasMessageThat()
+        .contains(
+            "class com.google.devtools.build.lib.syntax.EvalUtilsTest$NonSkylarkValueSubclass "
+                + "is not allowed as a Starlark value");
   }
 }

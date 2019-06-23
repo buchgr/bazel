@@ -14,7 +14,7 @@
 
 package com.google.devtools.build.lib.rules.config;
 
-import com.google.common.base.Optional;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.hash.Hasher;
@@ -22,16 +22,12 @@ import com.google.common.hash.Hashing;
 import com.google.devtools.build.lib.actions.ArtifactOwner;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
-import com.google.devtools.build.lib.analysis.config.ConfigurationEnvironment;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFragmentFactory;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
+import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.common.options.Converter;
-import com.google.devtools.common.options.Option;
-import com.google.devtools.common.options.OptionDocumentationCategory;
-import com.google.devtools.common.options.OptionEffectTag;
-import com.google.devtools.common.options.OptionMetadataTag;
 import java.util.Map;
+import java.util.Optional;
 import java.util.SortedMap;
 import javax.annotation.Nullable;
 
@@ -40,60 +36,15 @@ import javax.annotation.Nullable;
  * files.
  */
 public final class ConfigFeatureFlagConfiguration extends BuildConfiguration.Fragment {
-
-  /** A converter used by the flag options which always returns an empty map, ignoring input. */
-  public static final class EmptyImmutableSortedMapConverter
-      implements Converter<ImmutableSortedMap<Label, String>> {
-    @Override
-    public ImmutableSortedMap<Label, String> convert(String input) {
-      return ImmutableSortedMap.<Label, String>of();
-    }
-
-    @Override
-    public String getTypeDescription() {
-      return "n/a (do not set this on the command line)";
-    }
-  }
-
-  /** The options fragment which defines {@link ConfigFeatureFlagConfiguration}. */
-  public static final class Options extends FragmentOptions {
-    /** The mapping from config_feature_flag rules to their values. */
-    @Option(
-      name = "config_feature_flag values (private)",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      metadataTags = {OptionMetadataTag.INTERNAL},
-      converter = EmptyImmutableSortedMapConverter.class,
-      defaultValue = "{}"
-    )
-    public ImmutableSortedMap<Label, String> flagValues = ImmutableSortedMap.of();
-
-    /** Retrieves the set of flag-value pairs. */
-    public ImmutableSortedMap<Label, String> getFlagValues() {
-      return this.flagValues;
-    }
-
-    /**
-     * Replaces the set of flag-value pairs with the given mapping of flag-value pairs.
-     *
-     * <p>Flags not present in the new {@code flagValues} will return to being unset! To set flags
-     * while still retaining the values already set, call {@link #getFlagValues()} and build a map
-     * containing both the old values and the new ones.
-     */
-    public void replaceFlagValues(Map<Label, String> flagValues) {
-      this.flagValues = ImmutableSortedMap.copyOf(flagValues);
-    }
-  }
-
   /**
    * A configuration fragment loader able to create instances of {@link
-   * ConfigFeatureFlagConfiguration} from {@link ConfigFeatureFlagConfiguration.Options}.
+   * ConfigFeatureFlagConfiguration} from {@link ConfigFeatureFlagOptions}.
    */
   public static final class Loader implements ConfigurationFragmentFactory {
     @Override
-    public BuildConfiguration.Fragment create(
-        ConfigurationEnvironment env, BuildOptions buildOptions) {
-      return new ConfigFeatureFlagConfiguration(buildOptions.get(Options.class));
+    public BuildConfiguration.Fragment create(BuildOptions buildOptions)
+        throws InvalidConfigurationException {
+      return new ConfigFeatureFlagConfiguration(FeatureFlagValue.getFlagValues(buildOptions));
     }
 
     @Override
@@ -103,17 +54,24 @@ public final class ConfigFeatureFlagConfiguration extends BuildConfiguration.Fra
 
     @Override
     public ImmutableSet<Class<? extends FragmentOptions>> requiredOptions() {
-      return ImmutableSet.<Class<? extends FragmentOptions>>of(Options.class);
+      return ImmutableSet.<Class<? extends FragmentOptions>>of(ConfigFeatureFlagOptions.class);
     }
   }
 
   private final ImmutableSortedMap<Label, String> flagValues;
   @Nullable private final String flagHash;
 
-  /** Creates a new configuration fragment from the given {@link Options} fragment. */
-  public ConfigFeatureFlagConfiguration(Options options) {
-    this.flagValues = options.getFlagValues();
-    this.flagHash = this.flagValues.isEmpty() ? null : hashFlags(this.flagValues);
+  /** Creates a new configuration fragment from the given {@link ConfigFeatureFlagOptions}. */
+  @VisibleForTesting
+  ConfigFeatureFlagConfiguration(ImmutableSortedMap<Label, String> flagValues) {
+    this.flagValues = flagValues;
+    // We don't hash flags set to their default values; all valid configurations of a target have
+    // the same set of known flags, so the set of flags set to something other than their default
+    // values is enough to disambiguate configurations. Similarly, whether or not a configuration
+    // is trimmed need not be hashed; enforceTransitiveConfigsForConfigFeatureFlag should not change
+    // within a build, and when it's enabled, the only configuration which is untrimmed
+    // (the top-level configuration) shouldn't be used for any actual targets.
+    this.flagHash = flagValues.isEmpty() ? null : hashFlags(flagValues);
   }
 
   /** Converts the given flag values into a string hash for use as an output directory fragment. */
@@ -133,7 +91,15 @@ public final class ConfigFeatureFlagConfiguration extends BuildConfiguration.Fra
   /**
    * Retrieves the value of a configuration flag.
    *
-   * <p>If the flag is not set in the current configuration, then the returned value will be absent.
+   * <p>If the flag is not set in the current configuration, then the returned value will be empty.
+   *
+   * <p>Because the configuration should fail to construct if a required flag is missing, and
+   * because config_feature_flag (the only intended user of this method) automatically requires its
+   * own label, this method should never incorrectly return the default value for a flag which was
+   * set to a non-default value. If the flag value is available and non-default, it will be in
+   * flagValues; if the flag value is available and default, it will not be in flagValues; if the
+   * flag value is unavailable, this fragment's loader will fail and this method will never be
+   * called.
    *
    * <p>This method should only be used by the rule whose label is passed here. Other rules should
    * depend on that rule and read a provider exported by it. To encourage callers of this method to
@@ -141,7 +107,11 @@ public final class ConfigFeatureFlagConfiguration extends BuildConfiguration.Fra
    * ArtifactOwner for a rule, call {@code ruleContext.getOwner()}.
    */
   public Optional<String> getFeatureFlagValue(ArtifactOwner owner) {
-    return Optional.fromNullable(flagValues.get(owner.getLabel()));
+    if (flagValues.containsKey(owner.getLabel())) {
+      return Optional.of(flagValues.get(owner.getLabel()));
+    } else {
+      return Optional.empty();
+    }
   }
 
   /**

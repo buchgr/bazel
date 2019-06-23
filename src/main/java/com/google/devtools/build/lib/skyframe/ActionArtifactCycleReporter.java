@@ -18,9 +18,10 @@ import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.ActionLookupData;
+import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ArtifactSkyKey;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.pkgcache.PackageProvider;
-import com.google.devtools.build.lib.skyframe.ArtifactSkyKey.OwnedArtifact;
 import com.google.devtools.build.lib.skyframe.TargetCompletionValue.TargetCompletionKey;
 import com.google.devtools.build.lib.skyframe.TestCompletionValue.TestCompletionKey;
 import com.google.devtools.build.skyframe.CycleInfo;
@@ -32,11 +33,12 @@ import com.google.devtools.build.skyframe.SkyKey;
  */
 public class ActionArtifactCycleReporter extends AbstractLabelCycleReporter {
   @SuppressWarnings("unchecked")
-  private static final Predicate<SkyKey> IS_ARTIFACT_OR_ACTION_SKY_KEY = Predicates.or(
-      SkyFunctions.isSkyFunction(SkyFunctions.ARTIFACT),
-      SkyFunctions.isSkyFunction(SkyFunctions.ACTION_EXECUTION),
-      SkyFunctions.isSkyFunction(SkyFunctions.TARGET_COMPLETION),
-      SkyFunctions.isSkyFunction(SkyFunctions.TEST_COMPLETION));
+  private static final Predicate<SkyKey> IS_ARTIFACT_OR_ACTION_SKY_KEY =
+      Predicates.or(
+          SkyFunctions.isSkyFunction(Artifact.ARTIFACT),
+          SkyFunctions.isSkyFunction(SkyFunctions.ACTION_EXECUTION),
+          SkyFunctions.isSkyFunction(SkyFunctions.TARGET_COMPLETION),
+          SkyFunctions.isSkyFunction(SkyFunctions.TEST_COMPLETION));
 
   ActionArtifactCycleReporter(PackageProvider packageProvider) {
     super(packageProvider);
@@ -47,38 +49,46 @@ public class ActionArtifactCycleReporter extends AbstractLabelCycleReporter {
     return prettyPrint(key.functionName(), key.argument());
   }
 
-  private String prettyPrint(SkyFunctionName skyFunctionName, Object arg) {
-    if (arg instanceof OwnedArtifact) {
-      return "file: " + ((OwnedArtifact) arg).getArtifact().getRootRelativePathString();
+  private static String prettyPrintArtifact(Artifact artifact) {
+    return "file: " + artifact.getRootRelativePathString();
+  }
+
+  private static String prettyPrint(SkyFunctionName skyFunctionName, Object arg) {
+    if (arg instanceof ArtifactSkyKey) {
+      return prettyPrintArtifact(((ArtifactSkyKey) arg).getArtifact());
+    } else if (arg instanceof Artifact) {
+      return prettyPrintArtifact(((Artifact) arg));
     } else if (arg instanceof ActionLookupData) {
       return "action from: " + arg;
     } else if (arg instanceof TargetCompletionKey
         && skyFunctionName.equals(SkyFunctions.TARGET_COMPLETION)) {
-      return "configured target: " + ((TargetCompletionKey) arg).labelAndConfiguration().getLabel();
+      return "configured target: " + ((TargetCompletionKey) arg).configuredTargetKey().getLabel();
     } else if (arg instanceof TestCompletionKey
         && skyFunctionName.equals(SkyFunctions.TEST_COMPLETION)) {
-      return  "test target: " + ((TestCompletionKey) arg).labelAndConfiguration().getLabel();
+      return "test target: " + ((TestCompletionKey) arg).configuredTargetKey().getLabel();
     }
     throw new IllegalStateException(
-        "Argument is not Action, TargetCompletion, TestCompletion or OwnedArtifact: " + arg);
+        "Argument is not Action, TargetCompletion, TestCompletion or ArtifactSkyKey: " + arg);
   }
 
   @Override
   protected Label getLabel(SkyKey key) {
     Object arg = key.argument();
-    if (arg instanceof OwnedArtifact) {
-      return ((OwnedArtifact) arg).getArtifact().getOwner();
+    if (arg instanceof ArtifactSkyKey) {
+      return ((ArtifactSkyKey) arg).getArtifact().getOwner();
+    } else if (arg instanceof Artifact) {
+      return ((Artifact) arg).getOwner();
     } else if (arg instanceof ActionLookupData) {
-      return ((ActionLookupData) arg).getLabelForErrors();
+      return ((ActionLookupData) arg).getLabel();
     } else if (arg instanceof TargetCompletionKey
         && key.functionName().equals(SkyFunctions.TARGET_COMPLETION)) {
-      return ((TargetCompletionKey) arg).labelAndConfiguration().getLabel();
+      return ((TargetCompletionKey) arg).configuredTargetKey().getLabel();
     } else if (arg instanceof TestCompletionKey
         && key.functionName().equals(SkyFunctions.TEST_COMPLETION)) {
-      return  ((TestCompletionKey) arg).labelAndConfiguration().getLabel();
+      return ((TestCompletionKey) arg).configuredTargetKey().getLabel();
     }
     throw new IllegalStateException(
-        "Argument is not Action, TargetCompletion, TestCompletion or OwnedArtifact: " + arg);
+        "Argument is not Action, TargetCompletion, TestCompletion or ArtifactSkyKey: " + arg);
   }
 
   @Override

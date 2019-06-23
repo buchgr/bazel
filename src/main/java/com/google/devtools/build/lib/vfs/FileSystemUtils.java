@@ -15,29 +15,24 @@ package com.google.devtools.build.lib.vfs;
 
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.io.ByteSink;
 import com.google.common.io.ByteSource;
 import com.google.common.io.ByteStreams;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ConditionallyThreadSafe;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.PrintStream;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
-import java.util.Set;
 
-/**
- * Helper functions that implement often-used complex operations on file
- * systems.
- */
-@ConditionallyThreadSafe // ThreadSafe except for deleteTree.
+/** Helper functions that implement often-used complex operations on file systems. */
+@ConditionallyThreadSafe
 public class FileSystemUtils {
 
   private FileSystemUtils() {}
@@ -91,25 +86,13 @@ public class FileSystemUtils {
 
     return a;
   }
-  /**
-   * Returns a path fragment from a given from-dir to a given to-path. May be
-   * either a short relative path "foo/bar", an up'n'over relative path
-   * "../../foo/bar" or an absolute path.
-   */
-  public static PathFragment relativePath(Path fromDir, Path to) {
-    if (to.getFileSystem() != fromDir.getFileSystem()) {
-      throw new IllegalArgumentException("fromDir and to must be on the same FileSystem");
-    }
-
-    return relativePath(fromDir.asFragment(), to.asFragment());
-  }
 
   /**
    * Returns a path fragment from a given from-dir to a given to-path.
    */
   public static PathFragment relativePath(PathFragment fromDir, PathFragment to) {
     if (to.equals(fromDir)) {
-      return PathFragment.create(".");  // same dir, just return '.'
+      return PathFragment.EMPTY_FRAGMENT;
     }
     if (to.startsWith(fromDir)) {
       return to.relativeTo(fromDir);  // easy case--it's a descendant
@@ -217,28 +200,6 @@ public class FileSystemUtils {
    */
   public static PathFragment appendExtension(PathFragment path, String newExtension) {
     return path.replaceName(path.getBaseName() + newExtension);
-  }
-
-  /**
-   * Returns a new {@code PathFragment} formed by replacing the first, or all if
-   * {@code replaceAll} is true, {@code oldSegment} of {@code path} with {@code
-   * newSegment}.
-   */
-  public static PathFragment replaceSegments(PathFragment path,
-      String oldSegment, String newSegment, boolean replaceAll) {
-    int count = path.segmentCount();
-    for (int i = 0; i < count; i++) {
-      if (path.getSegment(i).equals(oldSegment)) {
-        path = PathFragment.create(
-            path.subFragment(0, i),
-            PathFragment.create(newSegment),
-            path.subFragment(i+1, count));
-        if (!replaceAll) {
-          return path;
-        }
-      }
-    }
-    return path;
   }
 
   /**
@@ -384,7 +345,7 @@ public class FileSystemUtils {
       /* fallthru and do the work below */
     }
     if (link.isSymbolicLink()) {
-      link.delete();  // Remove the symlink since it is pointing somewhere else.
+      link.delete(); // Remove the symlink since it is pointing somewhere else.
     } else {
       createDirectoryAndParents(link.getParentDirectory());
     }
@@ -436,7 +397,10 @@ public class FileSystemUtils {
       throw new IOException("error copying file: "
           + "couldn't delete destination: " + e.getMessage());
     }
-    asByteSource(from).copyTo(asByteSink(to));
+    try (InputStream in = from.getInputStream();
+        OutputStream out = to.getOutputStream()) {
+      ByteStreams.copy(in, out);
+    }
     to.setLastModifiedTime(from.getLastModifiedTime()); // Preserve mtime.
     if (!from.isWritable()) {
       to.setWritable(false); // Make file read-only if original was read-only.
@@ -444,39 +408,66 @@ public class FileSystemUtils {
     to.setExecutable(from.isExecutable()); // Copy executable bit.
   }
 
-  /**
-   * Moves the file from location "from" to location "to", while overwriting a
-   * potentially existing "to". File's last modified time, executable and
-   * writable bits are also preserved.
-   *
-   * <p>If no error occurs, the method returns normally. If a parent directory does
-   * not exist, a FileNotFoundException is thrown. An IOException is thrown when
-   * other erroneous situations occur. (e.g. read errors)
-   */
-  @ThreadSafe  // but not atomic
-  public static void moveFile(Path from, Path to) throws IOException {
-    long mtime = from.getLastModifiedTime();
-    boolean writable = from.isWritable();
-    boolean executable = from.isExecutable();
+  /** Describes the behavior of a {@link #moveFile(Path, Path)} operation. */
+  public enum MoveResult {
+    /** The file was moved at the file system level. */
+    FILE_MOVED,
 
+    /** The file had to be copied and then deleted because the move failed. */
+    FILE_COPIED,
+  }
+
+  /**
+   * Moves the file from location "from" to location "to", while overwriting a potentially existing
+   * "to". If "from" is a regular file, its last modified time, executable and writable bits are
+   * also preserved. Symlinks are also supported but not directories or special files.
+   *
+   * <p>If the move fails (usually because the "from" and "to" live in different file systems), this
+   * falls back to copying the file. Note that these two operations have very different performance
+   * characteristics and is why this operation reports back to the caller what actually happened.
+   *
+   * <p>If no error occurs, the method returns normally. If a parent directory does not exist, a
+   * FileNotFoundException is thrown. {@link IOException} is thrown when other erroneous situations
+   * occur. (e.g. read errors)
+   *
+   * @param from location of the file to move
+   * @param to destination to where to move the file
+   * @return a description of how the move was performed
+   * @throws IOException if the move fails
+   */
+  @ThreadSafe // but not atomic
+  public static MoveResult moveFile(Path from, Path to) throws IOException {
     // We don't try-catch here for better performance.
     to.delete();
     try {
       from.renameTo(to);
+      return MoveResult.FILE_MOVED;
     } catch (IOException e) {
-      asByteSource(from).copyTo(asByteSink(to));
+      // Fallback to a copy.
+      FileStatus stat = from.stat(Symlinks.NOFOLLOW);
+      if (stat.isFile()) {
+        try (InputStream in = from.getInputStream();
+            OutputStream out = to.getOutputStream()) {
+          ByteStreams.copy(in, out);
+        }
+        to.setLastModifiedTime(stat.getLastModifiedTime()); // Preserve mtime.
+        if (!from.isWritable()) {
+          to.setWritable(false); // Make file read-only if original was read-only.
+        }
+        to.setExecutable(from.isExecutable()); // Copy executable bit.
+      } else if (stat.isSymbolicLink()) {
+        to.createSymbolicLink(from.readSymbolicLink());
+      } else {
+        throw new IOException("Don't know how to copy " + from);
+      }
       if (!from.delete()) {
         if (!to.delete()) {
           throw new IOException("Unable to delete " + to);
         }
         throw new IOException("Unable to delete " + from);
       }
+      return MoveResult.FILE_COPIED;
     }
-    to.setLastModifiedTime(mtime); // Preserve mtime.
-    if (!writable) {
-      to.setWritable(false); // Make file read-only if original was read-only.
-    }
-    to.setExecutable(executable); // Copy executable bit.
   }
 
   /**
@@ -539,36 +530,6 @@ public class FileSystemUtils {
       }
       if (p.isDirectory(Symlinks.NOFOLLOW)) {
         traverseTree(paths, p, predicate);
-      }
-    }
-  }
-
-  /**
-   * Deletes 'p', and everything recursively beneath it if it's a directory.
-   * Does not follow any symbolic links.
-   *
-   * @throws IOException if any file could not be removed.
-   */
-  @ThreadSafe
-  public static void deleteTree(Path p) throws IOException {
-    deleteTreesBelow(p);
-    p.delete();
-  }
-
-  /**
-   * Deletes all dir trees recursively beneath 'dir' if it's a directory,
-   * nothing otherwise. Does not follow any symbolic links.
-   *
-   * @throws IOException if any file could not be removed.
-   */
-  @ThreadSafe
-  public static void deleteTreesBelow(Path dir) throws IOException {
-    if (dir.isDirectory(Symlinks.NOFOLLOW)) {  // real directories (not symlinks)
-      dir.setReadable(true);
-      dir.setWritable(true);
-      dir.setExecutable(true);
-      for (Path child : dir.getDirectoryEntries()) {
-        deleteTree(child);
       }
     }
   }
@@ -639,81 +600,15 @@ public class FileSystemUtils {
   }
 
   /**
-   * Attempts to create a directory with the name of the given path, creating
-   * ancestors as necessary.
-   *
-   * <p>Postcondition: completes normally iff {@code dir} denotes an existing
-   * directory (not necessarily canonical); completes abruptly otherwise.
-   *
-   * @return true if the directory was successfully created anew, false if it
-   *   already existed (including the case where {@code dir} denotes a symlink
-   *   to an existing directory)
-   * @throws IOException if the directory could not be created
-   */
-  @ThreadSafe
-  public static boolean createDirectoryAndParents(Path dir) throws IOException {
-    return createDirectoryAndParentsWithCache(null, dir);
-  }
-
-  /**
    * Attempts to create a directory with the name of the given path, creating ancestors as
-   * necessary. Only creates directories or their parents if they are not contained in the set
-   * {@code createdDirs} and instead assumes that they already exist. This saves a round-trip to the
-   * kernel, but is only safe when no one deletes directories that have been created by this method.
+   * necessary.
    *
-   * <p>Postcondition: completes normally iff {@code dir} denotes an existing directory (not
-   * necessarily canonical); completes abruptly otherwise.
-   *
-   * @return true if the directory was successfully created anew, false if it already existed
-   *     (including the case where {@code dir} denotes a symlink to an existing directory)
-   * @throws IOException if the directory could not be created
+   * <p>Deprecated. Prefer to call {@link Path#createDirectoryAndParents()} directly.
    */
+  @Deprecated
   @ThreadSafe
-  public static boolean createDirectoryAndParentsWithCache(Set<Path> createdDirs, Path dir)
-      throws IOException {
-    // Optimised for minimal number of I/O calls.
-
-    // Don't attempt to create the root directory.
-    if (dir.getParentDirectory() == null) {
-      return false;
-    }
-
-    // We already created that directory.
-    if (createdDirs != null && createdDirs.contains(dir)) {
-      return false;
-    }
-
-    FileSystem filesystem = dir.getFileSystem();
-    if (filesystem instanceof UnionFileSystem) {
-      // If using UnionFS, make sure that we do not traverse filesystem boundaries when creating
-      // parent directories by rehoming the path on the most specific filesystem.
-      FileSystem delegate = ((UnionFileSystem) filesystem).getDelegate(dir);
-      dir = delegate.getPath(dir.asFragment());
-    }
-
-    try {
-      boolean result = dir.createDirectory();
-      if (createdDirs != null) {
-        createdDirs.add(dir);
-      }
-      return result;
-    } catch (IOException e) {
-      if (e.getMessage().endsWith(" (No such file or directory)")) { // ENOENT
-        createDirectoryAndParentsWithCache(createdDirs, dir.getParentDirectory());
-        boolean result = dir.createDirectory();
-        if (createdDirs != null) {
-          createdDirs.add(dir);
-        }
-        return result;
-      } else if (e.getMessage().endsWith(" (File exists)") && dir.isDirectory()) { // EEXIST
-        if (createdDirs != null) {
-          createdDirs.add(dir);
-        }
-        return false;
-      } else {
-        throw e; // some other error (e.g. ENOTDIR, EACCES, etc.)
-      }
-    }
+  public static void createDirectoryAndParents(Path dir) throws IOException {
+    dir.createDirectoryAndParents();
   }
 
   /**
@@ -950,6 +845,24 @@ public class FileSystemUtils {
   }
 
   /**
+   * The type of {@link IOException} thrown by {@link #readWithKnownFileSize} when fewer bytes than
+   * expected are read.
+   */
+  public static class ShortReadIOException extends IOException {
+    public final Path path;
+    public final int fileSize;
+    public final int numBytesRead;
+
+    private ShortReadIOException(Path path, int fileSize, int numBytesRead) {
+      super("Unexpected short read from file '" + path + "' (expected " + fileSize + ", got "
+          + numBytesRead + " bytes)");
+      this.path = path;
+      this.fileSize = fileSize;
+      this.numBytesRead = numBytesRead;
+    }
+  }
+
+  /**
    * Reads the given file {@code path}, assumed to have size {@code fileSize}, and does a sanity
    * check on the number of bytes read.
    *
@@ -965,34 +878,9 @@ public class FileSystemUtils {
     int fileSizeInt = (int) fileSize;
     byte[] bytes = readContentWithLimit(path, fileSizeInt);
     if (fileSizeInt > bytes.length) {
-      throw new IOException("Unexpected short read from file '" + path
-          + "' (expected " + fileSizeInt + ", got " + bytes.length + " bytes)");
+      throw new ShortReadIOException(path, fileSizeInt, bytes.length);
     }
     return bytes;
-  }
-
-  /**
-   * Dumps diagnostic information about the specified filesystem to {@code out}.
-   * This is the implementation of the filesystem part of the 'blaze dump'
-   * command. It lives here, rather than in DumpCommand, because it requires
-   * privileged access to members of this package.
-   *
-   * <p>Its results are unspecified and MUST NOT be interpreted programmatically.
-   */
-  public static void dump(FileSystem fs, final PrintStream out) {
-    // Unfortunately there's no "letrec" for anonymous functions so we have to
-    // (a) name the function, (b) put it in a box and (c) use List not array
-    // because of the generic type.  *sigh*.
-    final List<Predicate<Path>> dumpFunction = new ArrayList<>();
-    dumpFunction.add(
-        child -> {
-          Path path = child;
-          out.println("  " + path + " (" + path.toDebugString() + ")");
-          path.applyToChildren(dumpFunction.get(0));
-          return false;
-        });
-
-    fs.getRootDirectory().applyToChildren(dumpFunction.get(0));
   }
 
   /**

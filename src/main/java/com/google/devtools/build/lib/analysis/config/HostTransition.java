@@ -13,17 +13,26 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis.config;
 
-/**
- * Dynamic transition to the host configuration.
- */
+import com.google.auto.value.AutoValue;
+import com.google.devtools.build.lib.analysis.config.transitions.PatchTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.TransitionFactory;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+
+/** Dynamic transition to the host configuration. */
 public final class HostTransition implements PatchTransition {
-  public static final HostTransition INSTANCE = new HostTransition();
+
+  @AutoCodec public static final HostTransition INSTANCE = new HostTransition();
 
   private HostTransition() {}
 
   @Override
-  public BuildOptions apply(BuildOptions options) {
-    if (options.get(BuildConfiguration.Options.class).isHost) {
+  public boolean isHostTransition() {
+    return true;
+  }
+
+  @Override
+  public BuildOptions patch(BuildOptions options) {
+    if (options.get(CoreOptions.class).isHost) {
       // If the input already comes from the host configuration, just return the existing values.
       //
       // We don't do this just for convenience: if an
@@ -42,5 +51,33 @@ public final class HostTransition implements PatchTransition {
     } else {
       return options.createHostOptions();
     }
+  }
+
+  /** Returns a {@link TransitionFactory} instance that generates the host transition. */
+  public static <T> TransitionFactory<T> createFactory() {
+    return new AutoValue_HostTransition_Factory<>();
+  }
+
+  /**
+   * Returns {@code true} if the given {@link TransitionFactory} is an instance of the host
+   * transition.
+   */
+  public static <T> boolean isInstance(TransitionFactory<T> instance) {
+    return instance instanceof Factory;
+  }
+
+  /** A {@link TransitionFactory} implementation that generates the host transition. */
+  @AutoValue
+  abstract static class Factory<T> implements TransitionFactory<T> {
+    @Override
+    public PatchTransition create(T unused) {
+      return INSTANCE;
+    }
+
+    @Override
+    public boolean isHost() {
+      return true;
+    }
+
   }
 }

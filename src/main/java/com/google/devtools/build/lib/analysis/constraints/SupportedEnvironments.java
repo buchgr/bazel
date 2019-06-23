@@ -16,20 +16,20 @@ package com.google.devtools.build.lib.analysis.constraints;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.packages.Target;
-
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import java.util.Map;
 
-/**
- * Standard {@link SupportedEnvironmentsProvider} implementation.
- */
+/** Standard {@link SupportedEnvironmentsProvider} implementation. */
+@AutoCodec
 public class SupportedEnvironments implements SupportedEnvironmentsProvider {
   private final EnvironmentCollection staticEnvironments;
   private final EnvironmentCollection refinedEnvironments;
-  private final ImmutableMap<Label, Target> removedEnvironmentCulprits;
+  private final ImmutableMap<Label, RemovedEnvironmentCulprit> removedEnvironmentCulprits;
 
-  public SupportedEnvironments(EnvironmentCollection staticEnvironments,
-      EnvironmentCollection refinedEnvironments, Map<Label, Target> removedEnvironmentCulprits) {
+  public SupportedEnvironments(
+      EnvironmentCollection staticEnvironments,
+      EnvironmentCollection refinedEnvironments,
+      Map<Label, RemovedEnvironmentCulprit> removedEnvironmentCulprits) {
     this.staticEnvironments = staticEnvironments;
     this.refinedEnvironments = refinedEnvironments;
     this.removedEnvironmentCulprits = ImmutableMap.copyOf(removedEnvironmentCulprits);
@@ -46,7 +46,7 @@ public class SupportedEnvironments implements SupportedEnvironmentsProvider {
   }
 
   @Override
-  public Target getRemovedEnvironmentCulprit(Label environment) {
+  public RemovedEnvironmentCulprit getRemovedEnvironmentCulprit(Label environment) {
     return removedEnvironmentCulprits.get(environment);
   }
 }

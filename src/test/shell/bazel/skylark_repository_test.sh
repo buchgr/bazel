@@ -17,11 +17,55 @@
 # Test the local_repository binding
 #
 
-# Load the test setup defined in the parent directory
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${CURRENT_DIR}/../integration_test_setup.sh" \
+# --- begin runfiles.bash initialization ---
+# Copy-pasted from Bazel's Bash runfiles library (tools/bash/runfiles/runfiles.bash).
+set -euo pipefail
+if [[ ! -d "${RUNFILES_DIR:-/dev/null}" && ! -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+  if [[ -f "$0.runfiles_manifest" ]]; then
+    export RUNFILES_MANIFEST_FILE="$0.runfiles_manifest"
+  elif [[ -f "$0.runfiles/MANIFEST" ]]; then
+    export RUNFILES_MANIFEST_FILE="$0.runfiles/MANIFEST"
+  elif [[ -f "$0.runfiles/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+    export RUNFILES_DIR="$0.runfiles"
+  fi
+fi
+if [[ -f "${RUNFILES_DIR:-/dev/null}/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+  source "${RUNFILES_DIR}/bazel_tools/tools/bash/runfiles/runfiles.bash"
+elif [[ -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+  source "$(grep -m1 "^bazel_tools/tools/bash/runfiles/runfiles.bash " \
+            "$RUNFILES_MANIFEST_FILE" | cut -d ' ' -f 2-)"
+else
+  echo >&2 "ERROR: cannot find @bazel_tools//tools/bash/runfiles:runfiles.bash"
+  exit 1
+fi
+# --- end runfiles.bash initialization ---
+
+source "$(rlocation "io_bazel/src/test/shell/integration_test_setup.sh")" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
-source "${CURRENT_DIR}/remote_helpers.sh" \
+
+# `uname` returns the current platform, e.g "MSYS_NT-10.0" or "Linux".
+# `tr` converts all upper case letters to lower case.
+# `case` matches the result if the `uname | tr` expression to string prefixes
+# that use the same wildcards as names do in Bash, i.e. "msys*" matches strings
+# starting with "msys", and "*" matches everything (it's the default case).
+case "$(uname -s | tr [:upper:] [:lower:])" in
+msys*)
+  # As of 2018-08-14, Bazel on Windows only supports MSYS Bash.
+  declare -r is_windows=true
+  ;;
+*)
+  declare -r is_windows=false
+  ;;
+esac
+
+if "$is_windows"; then
+  # Disable MSYS path conversion that converts path-looking command arguments to
+  # Windows paths (even if they arguments are not in fact paths).
+  export MSYS_NO_PATHCONV=1
+  export MSYS2_ARG_CONV_EXCL="*"
+fi
+
+source "$(rlocation "io_bazel/src/test/shell/bazel/remote_helpers.sh")" \
   || { echo "remote_helpers.sh not found!" >&2; exit 1; }
 
 # Basic test.
@@ -249,8 +293,7 @@ EOF
   [ $exitCode != 0 ] || fail "building @foo//:data.txt succeed while expected failure"
 
   expect_not_log "PACKAGE"
-  expect_log "Failed to load Skylark extension '@foo//:ext.bzl'"
-  expect_log "Maybe repository 'foo' was defined later in your WORKSPACE file?"
+  expect_log "Failed to load Starlark extension '@foo//:ext.bzl'"
 }
 
 function test_load_nonexistent_with_subworkspace() {
@@ -268,8 +311,7 @@ EOF
   [ $exitCode != 0 ] || fail "building //... succeed while expected failure"
 
   expect_not_log "PACKAGE"
-  expect_log "Failed to load Skylark extension '@does_not_exist//:random.bzl'"
-  expect_log "Maybe repository 'does_not_exist' was defined later in your WORKSPACE file?"
+  expect_log "Failed to load Starlark extension '@does_not_exist//:random.bzl'"
 
   # Retest with query //...
   bazel clean --expunge
@@ -277,8 +319,7 @@ EOF
   [ $exitCode != 0 ] || fail "querying //... succeed while expected failure"
 
   expect_not_log "PACKAGE"
-  expect_log "Failed to load Skylark extension '@does_not_exist//:random.bzl'"
-  expect_log "Maybe repository 'does_not_exist' was defined later in your WORKSPACE file?"
+  expect_log "Failed to load Starlark extension '@does_not_exist//:random.bzl'"
 }
 
 function test_skylark_local_repository() {
@@ -313,7 +354,7 @@ EOF
 
   bazel build @foo//:bar >& $TEST_log || fail "Failed to build"
   expect_log "foo"
-  expect_not_log "Workspace name in .*/WORKSPACE (@__main__) does not match the name given in the repository's definition (@foo)"
+  expect_not_log "Workspace name in .*/WORKSPACE (.*) does not match the name given in the repository's definition (@foo)"
   cat bazel-genfiles/external/foo/bar.txt >$TEST_log
   expect_log "foo"
 }
@@ -334,11 +375,39 @@ EOF
   cat > BUILD
 }
 
+function test_skylark_flags_affect_repository_rule() {
+  setup_skylark_repository
+
+  cat >test.bzl <<EOF
+def _impl(repository_ctx):
+  print("In repo rule: ")
+  # Symlink so a repository is created
+  repository_ctx.symlink(repository_ctx.path("$repo2"), repository_ctx.path(""))
+
+repo = repository_rule(implementation=_impl, local=True)
+EOF
+
+  MARKER="<== skylark flag test ==>"
+
+  bazel build @foo//:bar >& $TEST_log \
+    || fail "Expected build to succeed"
+  expect_log "In repo rule: " "Did not find repository rule print output"
+  expect_not_log "$MARKER" \
+      "Marker string '$MARKER' was seen even though \
+      --internal_skylark_flag_test_canary wasn't passed"
+
+  # Build with the special testing flag that appends a marker string to all
+  # print() calls.
+  bazel build @foo//:bar --internal_skylark_flag_test_canary >& $TEST_log \
+    || fail "Expected build to succeed"
+  expect_log "In repo rule: $MARKER" \
+      "Starlark flags are not propagating to repository rule implementation \
+      function evaluation"
+}
+
 function test_skylark_repository_which_and_execute() {
   setup_skylark_repository
 
-  # Test we are using the client environment, not the server one
-  bazel info &> /dev/null  # Start up the server.
   echo "#!/bin/sh" > bin.sh
   echo "exit 0" >> bin.sh
   chmod +x bin.sh
@@ -362,6 +431,9 @@ def _impl(repository_ctx):
   print(result.stdout)
 repo = repository_rule(implementation=_impl, local=True)
 EOF
+
+  # Test we are using the client environment, not the server one
+  bazel info &> /dev/null  # Start up the server.
 
   FOO="BAZ" PATH="${PATH}:${PWD}" bazel build @foo//:bar >& $TEST_log \
       || fail "Failed to build"
@@ -737,6 +809,80 @@ function test_skylark_repository_file_invalidation_batch() {
   file_invalidation_test_template --batch
 }
 
+function test_repo_env() {
+  setup_skylark_repository
+
+  cat > test.bzl <<'EOF'
+def _impl(ctx):
+  # Make a rule depending on the environment variable FOO,
+  # properly recording its value. Also add a time stamp
+  # to verify that the rule is rerun.
+  ctx.execute(["bash", "-c", "echo FOO=$FOO > env.txt"])
+  ctx.execute(["bash", "-c", "date +%s >> env.txt"])
+  ctx.file("BUILD", 'exports_files(["env.txt"])')
+
+repo = repository_rule(
+  implementation = _impl,
+  environ = ["FOO"],
+)
+EOF
+  cat > BUILD <<'EOF'
+genrule(
+  name = "repoenv",
+  outs = ["repoenv.txt"],
+  srcs = ["@foo//:env.txt"],
+  cmd = "cp $< $@",
+)
+
+# Have a normal rule, unrelated to the external repository.
+# To test if it was rerun, make it non-hermetic and record a
+# time stamp.
+genrule(
+  name = "unrelated",
+  outs = ["unrelated.txt"],
+  cmd = "date +%s > $@",
+)
+EOF
+  cat > .bazelrc <<EOF
+build:foo --repo_env=FOO=foo
+build:bar --repo_env=FOO=bar
+EOF
+
+  bazel build --config=foo //:repoenv //:unrelated
+  cp `bazel info bazel-genfiles 2>/dev/null`/repoenv.txt repoenv1.txt
+  cp `bazel info bazel-genfiles 2> /dev/null`/unrelated.txt unrelated1.txt
+  echo; cat repoenv1.txt; echo; cat unrelated1.txt; echo
+
+  grep -q 'FOO=foo' repoenv1.txt \
+      || fail "Expected FOO to be visible to repo rules"
+
+  sleep 2 # ensure any rerun will have a different time stamp
+
+  FOO=CHANGED bazel build --config=foo //:repoenv //:unrelated
+  # nothing should change, as actions don't see FOO and for repositories
+  # the value is fixed by --repo_env
+  cp `bazel info bazel-genfiles 2>/dev/null`/repoenv.txt repoenv2.txt
+  cp `bazel info bazel-genfiles 2> /dev/null`/unrelated.txt unrelated2.txt
+  echo; cat repoenv2.txt; echo; cat unrelated2.txt; echo
+
+  diff repoenv1.txt repoenv2.txt \
+      || fail "Expected repository to not change"
+  diff unrelated1.txt unrelated2.txt \
+      || fail "Expected unrelated action to not be rerun"
+
+  bazel build --config=bar //:repoenv //:unrelated
+  # The new config should be picked up, but the unrelated target should
+  # not be rerun
+  cp `bazel info bazel-genfiles 3>/dev/null`/repoenv.txt repoenv3.txt
+  cp `bazel info bazel-genfiles 3> /dev/null`/unrelated.txt unrelated3.txt
+  echo; cat repoenv3.txt; echo; cat unrelated3.txt; echo
+
+  grep -q 'FOO=bar' repoenv3.txt \
+      || fail "Expected FOO to be visible to repo rules"
+  diff unrelated1.txt unrelated3.txt \
+      || fail "Expected unrelated action to not be rerun"
+}
+
 function test_skylark_repository_executable_flag() {
   setup_skylark_repository
 
@@ -819,6 +965,71 @@ EOF
     || fail "download_with_sha256.txt is executable"
   test -x "${output_base}/external/foo/download_executable_file.sh" \
     || fail "download_executable_file.sh is not executable"
+}
+
+function test_skylark_repository_context_downloads_return_struct() {
+   # Prepare HTTP server with Python
+  local server_dir="${TEST_TMPDIR}/server_dir"
+  mkdir -p "${server_dir}"
+  local download_with_sha256="${server_dir}/download_with_sha256.txt"
+  local download_no_sha256="${server_dir}/download_no_sha256.txt"
+  local compressed_with_sha256="${server_dir}/compressed_with_sha256.txt"
+  local compressed_no_sha256="${server_dir}/compressed_no_sha256.txt"
+  echo "This is one file" > "${download_no_sha256}"
+  echo "This is another file" > "${download_with_sha256}"
+  echo "Compressed file with sha" > "${compressed_with_sha256}"
+  echo "Compressed file no sha" > "${compressed_no_sha256}"
+  zip "${compressed_with_sha256}".zip "${compressed_with_sha256}"
+  zip "${compressed_no_sha256}".zip "${compressed_no_sha256}"
+
+  provided_sha256="$(sha256sum "${download_with_sha256}" | head -c 64)"
+  not_provided_sha256="$(sha256sum "${download_no_sha256}" | head -c 64)"
+  compressed_provided_sha256="$(sha256sum "${compressed_with_sha256}.zip" | head -c 64)"
+  compressed_not_provided_sha256="$(sha256sum "${compressed_no_sha256}.zip" | head -c 64)"
+
+  # Start HTTP server with Python
+  startup_server "${server_dir}"
+
+  setup_skylark_repository
+  # Our custom repository rule
+  cat >test.bzl <<EOF
+def _impl(repository_ctx):
+  no_sha_return = repository_ctx.download(
+    url = "http://localhost:${fileserver_port}/download_no_sha256.txt",
+    output = "download_no_sha256.txt")
+  with_sha_return = repository_ctx.download(
+    url = "http://localhost:${fileserver_port}/download_with_sha256.txt",
+    output = "download_with_sha256.txt",
+    sha256 = "${provided_sha256}")
+  compressed_no_sha_return = repository_ctx.download_and_extract(
+    url = "http://localhost:${fileserver_port}/compressed_no_sha256.txt.zip",
+    output = "compressed_no_sha256.txt.zip")
+  compressed_with_sha_return = repository_ctx.download_and_extract(
+      url = "http://localhost:${fileserver_port}/compressed_with_sha256.txt.zip",
+      output = "compressed_with_sha256.txt.zip",
+      sha256 = "${compressed_provided_sha256}")
+
+  file_content = "no_sha_return " + no_sha_return.sha256 + "\n"
+  file_content += "with_sha_return " + with_sha_return.sha256 + "\n"
+  file_content += "compressed_no_sha_return " + compressed_no_sha_return.sha256 + "\n"
+  file_content += "compressed_with_sha_return " + compressed_with_sha_return.sha256
+  repository_ctx.file("returned_shas.txt", content = file_content, executable = False)
+  repository_ctx.file("BUILD")  # necessary directories should already created by download function
+repo = repository_rule(implementation = _impl, local = False)
+EOF
+
+  bazel build @foo//:all >& $TEST_log && shutdown_server \
+    || fail "Execution of @foo//:all failed"
+
+  output_base="$(bazel info output_base)"
+  grep "no_sha_return $not_provided_sha256" $output_base/external/foo/returned_shas.txt \
+      || fail "expected calculated sha256 $not_provided_sha256"
+  grep "with_sha_return $provided_sha256" $output_base/external/foo/returned_shas.txt \
+      || fail "expected provided sha256 $provided_sha256"
+  grep "compressed_with_sha_return $compressed_provided_sha256" $output_base/external/foo/returned_shas.txt \
+      || fail "expected provided sha256 $compressed_provided_sha256"
+  grep "compressed_no_sha_return $compressed_not_provided_sha256" $output_base/external/foo/returned_shas.txt \
+      || fail "expected compressed calculated sha256 $compressed_not_provided_sha256"
 }
 
 function test_skylark_repository_download_args() {
@@ -991,13 +1202,12 @@ EOF
 # Test native.existing_rule(s), regression test for #1277
 function test_existing_rule() {
   create_new_workspace
+  setup_skylib_support
   repo2=$new_workspace_dir
 
   cat > BUILD
-  cat > WORKSPACE
 
-  cd ${WORKSPACE_DIR}
-  cat > WORKSPACE <<EOF
+  cat >> WORKSPACE <<EOF
 local_repository(name = 'existing', path='$repo2')
 load('//:test.bzl', 'macro')
 
@@ -1023,21 +1233,333 @@ EOF
   expect_log "non_existing = False,False"
 }
 
-function test_build_a_repo() {
-  cat > WORKSPACE <<EOF
-load("//:repo.bzl", "my_repo")
-my_repo(name = "reg")
-EOF
 
-  cat > repo.bzl <<EOF
-def _impl(repository_ctx):
-  pass
+function test_timeout_tunable() {
+  cat > WORKSPACE <<'EOF'
+load("//:repo.bzl", "with_timeout")
 
-my_repo = repository_rule(_impl)
+with_timeout(name="maytimeout")
 EOF
   touch BUILD
+  cat > repo.bzl <<'EOF'
+def _impl(ctx):
+  st =ctx.execute(["bash", "-c", "sleep 10 && echo Hello world > data.txt"],
+                  timeout=1)
+  if st.return_code:
+    fail("Command did not succeed")
+  ctx.file("BUILD", "exports_files(['data.txt'])")
 
-  bazel build //external:reg &> $TEST_log || fail "Couldn't build repo"
+with_timeout = repository_rule(attrs = {}, implementation = _impl)
+EOF
+  bazel sync && fail "expected timeout" || :
+
+  bazel sync --experimental_scale_timeouts=100 \
+      || fail "expected success now the timeout is scaled"
+
+  bazel build @maytimeout//... \
+      || fail "expected success after successful sync"
+}
+
+function test_download_failure_message() {
+  # Regression test for #7850
+  # Verify that the for a failed downlaod, it is clearly indicated
+  # what was attempted to download and how it fails.
+  cat > BUILD <<'EOF'
+genrule(
+  name = "it",
+  outs = ["it.txt"],
+  srcs = ["@ext_foo//:data.txt"],
+  cmd = "cp $< $@",
+)
+EOF
+  cat > repo.bzl <<'EOF'
+def _impl(ctx):
+  ctx.file("BUILD", "exports_files(['data.txt'])")
+  ctx.symlink(ctx.attr.data, "data.txt")
+
+trivial_repo = repository_rule(
+  implementation = _impl,
+  attrs = { "data" : attr.label() },
+)
+EOF
+  cat > root.bzl <<'EOF'
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+def root_cause():
+  http_archive(
+    name = "this_is_the_root_cause",
+    urls = ["http://does.not.exist.example.com/some/file.tar"],
+  )
+
+EOF
+  cat > WORKSPACE <<'EOF'
+load("//:root.bzl", "root_cause")
+load("//:repo.bzl", "trivial_repo")
+
+root_cause()
+
+trivial_repo(
+  name = "ext_baz",
+  data = "@this_is_the_root_cause//:data.txt",
+)
+trivial_repo(
+  name = "ext_bar",
+  data = "@ext_baz//:data.txt",
+)
+
+trivial_repo(
+  name = "ext_foo",
+  data = "@ext_bar//:data.txt",
+)
+EOF
+
+  bazel build //:it > "${TEST_log}" 2>&1 \
+      && fail "Expected failure" || :
+
+  # Extract the first error message printed
+  ed "${TEST_log}" <<'EOF'
+1
+/^ERROR
+.,/^[^ ]/-1w firsterror.log
+Q
+EOF
+  echo; echo "first error message which should focus on the root cause";
+  echo "=========="; cat firsterror.log; echo "=========="
+  # We expect it to contain the root cause, and the failure ...
+  grep -q 'this_is_the_root_cause' firsterror.log \
+      || fail "Root-cause repository not mentioned"
+  grep -q '[uU]nknown host.*does.not.exist.example.com' firsterror.log \
+      || fail "Failure reason not mentioned"
+  # ...but not be cluttered with information not related to the root cause
+  grep 'ext_foo' firsterror.log && fail "unrelated repo mentioned" || :
+  grep 'ext_bar' firsterror.log && fail "unrelated repo mentioned" || :
+  grep 'ext_baz' firsterror.log && fail "unrelated repo mentioned" || :
+  grep '//:it' firsterror.log && fail "unrelated target mentioned" || :
+
+  # Verify that the same is true, if the error is caused by a fail statement.
+  cat > root.bzl <<'EOF'
+def _impl(ctx):
+  fail("Here be dragons")
+
+repo = repository_rule(implementation=_impl, attrs = {})
+
+def root_cause():
+  repo(name = "this_is_the_root_cause")
+EOF
+  bazel build //:it > "${TEST_log}" 2>&1 \
+      && fail "Expected failure" || :
+
+  # Extract the first error message printed
+  ed "${TEST_log}" <<'EOF'
+1
+/^ERROR
+.,/^[^ ]/-1w firsterror.log
+Q
+EOF
+  echo; echo "first error message which should focus on the root cause";
+  echo "=========="; cat firsterror.log; echo "=========="
+  grep -q 'this_is_the_root_cause' firsterror.log \
+      || fail "Root-cause repository not mentioned"
+  grep -q 'Here be dragons' firsterror.log \
+      || fail "fail error message not shown"
+  grep 'ext_foo' firsterror.log && fail "unrelated repo mentioned" || :
+  grep 'ext_bar' firsterror.log && fail "unrelated repo mentioned" || :
+  grep 'ext_baz' firsterror.log && fail "unrelated repo mentioned" || :
+  grep '//:it' firsterror.log && fail "unrelated target mentioned" || :
+}
+
+function test_circular_load_error_message() {
+  cat > WORKSPACE <<'EOF'
+load("//:a.bzl", "total")
+EOF
+  touch BUILD
+  cat > a.bzl <<'EOF'
+load("//:b.bzl", "b")
+
+a = 10
+
+total = a + b
+EOF
+  cat > b.bzl <<'EOF'
+load("//:a.bzl", "a")
+
+b = 20
+
+difference = b - a
+EOF
+
+  bazel build //... > "${TEST_log}" 2>&1 && fail "Expected failure" || :
+
+  expect_not_log "[iI]nternal [eE]rror"
+  expect_not_log "IllegalStateException"
+  expect_log "//:a.bzl"
+  expect_log "//:b.bzl"
+}
+
+function test_ciruclar_load_error_with_path_message() {
+  cat > WORKSPACE <<'EOF'
+load("//:x.bzl", "x")
+EOF
+  touch BUILD
+  cat > x.bzl <<'EOF'
+load("//:y.bzl", "y")
+x = y
+EOF
+  cat > y.bzl <<'EOF'
+load("//:a.bzl", "total")
+
+y = total
+EOF
+  cat > a.bzl <<'EOF'
+load("//:b.bzl", "b")
+
+a = 10
+
+total = a + b
+EOF
+  cat > b.bzl <<'EOF'
+load("//:a.bzl", "a")
+
+b = 20
+
+difference = b - a
+EOF
+
+  bazel build //... > "${TEST_log}" 2>&1 && fail "Expected failure" || :
+
+  expect_not_log "[iI]nternal [eE]rror"
+  expect_not_log "IllegalStateException"
+  expect_log "WORKSPACE"
+  expect_log "//:x.bzl"
+  expect_log "//:y.bzl"
+  expect_log "//:a.bzl"
+  expect_log "//:b.bzl"
+}
+
+function test_auth_provided() {
+  mkdir x
+  echo 'exports_files(["file.txt"])' > x/BUILD
+  echo 'Hello World' > x/file.txt
+  tar cvf x.tar x
+  serve_file_auth x.tar
+  cat > WORKSPACE <<EOF
+load("//:auth.bzl", "with_auth")
+with_auth(
+  name="ext",
+  url = "http://127.0.0.1:$nc_port/x.tar",
+)
+EOF
+  cat > auth.bzl <<'EOF'
+def _impl(ctx):
+  ctx.download_and_extract(
+    url = ctx.attr.url,
+    # Use the username/password pair hard-coded
+    # in the testing server.
+    auth = {ctx.attr.url : { "type": "basic",
+                            "login" : "foo",
+                            "password" : "bar"}}
+  )
+
+with_auth = repository_rule(
+  implementation = _impl,
+  attrs = { "url" : attr.string() }
+)
+EOF
+  cat > BUILD <<'EOF'
+genrule(
+  name = "it",
+  srcs = ["@ext//x:file.txt"],
+  outs = ["it.txt"],
+  cmd = "cp $< $@",
+)
+EOF
+  bazel build //:it \
+      || fail "Expected success despite needing a file behind basic auth"
+}
+
+function test_netrc_reading() {
+  # Write a badly formated, but correct, .netrc file
+  cat > .netrc <<'EOF'
+machine ftp.example.com
+macdef init
+cd pub
+mget *
+quit
+
+machine example.com login
+myusername password mysecret default
+login anonymous password myusername@example.com
+EOF
+  # We expect that `read_netrc` can parse this file...
+  cat > def.bzl <<'EOF'
+load("@bazel_tools//tools/build_defs/repo:utils.bzl", "read_netrc")
+def _impl(ctx):
+  rc = read_netrc(ctx, ctx.attr.path)
+  ctx.file("data.bzl", "netrc = %s" % (rc,))
+  ctx.file("BUILD", "")
+  ctx.file("WORKSPACE", "")
+
+netrcrepo = repository_rule(
+  implementation = _impl,
+  attrs = {"path": attr.string()},
+)
+EOF
+  cat > WORKSPACE <<EOF
+load("//:def.bzl", "netrcrepo")
+
+netrcrepo(name = "netrc", path="$(pwd)/.netrc")
+EOF
+  # ...and that from the parse result, we can read off the
+  # credentials for example.com.
+  cat > BUILD <<'EOF'
+load("@netrc//:data.bzl", "netrc")
+
+[genrule(
+  name = name,
+  outs = [ "%s.txt" % (name,)],
+  cmd = "echo %s > $@" % (netrc["example.com"][name],),
+) for name in ["login", "password"]]
+EOF
+  bazel build //:login //:password
+  grep 'myusername' `bazel info bazel-genfiles`/login.txt \
+       || fail "Username not parsed correctly"
+  grep 'mysecret' `bazel info bazel-genfiles`/password.txt \
+       || fail "Password not parsed correctly"
+
+  # Also check the precise value of parsed file
+  cat > expected.bzl <<'EOF'
+expected = {
+  "ftp.example.com" : { "macdef init" : "cd pub\nmget *\nquit\n" },
+  "example.com" : { "login" : "myusername",
+                    "password" : "mysecret",
+                  },
+  "" : { "login": "anonymous",
+          "password" : "myusername@example.com" },
+}
+EOF
+  cat > verify.bzl <<'EOF'
+load("@netrc//:data.bzl", "netrc")
+load("//:expected.bzl", "expected")
+
+def check_equal_expected():
+  print("Parsed value:   %s" % (netrc,))
+  print("Expected value: %s" % (expected,))
+  if netrc == expected:
+    return "OK"
+  else:
+    return "BAD"
+EOF
+  cat > BUILD <<'EOF'
+load ("//:verify.bzl", "check_equal_expected")
+genrule(
+  name = "check_expected",
+  outs = ["check_expected.txt"],
+  cmd = "echo %s > $@" % (check_equal_expected(),)
+)
+EOF
+  bazel build //:check_expected
+  grep 'OK' `bazel info bazel-genfiles`/check_expected.txt \
+       || fail "Parsed dict not equal to expected value"
 }
 
 function tear_down() {

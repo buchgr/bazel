@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
-import com.android.builder.core.VariantType;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -22,6 +21,7 @@ import com.google.devtools.build.android.aapt2.ResourceCompiler;
 import java.io.IOException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -127,7 +127,8 @@ class UnvalidatedAndroidData extends UnvalidatedAndroidDirectories {
     Preconditions.checkNotNull(packagePath);
 
     final List<Path> processed = new ArrayList<>();
-    final Path metadataWorkingDirectory = dataBindingWorkingDirectory.resolve("metadata");
+    final Path metadataWorkingDirectory =
+        Files.createDirectory(dataBindingWorkingDirectory.resolve("metadata"));
     final Path databindingResourceRoot = dataBindingWorkingDirectory.resolve("resources");
     for (Path resource : resourceDirs) {
       processed.add(
@@ -135,14 +136,11 @@ class UnvalidatedAndroidData extends UnvalidatedAndroidDirectories {
               databindingResourceRoot,
               resource,
               metadataWorkingDirectory,
-              VariantType.LIBRARY,
               packagePath,
-              manifest,
               false));
     }
 
-    AndroidResourceOutputs.archiveDirectory(
-        metadataWorkingDirectory, dataBindingOut);
+    AndroidResourceOutputs.archiveDirectory(metadataWorkingDirectory, dataBindingOut);
 
     return new UnvalidatedAndroidData(ImmutableList.copyOf(processed), assetDirs, manifest) {
       @Override

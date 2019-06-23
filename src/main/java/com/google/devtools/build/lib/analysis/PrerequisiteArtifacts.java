@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.analysis;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -23,7 +24,6 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.FileTypeSet;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -44,9 +44,21 @@ public final class PrerequisiteArtifacts {
   }
 
   static PrerequisiteArtifacts get(RuleContext ruleContext, String attributeName, Mode mode) {
+    ImmutableList<FileProvider> prerequisites =
+        ImmutableList.copyOf(ruleContext.getPrerequisites(attributeName, mode, FileProvider.class));
+    // Fast path #1: Many attributes are not set.
+    if (prerequisites.isEmpty()) {
+      return new PrerequisiteArtifacts(ruleContext, attributeName, ImmutableList.of());
+    }
+    // Fast path #2: Often, attributes are set exactly once. In this case, we can completely elide
+    // additional copies as the getFilesToBuild() call already returns an ImmutableList of the
+    // expanded NestedSet.
+    if (prerequisites.size() == 1) {
+      return new PrerequisiteArtifacts(
+          ruleContext, attributeName, prerequisites.get(0).getFilesToBuild().toList());
+    }
     Set<Artifact> result = new LinkedHashSet<>();
-    for (FileProvider target :
-        ruleContext.getPrerequisites(attributeName, mode, FileProvider.class)) {
+    for (FileProvider target : prerequisites) {
       Iterables.addAll(result, target.getFilesToBuild());
     }
     return new PrerequisiteArtifacts(ruleContext, attributeName, ImmutableList.copyOf(result));

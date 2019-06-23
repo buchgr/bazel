@@ -13,43 +13,56 @@
 // limitations under the License.
 package com.google.devtools.build.docgen;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import com.google.devtools.build.docgen.skylark.SkylarkBuiltinMethodDoc;
-import com.google.devtools.build.docgen.skylark.SkylarkJavaMethodDoc;
+import com.google.devtools.build.docgen.skylark.SkylarkDocUtils;
 import com.google.devtools.build.docgen.skylark.SkylarkMethodDoc;
 import com.google.devtools.build.docgen.skylark.SkylarkModuleDoc;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.util.Classpath;
 import com.google.devtools.build.lib.util.Classpath.ClassPathException;
 import java.io.File;
 import java.io.IOException;
 import java.text.Collator;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-/** A class to assemble documentation for Skylark. */
+/**
+ * A class to assemble documentation for Skylark.
+ */
 public final class SkylarkDocumentationProcessor {
 
   private static final ImmutableList<SkylarkModuleCategory> GLOBAL_CATEGORIES =
       ImmutableList.<SkylarkModuleCategory>of(
           SkylarkModuleCategory.NONE, SkylarkModuleCategory.TOP_LEVEL_TYPE);
 
+  // Common prefix of packages that may contain Skylark modules.
+  @VisibleForTesting static final String MODULES_PACKAGE_PREFIX = "com/google/devtools/build";
+
   private SkylarkDocumentationProcessor() {}
 
-  /** Generates the Skylark documentation to the given output directory. */
-  public static void generateDocumentation(String outputDir, String... clazz)
+  /**
+   * Generates the Skylark documentation to the given output directory.
+   */
+  public static void generateDocumentation(String outputDir, String... args)
       throws IOException, ClassPathException {
-    Map<String, SkylarkModuleDoc> modules = SkylarkDocumentationCollector.collectModules(clazz);
+    parseOptions(args);
+
+    Map<String, SkylarkModuleDoc> modules =
+        SkylarkDocumentationCollector.collectModules(Classpath.findClasses(MODULES_PACKAGE_PREFIX));
 
     // Generate the top level module first in the doc
     SkylarkModuleDoc topLevelModule = modules.remove(
         SkylarkDocumentationCollector.getTopLevelModule().name());
     writePage(outputDir, topLevelModule);
 
-    Map<SkylarkModuleCategory, List<SkylarkModuleDoc>> modulesByCategory = new HashMap<>();
+    // Use a LinkedHashMap to preserve ordering of categories, as the output iterates over
+    // this map's entry set to determine category ordering.
+    Map<SkylarkModuleCategory, List<SkylarkModuleDoc>> modulesByCategory = new LinkedHashMap<>();
     for (SkylarkModuleCategory c : SkylarkModuleCategory.values()) {
       modulesByCategory.put(c, new ArrayList<SkylarkModuleDoc>());
     }
@@ -132,6 +145,7 @@ public final class SkylarkDocumentationProcessor {
     Page page = TemplateEngine.newPage(DocgenConsts.SKYLARK_MODULE_CATEGORY_TEMPLATE);
     page.add("category", category);
     page.add("modules", modules.get(category));
+    page.add("description", SkylarkDocUtils.substituteVariables(category.getDescription()));
     page.write(skylarkDocPath);
   }
 
@@ -159,78 +173,14 @@ public final class SkylarkDocumentationProcessor {
     page.write(skylarkDocPath);
   }
 
-  /**
-   * Returns the API doc for the specified Skylark object in a command line printable format,
-   * params[0] identifies either a module or a top-level object, the optional params[1] identifies a
-   * method in the module.<br>
-   * Returns null if no Skylark object is found.
-   */
-  public static String getCommandLineAPIDoc(String[] params) throws ClassPathException {
-    Map<String, SkylarkModuleDoc> modules = SkylarkDocumentationCollector.collectModules();
-    SkylarkModuleDoc toplevelModuleDoc = modules.get(
-        SkylarkDocumentationCollector.getTopLevelModule().name());
-    if (modules.containsKey(params[0])) {
-      // Top level module
-      SkylarkModuleDoc module = modules.get(params[0]);
-      if (params.length == 1) {
-        String moduleName = module.getAnnotation().name();
-        StringBuilder sb = new StringBuilder();
-        sb.append(moduleName).append("\n\t").append(module.getAnnotation().doc()).append("\n");
-        // Print the signature of all built-in methods
-        for (SkylarkBuiltinMethodDoc method : module.getBuiltinMethods().values()) {
-          printBuiltinFunctionDoc(moduleName, method, sb);
-        }
-        // Print all Java methods
-        for (SkylarkJavaMethodDoc method : module.getJavaMethods()) {
-          printJavaFunctionDoc(method, sb);
-        }
-        return DocgenConsts.toCommandLineFormat(sb.toString());
-      } else {
-        return getFunctionDoc(module.getAnnotation().name(), params[1], module);
+  private static void parseOptions(String... args) {
+    for (String arg : args) {
+      if (arg.startsWith("--be_root=")) {
+        DocgenConsts.BeDocsRoot = arg.split("--be_root=", 2)[1];
       }
-    } else if (toplevelModuleDoc.getBuiltinMethods().containsKey(params[0])){
-      // Top level object / function
-      return getFunctionDoc(null, params[0], toplevelModuleDoc);
-    }
-    return null;
-  }
-
-  private static String getFunctionDoc(String moduleName, String methodName,
-      SkylarkModuleDoc module) {
-    if (module.getBuiltinMethods().containsKey(methodName)) {
-      // Create the doc for the built-in function
-      SkylarkBuiltinMethodDoc method = module.getBuiltinMethods().get(methodName);
-      StringBuilder sb = new StringBuilder();
-      printBuiltinFunctionDoc(moduleName, method, sb);
-      sb.append(method.getParams());
-      return DocgenConsts.removeDuplicatedNewLines(DocgenConsts.toCommandLineFormat(sb.toString()));
-    } else {
-      // Search if there are matching Java functions
-      StringBuilder sb = new StringBuilder();
-      boolean foundMatchingMethod = false;
-      for (SkylarkJavaMethodDoc method : module.getJavaMethods()) {
-        if (method.getName().equals(methodName)) {
-          printJavaFunctionDoc(method, sb);
-          foundMatchingMethod = true;
-        }
-      }
-      if (foundMatchingMethod) {
-        return DocgenConsts.toCommandLineFormat(sb.toString());
+      if (arg.startsWith("--doc_extension=")) {
+        DocgenConsts.documentationExtension = arg.split("--doc_extension=", 2)[1];
       }
     }
-    return null;
-  }
-
-  private static void printBuiltinFunctionDoc(String moduleName, SkylarkBuiltinMethodDoc method,
-      StringBuilder sb) {
-    if (moduleName != null) {
-      sb.append(moduleName).append(".");
-    }
-    sb.append(method.getName()).append("\n\t").append(method.getDocumentation()).append("\n");
-  }
-
-  private static void printJavaFunctionDoc(SkylarkJavaMethodDoc method, StringBuilder sb) {
-    sb.append(method.getSignature())
-      .append("\t").append(method.getDocumentation()).append("\n");
   }
 }

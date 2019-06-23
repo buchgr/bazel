@@ -14,198 +14,103 @@
 
 package com.google.devtools.build.lib.analysis.config;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.devtools.build.lib.packages.Attribute;
-import com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition;
-import com.google.devtools.build.lib.packages.Attribute.SplitTransition;
-import com.google.devtools.build.lib.packages.Attribute.Transition;
-import com.google.devtools.build.lib.packages.ConfiguredAttributeMapper;
-import com.google.devtools.build.lib.packages.InputFile;
-import com.google.devtools.build.lib.packages.PackageGroup;
+import com.google.devtools.build.lib.analysis.config.transitions.ComposingTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.ConfigurationTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.NoTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.NullTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.PatchTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.TransitionFactory;
 import com.google.devtools.build.lib.packages.Rule;
-import com.google.devtools.build.lib.packages.RuleTransitionFactory;
 import com.google.devtools.build.lib.packages.Target;
-import com.google.devtools.build.lib.util.Preconditions;
+import javax.annotation.Nullable;
 
 /**
- * Determines the {@link Attribute.Transition}s dependencies should apply to their parents'
- * configurations.
+ * Tool for evaluating which {@link ConfigurationTransition}(s) should be applied to given targets.
  *
- * <p>For the work of turning these transitions into actual configurations, see
- * {@link ConfigurationResolver}.
+ * <p>For the work of turning these transitions into actual configurations, see {@link
+ * ConfigurationResolver}.
  *
  * <p>This is the "generic engine" for configuration selection. It doesn't know anything about
- * specific rules or their requirements. Rule writers decide those with appropriately placed
- * {@link PatchTransition} declarations. This class then processes those declarations to determine
- * final transitions.
+ * specific rules or their requirements. Rule writers decide those with appropriately placed {@link
+ * PatchTransition} declarations. This class then processes those declarations to determine final
+ * transitions.
  */
 public final class TransitionResolver {
-  private final DynamicTransitionMapper transitionMapper;
-
   /**
-   * Instantiates this resolver with a helper class that maps non-{@link PatchTransition}s to
-   * {@link PatchTransition}s.
-   */
-  public TransitionResolver(DynamicTransitionMapper transitionMapper) {
-    this.transitionMapper = transitionMapper;
-  }
-
-  /**
-   * Given a parent rule and configuration depending on a child through an attribute, determines
-   * the configuration the child should take.
+   * Given an original configuration and a base transition, determines the configuration a target
+   * should have.
    *
-   * @param fromConfig the parent rule's configuration
-   * @param fromRule the parent rule
-   * @param attribute the attribute creating the dependency (e.g. "srcs")
-   * @param toTarget the child target (which may or may not be a rule)
-   *
-   * @return the child's configuration, expressed as a diff from the parent's configuration. This
-   *     is usually a {@PatchTransition} but exceptions apply (e.g.
-   *     {@link Attribute.ConfigurationTransition}).
+   * @param fromConfig the original configuration
+   * @param baseTransition the base configuration transitions computed by this method should be
+   *     composed with (the configuration transition of the attribute through which this dependency
+   *     happens or {@code NoTransition.INSTANCE} if this is a top-level target)
+   * @param toTarget the target whose configuration should be computed (may or may not be a rule)
+   * @param trimmingTransitionFactory the transition factory used to trim rules (note: this is a
+   *     temporary feature; see the corresponding methods in {@code ConfiguredRuleClassProvider})
+   * @return the target's configuration(s), expressed as a diff from the original configuration.
    */
-  public Transition evaluateTransition(BuildConfiguration fromConfig, final Rule fromRule,
-      final Attribute attribute, final Target toTarget, ConfiguredAttributeMapper attributeMap) {
+  public static ConfigurationTransition evaluateTransition(
+      BuildConfiguration fromConfig,
+      ConfigurationTransition baseTransition,
+      Target toTarget,
+      @Nullable TransitionFactory<Rule> trimmingTransitionFactory) {
 
-    // I. Input files and package groups have no configurations. We don't want to duplicate them.
-    if (usesNullConfiguration(toTarget)) {
-      return Attribute.ConfigurationTransition.NULL;
+    // I. The null configuration always remains the null configuration. We could fold this into
+    // (III), but NoTransition doesn't work if the source is the null configuration.
+    if (fromConfig == null) {
+      return NullTransition.INSTANCE;
     }
 
-    // II. Host configurations never switch to another. All prerequisites of host targets have the
+    // II. Input files and package groups have no configurations. We don't want to duplicate them.
+    if (!toTarget.isConfigurable()) {
+      return NullTransition.INSTANCE;
+    }
+
+    // III. Host configurations never switch to another. All prerequisites of host targets have the
     // same host configuration.
     if (fromConfig.isHostConfiguration()) {
-      return Attribute.ConfigurationTransition.NONE;
-    }
-
-    // Make sure config_setting dependencies are resolved in the referencing rule's configuration,
-    // unconditionally. For example, given:
-    //
-    // genrule(
-    //     name = 'myrule',
-    //     tools = select({ '//a:condition': [':sometool'] })
-    //
-    // all labels in "tools" get resolved in the host configuration (since the "tools" attribute
-    // declares a host configuration transition). We want to explicitly exclude configuration labels
-    // from these transitions, since their *purpose* is to do computation on the owning
-    // rule's configuration.
-    // TODO(bazel-team): don't require special casing here. This is far too hackish.
-    if (toTarget instanceof Rule && ((Rule) toTarget).getRuleClassObject().isConfigMatcher()) {
-      // TODO(gregce): see if this actually gets called
-      return Attribute.ConfigurationTransition.NONE;
+      return NoTransition.INSTANCE;
     }
 
     // The current transition to apply. When multiple transitions are requested, this is a
-    // ComposingSplitTransition, which encapsulates them into a single object so calling code
+    // ComposingTransition, which encapsulates them into a single object so calling code
     // doesn't need special logic for combinations.
-    Transition currentTransition = Attribute.ConfigurationTransition.NONE;
+    // IV. Apply whatever transition the attribute requires.
+    ConfigurationTransition currentTransition = baseTransition;
 
-    // Apply the parent rule's outgoing transition if it has one.
-    RuleTransitionFactory transitionFactory =
-        fromRule.getRuleClassObject().getOutgoingTransitionFactory();
-    if (transitionFactory != null) {
-      Transition transition = transitionFactory.buildTransitionFor(toTarget.getAssociatedRule());
-      if (transition != null) {
-        currentTransition = composeTransitions(currentTransition, transition);
-      }
-    }
+    // V. Applies any rule transitions associated with the dep target and composes their
+    // transitions with a passed-in existing transition.
+    currentTransition = applyRuleTransition(currentTransition, toTarget);
 
-    // TODO(gregce): make the below transitions composable (i.e. take away the "else" clauses).
-    // The "else" is a legacy restriction from static configurations.
-    if (attribute.hasSplitConfigurationTransition()) {
-      currentTransition = split(currentTransition,
-          (SplitTransition<BuildOptions>) attribute.getSplitTransition(attributeMap));
-    } else {
-      // III. Attributes determine configurations. The configuration of a prerequisite is determined
-      // by the attribute.
-      currentTransition = composeTransitions(currentTransition,
-          attribute.getConfigurationTransition());
-    }
-
-    return applyConfigurationHook(currentTransition, toTarget);
+    // VI. Applies a transition to trim the result and returns it. (note: this is a temporary
+    // feature; see the corresponding methods in ConfiguredRuleClassProvider)
+    return applyTransitionFromFactory(currentTransition, toTarget, trimmingTransitionFactory);
   }
 
   /**
-   * Returns true if the given target should have a null configuration. This method is the
-   * "source of truth" for this determination.
+   * @param currentTransition a pre-existing transition to be composed with
+   * @param toTarget target whose associated rule's incoming transition should be applied
    */
-  public static boolean usesNullConfiguration(Target target) {
-    return target instanceof InputFile || target instanceof PackageGroup;
-  }
-
-  /**
-   * Composes two transitions together efficiently.
-   */
-  @VisibleForTesting
-  public Transition composeTransitions(Transition transition1, Transition transition2) {
-    if (isFinal(transition1)) {
-      return transition1;
-    } else if (transition2 == Attribute.ConfigurationTransition.NONE) {
-      return transition1;
-    } else if (transition2 == Attribute.ConfigurationTransition.NULL) {
-      // A NULL transition can just replace earlier transitions: no need to compose them.
-      return Attribute.ConfigurationTransition.NULL;
-    } else if (transition2 == Attribute.ConfigurationTransition.HOST) {
-      // A HOST transition can just replace earlier transitions: no need to compose them.
-      // But it also improves performance: host transitions are common, and
-      // ConfiguredTargetFunction has special optimized logic to handle them. If they were buried
-      // in the last segment of a ComposingSplitTransition, those optimizations wouldn't trigger.
-      return HostTransition.INSTANCE;
-    }
-
-    // TODO(gregce): remove the below conversion when all transitions are patch transitions.
-    Transition dynamicTransition = transitionMapper.map(transition2);
-    return transition1 == Attribute.ConfigurationTransition.NONE
-        ? dynamicTransition
-        : new ComposingSplitTransition(transition1, dynamicTransition);
-  }
-
-  /**
-   * Returns true if once the given transition is applied to a dep no followup transitions should
-   * be composed after it.
-   */
-  private static boolean isFinal(Transition transition) {
-    return (transition == Attribute.ConfigurationTransition.NULL
-        || transition == HostTransition.INSTANCE);
-  }
-
-  /**
-   * Applies the given split and composes it after an existing transition.
-   */
-  private static Transition split(Transition currentTransition,
-      SplitTransition<BuildOptions> split) {
-    Preconditions.checkState(currentTransition != Attribute.ConfigurationTransition.NULL,
-        "cannot apply splits after null transitions (null transitions are expected to be final)");
-    Preconditions.checkState(currentTransition != HostTransition.INSTANCE,
-        "cannot apply splits after host transitions (host transitions are expected to be final)");
-    return currentTransition == Attribute.ConfigurationTransition.NONE
-        ? split
-        : new ComposingSplitTransition(currentTransition, split);
-  }
-
-  /**
-   * Applies any configuration hooks associated with the dep target, composes their transitions
-   * after an existing transition, and returns the composed result.
-   */
-  private Transition applyConfigurationHook(Transition currentTransition, Target toTarget) {
-    if (isFinal(currentTransition)) {
-      return currentTransition;
-    }
+  private static ConfigurationTransition applyRuleTransition(
+      ConfigurationTransition currentTransition, Target toTarget) {
     Rule associatedRule = toTarget.getAssociatedRule();
-    RuleTransitionFactory transitionFactory =
+    TransitionFactory<Rule> transitionFactory =
         associatedRule.getRuleClassObject().getTransitionFactory();
+    return applyTransitionFromFactory(currentTransition, toTarget, transitionFactory);
+  }
+
+  /**
+   * @param currentTransition a pre-existing transition to be composed with
+   * @param toTarget target whose associated rule's incoming transition should be applied
+   * @param transitionFactory a rule transition factory to apply, or null to do nothing
+   */
+  private static ConfigurationTransition applyTransitionFromFactory(
+      ConfigurationTransition currentTransition,
+      Target toTarget,
+      @Nullable TransitionFactory<Rule> transitionFactory) {
     if (transitionFactory != null) {
-      // transitionMapper is only needed because of Attribute.ConfigurationTransition.DATA: this is
-      // C++-specific but non-C++ rules declare it. So they can't directly provide the C++-specific
-      // patch transition that implements it.
-      PatchTransition ruleClassTransition = (PatchTransition)
-          transitionMapper.map(transitionFactory.buildTransitionFor(associatedRule));
-      if (ruleClassTransition != null) {
-        if (currentTransition == ConfigurationTransition.NONE) {
-          return ruleClassTransition;
-        } else {
-          return new ComposingSplitTransition(currentTransition, ruleClassTransition);
-        }
-      }
+      return ComposingTransition.of(
+          currentTransition, transitionFactory.create(toTarget.getAssociatedRule()));
     }
     return currentTransition;
   }

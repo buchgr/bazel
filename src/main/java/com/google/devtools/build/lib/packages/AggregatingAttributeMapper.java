@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.packages;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -20,14 +21,15 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.CollectionUtils;
+import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.packages.Attribute.ComputationLimiter;
 import com.google.devtools.build.lib.packages.BuildType.Selector;
 import com.google.devtools.build.lib.packages.BuildType.SelectorList;
 import com.google.devtools.build.lib.syntax.Type;
-import com.google.devtools.build.lib.syntax.Type.LabelVisitor;
+import com.google.devtools.build.lib.syntax.Type.LabelClass;
 import com.google.devtools.build.lib.syntax.Type.ListType;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
@@ -65,24 +67,23 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
   /**
    * Override that also visits the rule's configurable attribute keys (which are themselves labels).
    *
-   * <p>Note that we directly parse the selectors rather than just calling {@link #visitAttribute}
-   * to iterate over all possible values. That's because {@link #visitAttribute} can grow
-   * exponentially with respect to the number of selects (e.g. if an attribute uses three selects
-   * with three conditions each, it can take nine possible values). So we want to avoid that code
-   * path whenever actual value iteration isn't specifically needed.
+   * <p>This method directly parses each selector, vs. calling {@link #visitAttribute} to iterate
+   * over all possible values. The latter has dangerous efficiency consequences, as discussed in
+   * {@link #visitAttribute}'s documentation. So we want to avoid that code path when possible.
    */
   @Override
-  protected void visitLabels(Attribute attribute, Type.LabelVisitor<Attribute> visitor)
-      throws InterruptedException {
+  protected void visitLabels(Attribute attribute, Type.LabelVisitor<Attribute> visitor) {
     visitLabels(attribute, true, visitor);
   }
 
   private void visitLabels(
-      Attribute attribute, boolean includeSelectKeys, Type.LabelVisitor<Attribute> visitor)
-      throws InterruptedException {
+      Attribute attribute, boolean includeSelectKeys, Type.LabelVisitor<Attribute> visitor) {
     Type<?> type = attribute.getType();
     SelectorList<?> selectorList = getSelectorList(attribute.getName(), type);
     if (selectorList == null) {
+      if (type.getLabelClass().equals(LabelClass.NONE)) {
+        return; // Skip non-label attributes for performance.
+      }
       if (getComputedDefault(attribute.getName(), attribute.getType()) != null) {
         // Computed defaults are a special pain: we have no choice but to iterate through their
         // (computed) values and look for labels.
@@ -112,21 +113,31 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
   /**
    * Returns all labels reachable via the given attribute, with duplicate instances removed.
    *
+   * <p>Use this interface over @link #visitAttribute} whenever possible, since the latter has
+   * efficiency problems discussed in that method's documentation.
+   *
    * @param includeSelectKeys whether to include config_setting keys for configurable attributes
    */
-  public Set<Label> getReachableLabels(String attributeName, boolean includeSelectKeys)
-      throws InterruptedException {
+  public Set<Label> getReachableLabels(String attributeName, boolean includeSelectKeys) {
     final ImmutableSet.Builder<Label> builder = ImmutableSet.<Label>builder();
     visitLabels(
         getAttributeDefinition(attributeName),
         includeSelectKeys,
-        new LabelVisitor<Attribute>() {
-          @Override
-          public void visit(Label label, Attribute attribute) {
-            builder.add(label);
-          }
-        });
+        (label, attribute) -> builder.add(label));
     return builder.build();
+  }
+
+  private static ImmutableSet.Builder<Label> addDuplicateLabels(
+      ImmutableSet.Builder<Label> builder, List<Label> labels) {
+    Set<Label> duplicates = CollectionUtils.duplicatedElementsOf(labels);
+    if (duplicates.isEmpty()) {
+      return builder;
+    }
+    if (builder == null) {
+      builder = ImmutableSet.builderWithExpectedSize(duplicates.size());
+    }
+    builder.addAll(duplicates);
+    return builder;
   }
 
   /**
@@ -135,7 +146,7 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
   public Set<Label> checkForDuplicateLabels(Attribute attribute) {
     String attrName = attribute.getName();
     Type<?> attrType = attribute.getType();
-    ImmutableSet.Builder<Label> duplicates = ImmutableSet.builder();
+    ImmutableSet.Builder<Label> duplicates = null;
 
     SelectorList<?> selectorList = getSelectorList(attribute.getName(), attrType);
     if (selectorList == null || selectorList.getSelectors().size() == 1) {
@@ -149,7 +160,7 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
         if (value != null) {
           // TODO(bazel-team): Calculate duplicates directly using attrType.visitLabels in order to
           // avoid intermediate collections here.
-          duplicates.addAll(CollectionUtils.duplicatedElementsOf(extractLabels(attrType, value)));
+          duplicates = addDuplicateLabels(duplicates, extractLabels(attrType, value));
         }
       }
     } else {
@@ -166,15 +177,15 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
         for (Object selectorValue : selector.getEntries().values()) {
           List<Label> labelsInSelectorValue = extractLabels(attrType, selectorValue);
           // Duplicates within a single path are not okay.
-          duplicates.addAll(CollectionUtils.duplicatedElementsOf(labelsInSelectorValue));
+          duplicates = addDuplicateLabels(duplicates, labelsInSelectorValue);
           Iterables.addAll(selectorLabels, labelsInSelectorValue);
         }
         combinedLabels.addAll(selectorLabels);
       }
-      duplicates.addAll(CollectionUtils.duplicatedElementsOf(combinedLabels));
+      duplicates = addDuplicateLabels(duplicates, combinedLabels);
     }
 
-    return duplicates.build();
+    return duplicates == null ? ImmutableSet.of() : duplicates.build();
   }
 
   /**
@@ -194,6 +205,9 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
    * computed default, and the computed default function depends on other attributes whose values
    * contain {@code select(...)} expressions, then the computed default function is evaluated for
    * every possible combination of input values, and the list of outputs is returned.
+   *
+   * <p><b>EFFICIENCY WARNING:</b> Do not use this method unless you really need every single value
+   * the attribute might take. See {@link #visitAttribute}'s documentation for details.
    */
   public Iterable<Object> getPossibleAttributeValues(Rule rule, Attribute attr) {
     // Values may be null, so use normal collections rather than immutable collections.
@@ -238,9 +252,25 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
   /**
    * Returns a list of all possible values an attribute can take for this rule.
    *
-   * <p>Note that when an attribute uses multiple selects, or is a {@link Attribute.ComputedDefault}
-   * that depends on configurable attributes, it can potentially take on many values. So be cautious
-   * about unnecessarily relying on this method.
+   * <p><b>EFFICIENCY WARNING:</b> Do not use this method unless you really need every single value
+   * the attribute might take.
+   *
+   * <p>This is dangerous because it's easy to write attributes with an exponential number of
+   * possible values:
+   *
+   * <pre>
+   *   foo = select({a: 1, b: 2} + select({c: 3, d: 4}) + select({e: 5, f: 6})
+   * </pre>
+   *
+   * <p>Possible values: <code>[135, 136, 145, 146, 235, 236, 245, 246]</code> (i.e. 2^3).
+   *
+   * <p>This is true not just for attributes with multiple selects, but also
+   * {@link Attribute.ComputedDefault}s depending on such attributes.
+   *
+   * <p>More often than not, calling code doesn't really need every value, but really just wants to
+   * know, e.g., which labels might appear in a dependency list. For such cases, merging methods
+   * like {@link #getReachableLabels} work just as well without the efficiency hit. Use those
+   * whenever possible.
    */
   public <T> Iterable<T> visitAttribute(String attributeName, Type<T> type) {
     // If this attribute value is configurable, visit all possible values.
@@ -487,6 +517,11 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
       }
 
       @Override
+      public String getRuleClassName() {
+        return owner.getRuleClassName();
+      }
+
+      @Override
       public Iterable<String> getAttributeNames() {
         return ImmutableList.<String>builder()
             .addAll(directMap.keySet())
@@ -495,8 +530,8 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
       }
 
       @Override
-      public void visitLabels(AcceptsLabelAttribute observer) throws InterruptedException {
-        owner.visitLabels(observer);
+      public Collection<DepEdge> visitLabels() throws InterruptedException {
+        return owner.visitLabels();
       }
 
       @Override
@@ -545,26 +580,24 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
       public <T> boolean has(String attrName, Type<T> type) {
         return owner.has(attrName, type);
       }
+
+      @Override
+      public Location getAttributeLocation(String attrName) {
+        return owner.getAttributeLocation(attrName);
+      }
     };
   }
 
   private static ImmutableList<Label> extractLabels(Type<?> type, Object value) {
-    try {
-      final ImmutableList.Builder<Label> result = ImmutableList.builder();
-      type.visitLabels(
-          new Type.LabelVisitor<Object>() {
-            @Override
-            public void visit(@Nullable Label label, Object dummy) {
-              if (label != null) {
-                result.add(label);
-              }
-            }
-          },
-          value,
-          /*context=*/ null);
-      return result.build();
-    } catch (InterruptedException e) {
-      throw new IllegalStateException("Unexpected InterruptedException", e);
-    }
+    final ImmutableList.Builder<Label> result = ImmutableList.builder();
+    type.visitLabels(
+        (label, dummy) -> {
+          if (label != null) {
+            result.add(label);
+          }
+        },
+        value,
+        /*context=*/ null);
+    return result.build();
   }
 }

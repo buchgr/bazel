@@ -14,20 +14,21 @@
 
 package com.google.devtools.build.lib.analysis.test;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.CommandLine;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesSupport;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
-import com.google.devtools.build.lib.analysis.actions.CommandLine;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.RunUnder;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.packages.TargetUtils;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.Path;
+import javax.annotation.Nullable;
 
 /**
  * Container for common test execution settings shared by all
@@ -42,7 +43,7 @@ public final class TestTargetExecutionSettings {
   private final Artifact runUnderExecutable;
   private final Artifact executable;
   private final boolean runfilesSymlinksCreated;
-  private final Path runfilesDir;
+  @Nullable private final Path runfilesDir;
   private final Runfiles runfiles;
   private final Artifact runfilesInputManifest;
   private final Artifact instrumentedFileManifest;
@@ -73,10 +74,14 @@ public final class TestTargetExecutionSettings {
 
   private static Artifact getRunUnderExecutable(RuleContext ruleContext) {
     TransitiveInfoCollection runUnderTarget = ruleContext
-        .getPrerequisite(":run_under", Mode.DATA);
+        .getPrerequisite(":run_under", Mode.DONT_CHECK);
     return runUnderTarget == null
         ? null
         : runUnderTarget.getProvider(FilesToRunProvider.class).getExecutable();
+  }
+
+  public Artifact getRunUnderExecutable() {
+    return runUnderExecutable;
   }
 
   public CommandLine getArgs() {
@@ -95,10 +100,6 @@ public final class TestTargetExecutionSettings {
     return runUnder;
   }
 
-  public Artifact getRunUnderExecutable() {
-    return runUnderExecutable;
-  }
-
   public Artifact getExecutable() {
     return executable;
   }
@@ -108,7 +109,8 @@ public final class TestTargetExecutionSettings {
     return runfilesSymlinksCreated;
   }
 
-  /** @return the directory of the runfiles */
+  /** @return the directory of the runfiles. */
+  @Nullable
   public Path getRunfilesDir() {
     return runfilesDir;
   }
@@ -135,5 +137,20 @@ public final class TestTargetExecutionSettings {
    */
   public Artifact getInstrumentedFileManifest() {
     return instrumentedFileManifest;
+  }
+
+  public boolean needsShell(boolean executedOnWindows) {
+    RunUnder r = getRunUnder();
+    if (r == null) {
+      return false;
+    }
+    String command = r.getCommand();
+    if (command == null) {
+      return false;
+    }
+    // --run_under commands that do not contain '/' are either shell built-ins or need to be
+    // located on the PATH env, so we wrap them in a shell invocation. Note that we shell-tokenize
+    // the --run_under parameter and getCommand only returns the first such token.
+    return !command.contains("/") && (!executedOnWindows || !command.contains("\\"));
   }
 }

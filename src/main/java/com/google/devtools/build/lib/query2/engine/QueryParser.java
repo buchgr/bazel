@@ -45,7 +45,7 @@ import java.util.Map;
  *        | SET '(' WORD * ')'
  * </pre>
  */
-final class QueryParser {
+public final class QueryParser {
 
   private Lexer.Token token; // current lookahead token
   private final List<Lexer.Token> tokens;
@@ -55,24 +55,27 @@ final class QueryParser {
   /**
    * Scan and parse the specified query expression.
    */
-  static QueryExpression parse(String query, QueryEnvironment<?> env) throws QueryException {
-    QueryParser parser = new QueryParser(Lexer.scan(query), env);
+  public static QueryExpression parse(String query, QueryEnvironment<?> env) throws QueryException {
+    HashMap<String, QueryFunction> functions = new HashMap<>();
+    for (QueryFunction queryFunction : env.getFunctions()) {
+      functions.put(queryFunction.getName(), queryFunction);
+    }
+    return parse(query, functions);
+  }
+
+  public static QueryExpression parse(String query, Map<String, QueryFunction> functions)
+      throws QueryException {
+    QueryParser parser = new QueryParser(Lexer.scan(query), functions);
     QueryExpression expr = parser.parseExpression();
     if (parser.token.kind != TokenKind.EOF) {
       throw new QueryException("unexpected token '" + parser.token
-                               + "' after query expression '" + expr +  "'");
+          + "' after query expression '" + expr +  "'");
     }
     return expr;
   }
 
-  private QueryParser(List<Lexer.Token> tokens, QueryEnvironment<?> env) {
-    // TODO(bazel-team): We only need QueryEnvironment#getFunctions, consider refactoring users of
-    // QueryParser#parse to instead just pass in the set of functions to make testing, among other
-    // things, simpler.
-    this.functions = new HashMap<>();
-    for (QueryFunction queryFunction : env.getFunctions()) {
-      this.functions.put(queryFunction.getName(), queryFunction);
-    }
+  public QueryParser(List<Lexer.Token> tokens, Map<String, QueryFunction> functions) {
+    this.functions = functions;
     this.tokens = tokens;
     this.tokenIterator = tokens.iterator();
     nextToken();
@@ -224,7 +227,7 @@ final class QueryParser {
           consume(TokenKind.RPAREN);
           return new FunctionExpression(function, args);
         } else {
-          return new TargetLiteral(word);
+            return validateTargetLiteral(word);
         }
       }
       case LET: {
@@ -247,7 +250,7 @@ final class QueryParser {
         consume(TokenKind.LPAREN);
         List<TargetLiteral> words = new ArrayList<>();
         while (token.kind == TokenKind.WORD) {
-          words.add(new TargetLiteral(consume(TokenKind.WORD)));
+            words.add(validateTargetLiteral(consume(TokenKind.WORD)));
         }
         consume(TokenKind.RPAREN);
         return new SetExpression(words);
@@ -255,5 +258,12 @@ final class QueryParser {
       default:
         throw syntaxError(token);
     }
+  }
+
+  private static TargetLiteral validateTargetLiteral(String word) throws QueryException {
+    if (word.startsWith("-")) {
+      throw new QueryException("target literal must not begin with hyphen (-): " + word);
+    }
+    return new TargetLiteral(word);
   }
 }

@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.rules.android;
 
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
@@ -31,9 +32,16 @@ import com.google.devtools.build.lib.syntax.Type;
 /** An implementation of the {@code android_device_script_fixture} rule. */
 public class AndroidDeviceScriptFixture implements RuleConfiguredTargetFactory {
 
+  private final AndroidSemantics androidSemantics;
+
+  protected AndroidDeviceScriptFixture(AndroidSemantics androidSemantics) {
+    this.androidSemantics = androidSemantics;
+  }
+
   @Override
   public ConfiguredTarget create(RuleContext ruleContext)
-      throws InterruptedException, RuleErrorException {
+      throws InterruptedException, RuleErrorException, ActionConflictException {
+    androidSemantics.checkForMigrationTag(ruleContext);
     Artifact fixtureScript = getFixtureScript(ruleContext);
     return new RuleConfiguredTargetBuilder(ruleContext)
         .setFilesToBuild(NestedSetBuilder.<Artifact>stableOrder().add(fixtureScript).build())

@@ -195,17 +195,8 @@ public class EvaluationTest extends EvaluationTestCase {
   }
 
   @Test
-  public void testDivision() throws Exception {
-    newTest()
-        .testStatement("6 / 2", 3)
-        .testStatement("6 / 4", 1)
-        .testStatement("3 / 6", 0)
-        .testStatement("7 / -2", -4)
-        .testStatement("-7 / 2", -4)
-        .testStatement("-7 / -2", 3)
-        .testStatement("2147483647 / 2", 1073741823)
-        .testIfErrorContains("unsupported operand type(s) for /: 'string' and 'int'", "'str' / 2")
-        .testIfExactError("integer division by zero", "5 / 0");
+  public void testSlashOperatorIsForbidden() throws Exception {
+    newTest().testIfErrorContains("The `/` operator is not allowed.", "5 / 2");
   }
 
   @Test
@@ -218,13 +209,13 @@ public class EvaluationTest extends EvaluationTestCase {
         .testStatement("-7 // 2", -4)
         .testStatement("-7 // -2", 3)
         .testStatement("2147483647 // 2", 1073741823)
-        .testIfErrorContains("unsupported operand type(s) for /: 'string' and 'int'", "'str' / 2")
+        .testIfErrorContains("unsupported operand type(s) for //: 'string' and 'int'", "'str' // 2")
         .testIfExactError("integer division by zero", "5 // 0");
   }
 
   @Test
   public void testCheckedArithmetic() throws Exception {
-    new SkylarkTest("--incompatible_checked_arithmetic=true")
+    new SkylarkTest()
         .testIfErrorContains("integer overflow", "2000000000 + 2000000000")
         .testIfErrorContains("integer overflow", "1234567890 * 987654321")
         .testIfErrorContains("integer overflow", "- 2000000000 - 2000000000")
@@ -238,8 +229,8 @@ public class EvaluationTest extends EvaluationTestCase {
   public void testOperatorPrecedence() throws Exception {
     newTest()
         .testStatement("2 + 3 * 4", 14)
-        .testStatement("2 + 3 / 4", 2)
-        .testStatement("2 * 3 + 4 / -2", 4);
+        .testStatement("2 + 3 // 4", 2)
+        .testStatement("2 * 3 + 4 // -2", 4);
   }
 
   @Test
@@ -308,18 +299,12 @@ public class EvaluationTest extends EvaluationTestCase {
 
   @Test
   public void testNestedListComprehensions() throws Exception {
-    newTest().testExactOrder("li = [[1, 2], [3, 4]]\n" + "[j for i in li for j in i]", 1, 2,
-        3, 4).testExactOrder("input = [['abc'], ['def', 'ghi']]\n"
-        + "['%s %s' % (b, c) for a in input for b in a for c in b]",
-        "abc a",
-        "abc b",
-        "abc c",
-        "def d",
-        "def e",
-        "def f",
-        "ghi g",
-        "ghi h",
-        "ghi i");
+    newTest()
+        .testExactOrder("li = [[1, 2], [3, 4]]\n" + "[j for i in li for j in i]", 1, 2, 3, 4)
+        .testExactOrder(
+            "input = [['abc'], ['def', 'ghi']]\n"
+                + "['%s %s' % (b, c) for a in input for b in a for c in b.elems()]",
+            "abc a", "abc b", "abc c", "def d", "def e", "def f", "ghi g", "ghi h", "ghi i");
   }
 
   @Test
@@ -351,8 +336,13 @@ public class EvaluationTest extends EvaluationTestCase {
 
   @Test
   public void testListComprehensionDefinitionOrder() throws Exception {
-    newTest().testIfErrorContains("name 'y' is not defined",
-        "[x for x in (1, 2) if y for y in (3, 4)]");
+    new BuildTest()
+        .testIfErrorContains("name 'y' is not defined", "[x for x in (1, 2) if y for y in (3, 4)]");
+
+    new SkylarkTest()
+        .testIfErrorContains(
+            "local variable 'y' is referenced before assignment",
+            "[x for x in (1, 2) if y for y in (3, 4)]");
   }
 
   @Test
@@ -384,15 +374,9 @@ public class EvaluationTest extends EvaluationTestCase {
 
   @Test
   public void testDictWithDuplicatedKey() throws Exception {
-    new SkylarkTest("--incompatible_dict_literal_has_no_duplicates=true")
+    new SkylarkTest()
         .testIfErrorContains(
             "Duplicated key \"str\" when creating dictionary", "{'str': 1, 'x': 2, 'str': 3}");
-  }
-
-  @Test
-  public void testDictAllowDuplicatedKey() throws Exception {
-    new SkylarkTest("--incompatible_dict_literal_has_no_duplicates=false")
-        .testStatement("{'str': 1, 'x': 2, 'str': 3}", ImmutableMap.of("str", 3, "x", 2));
   }
 
   @Test
@@ -467,9 +451,9 @@ public class EvaluationTest extends EvaluationTestCase {
         .testStatement("[    ] * 10", MutableList.empty())
         .testStatement("[1, 2] * 0", MutableList.empty())
         .testStatement("[1, 2] * -4", MutableList.empty())
-        .testStatement(" 2 * [1, 2]", MutableList.of(env, 1, 2, 1, 2))
+        .testStatement("2 * [1, 2]", MutableList.of(env, 1, 2, 1, 2))
         .testStatement("10 * []", MutableList.empty())
-        .testStatement(" 0 * [1, 2]", MutableList.empty())
+        .testStatement("0 * [1, 2]", MutableList.empty())
         .testStatement("-4 * [1, 2]", MutableList.empty());
   }
 
@@ -484,9 +468,9 @@ public class EvaluationTest extends EvaluationTestCase {
         .testStatement("(    ) * 10", Tuple.empty())
         .testStatement("(1, 2) * 0", Tuple.empty())
         .testStatement("(1, 2) * -4", Tuple.empty())
-        .testStatement(" 2 * (1, 2)", Tuple.of(1, 2, 1, 2))
+        .testStatement("2 * (1, 2)", Tuple.of(1, 2, 1, 2))
         .testStatement("10 * ()", Tuple.empty())
-        .testStatement(" 0 * (1, 2)", Tuple.empty())
+        .testStatement("0 * (1, 2)", Tuple.empty())
         .testStatement("-4 * (1, 2)", Tuple.empty());
   }
 
@@ -523,15 +507,8 @@ public class EvaluationTest extends EvaluationTestCase {
   }
 
   @Test
-  public void testListComprehensionOnString() throws Exception {
-    newTest("--incompatible_string_is_not_iterable=false")
-        .testExactOrder("[x for x in 'abc']", "a", "b", "c");
-  }
-
-  @Test
   public void testListComprehensionOnStringIsForbidden() throws Exception {
-    newTest("--incompatible_string_is_not_iterable=true")
-        .testIfErrorContains("type 'string' is not iterable", "[x for x in 'abc']");
+    newTest().testIfErrorContains("type 'string' is not iterable", "[x for x in 'abc']");
   }
 
   @Test
@@ -672,14 +649,19 @@ public class EvaluationTest extends EvaluationTestCase {
 
   @Test
   public void testDictKeysTooManyArgs() throws Exception {
-    newTest().testIfExactError(
-        "too many (2) positional arguments in call to keys(self: dict)", "{'a': 1}.keys('abc')");
+    newTest()
+        .testIfExactError(
+            "expected no more than 0 positional arguments, but got 1, "
+                + "for call to method keys() of 'dict'",
+            "{'a': 1}.keys('abc')");
   }
 
   @Test
   public void testDictKeysTooManyKeyArgs() throws Exception {
-    newTest().testIfExactError("unexpected keyword 'arg' in call to keys(self: dict)",
-        "{'a': 1}.keys(arg='abc')");
+    newTest()
+        .testIfExactError(
+            "unexpected keyword 'arg', for call to method keys() of 'dict'",
+            "{'a': 1}.keys(arg='abc')");
   }
 
   @Test
@@ -690,9 +672,48 @@ public class EvaluationTest extends EvaluationTestCase {
 
   @Test
   public void testArgBothPosKey() throws Exception {
-    newTest().testIfErrorContains(
-        "arguments 'old', 'new' passed both by position and by name "
-        + "in call to replace(self: string, ",
-        "'banana'.replace('a', 'o', 3, old='a', new=4)");
+    newTest()
+        .testIfErrorContains(
+            "got multiple values for keyword argument 'old', for call to method "
+                + "replace(old, new, maxsplit = None) of 'string'",
+            "'banana'.replace('a', 'o', 3, old='a')");
+  }
+
+  @Test
+  public void testStaticNameResolution() throws Exception {
+    newTest().testIfErrorContains("name 'foo' is not defined", "[foo for x in []]");
+  }
+
+  @Test
+  public void testDefInBuild() throws Exception {
+    new BuildTest()
+        .testIfErrorContains(
+            "function definitions are not allowed in BUILD files", "def func(): pass");
+  }
+
+  @Test
+  public void testForStatementForbiddenInBuild() throws Exception {
+    new BuildTest().testIfErrorContains("for loops are not allowed", "for _ in []: pass");
+  }
+
+  @Test
+  public void testIfStatementForbiddenInBuild() throws Exception {
+    new BuildTest().testIfErrorContains("if statements are not allowed", "if False: pass");
+  }
+
+  @Test
+  public void testKwargsForbiddenInBuild() throws Exception {
+    new BuildTest()
+        .testIfErrorContains("**kwargs arguments are not allowed in BUILD files", "print(**dict)");
+
+    new BuildTest()
+        .testIfErrorContains(
+            "**kwargs arguments are not allowed in BUILD files", "len(dict(**{'a': 1}))");
+  }
+
+  @Test
+  public void testArgsForbiddenInBuild() throws Exception {
+    new BuildTest()
+        .testIfErrorContains("*args arguments are not allowed in BUILD files", "print(*['a'])");
   }
 }

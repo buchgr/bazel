@@ -14,24 +14,28 @@
 package com.google.devtools.build.lib.packages;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.SPLIT;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
 import static com.google.devtools.build.lib.syntax.Type.INTEGER;
 import static com.google.devtools.build.lib.syntax.Type.STRING;
 import static com.google.devtools.build.lib.syntax.Type.STRING_LIST;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
+import com.google.devtools.build.lib.analysis.config.HostTransition;
+import com.google.devtools.build.lib.analysis.config.TransitionFactories;
+import com.google.devtools.build.lib.analysis.config.transitions.ConfigurationTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.SplitTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.TransitionFactory;
 import com.google.devtools.build.lib.analysis.util.TestAspects;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.packages.Attribute.SplitTransition;
-import com.google.devtools.build.lib.packages.Attribute.SplitTransitionProvider;
+import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassNamePredicate;
 import com.google.devtools.build.lib.syntax.Type;
+import com.google.devtools.build.lib.testutil.FakeAttributeMapper;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import java.util.Arrays;
@@ -67,12 +71,11 @@ public class AttributeTest {
 
   @Test
   public void testNonEmptyReqiresListType() throws Exception {
-    try {
-      attr("foo", Type.INTEGER).nonEmpty().value(3).build();
-      fail();
-    } catch (NullPointerException e) {
-      assertThat(e).hasMessage("attribute 'foo' must be a list");
-    }
+    NullPointerException e =
+        assertThrows(
+            NullPointerException.class,
+            () -> attr("foo", Type.INTEGER).nonEmpty().value(3).build());
+    assertThat(e).hasMessageThat().isEqualTo("attribute 'foo' must be a list");
   }
 
   @Test
@@ -85,50 +88,28 @@ public class AttributeTest {
 
   @Test
   public void testSingleArtifactReqiresLabelType() throws Exception {
-    try {
-      attr("foo", Type.INTEGER).singleArtifact().value(3).build();
-      fail();
-    } catch (IllegalStateException e) {
-      assertThat(e).hasMessage("attribute 'foo' must be a label-valued type");
-    }
+    IllegalStateException e =
+        assertThrows(
+            IllegalStateException.class,
+            () -> attr("foo", Type.INTEGER).singleArtifact().value(3).build());
+    assertThat(e).hasMessageThat().isEqualTo("attribute 'foo' must be a label-valued type");
   }
 
   @Test
   public void testDoublePropertySet() {
-    Attribute.Builder<String> builder = attr("x", STRING).mandatory().cfg(HOST).undocumented("")
-        .value("y");
-    try {
-      builder.mandatory();
-      fail();
-    } catch (IllegalStateException expected) {
-      // expected
-    }
-    try {
-      builder.cfg(HOST);
-      fail();
-    } catch (IllegalStateException expected) {
-      // expected
-    }
-    try {
-      builder.undocumented("");
-      fail();
-    } catch (IllegalStateException expected) {
-      // expected
-    }
-    try {
-      builder.value("z");
-      fail();
-    } catch (IllegalStateException expected) {
-      // expected
-    }
+    Attribute.Builder<String> builder =
+        attr("x", STRING)
+            .mandatory()
+            .cfg(HostTransition.createFactory())
+            .undocumented("")
+            .value("y");
+    assertThrows(IllegalStateException.class, () -> builder.mandatory());
+    assertThrows(IllegalStateException.class, () -> builder.cfg(HostTransition.createFactory()));
+    assertThrows(IllegalStateException.class, () -> builder.undocumented(""));
+    assertThrows(IllegalStateException.class, () -> builder.value("z"));
 
-    builder = attr("$x", STRING);
-    try {
-      builder.undocumented("");
-      fail();
-    } catch (IllegalStateException expected) {
-      // expected
-    }
+    Attribute.Builder<String> builder2 = attr("$x", STRING);
+    assertThrows(IllegalStateException.class, () -> builder2.undocumented(""));
   }
 
   /**
@@ -147,7 +128,7 @@ public class AttributeTest {
     assertDefaultValue("foo",
                        attr("x", STRING).value("foo").build());
 
-    Label label = Label.parseAbsolute("//foo:bar");
+    Label label = Label.parseAbsolute("//foo:bar", ImmutableMap.of());
     assertDefaultValue(null,
                        attr("x", LABEL).legacyAllowAnyFileType().build());
     assertDefaultValue(label,
@@ -159,8 +140,10 @@ public class AttributeTest {
     assertDefaultValue(slist,
                        attr("x", STRING_LIST).value(slist).build());
 
-    List<Label> llist = Arrays.asList(Label.parseAbsolute("//foo:bar"),
-                                      Label.parseAbsolute("//foo:wiz"));
+    List<Label> llist =
+        Arrays.asList(
+            Label.parseAbsolute("//foo:bar", ImmutableMap.of()),
+            Label.parseAbsolute("//foo:wiz", ImmutableMap.of()));
     assertDefaultValue(Collections.emptyList(),
                        attr("x", LABEL_LIST).legacyAllowAnyFileType().build());
     assertDefaultValue(llist,
@@ -182,7 +165,7 @@ public class AttributeTest {
     assertType(STRING,
                attr("x", STRING).value("foo").build());
 
-    Label label = Label.parseAbsolute("//foo:bar");
+    Label label = Label.parseAbsolute("//foo:bar", ImmutableMap.of());
     assertType(LABEL,
                        attr("x", LABEL).legacyAllowAnyFileType().build());
     assertType(LABEL,
@@ -194,8 +177,10 @@ public class AttributeTest {
     assertType(STRING_LIST,
                attr("x", STRING_LIST).value(slist).build());
 
-    List<Label> llist = Arrays.asList(Label.parseAbsolute("//foo:bar"),
-                                      Label.parseAbsolute("//foo:wiz"));
+    List<Label> llist =
+        Arrays.asList(
+            Label.parseAbsolute("//foo:bar", ImmutableMap.of()),
+            Label.parseAbsolute("//foo:wiz", ImmutableMap.of()));
     assertType(LABEL_LIST,
                attr("x", LABEL_LIST).legacyAllowAnyFileType().build());
     assertType(LABEL_LIST,
@@ -205,8 +190,7 @@ public class AttributeTest {
   @Test
   public void testCloneBuilder() {
     FileTypeSet txtFiles = FileTypeSet.of(FileType.of("txt"));
-    RuleClass.Builder.RuleClassNamePredicate ruleClasses =
-        new RuleClass.Builder.RuleClassNamePredicate("mock_rule");
+    RuleClassNamePredicate ruleClasses = RuleClassNamePredicate.only("mock_rule");
 
     Attribute parentAttr =
         attr("x", LABEL_LIST)
@@ -222,7 +206,7 @@ public class AttributeTest {
       assertThat(childAttr1.getAllowedRuleClassesPredicate()).isEqualTo(Predicates.alwaysTrue());
       assertThat(childAttr1.isMandatory()).isTrue();
       assertThat(childAttr1.isNonEmpty()).isFalse();
-      assertThat(childAttr1.getAspects(null /* rule */)).hasSize(1);
+      assertThat(childAttr1.getAspects(/* rule= */ null)).hasSize(1);
     }
 
     {
@@ -235,10 +219,11 @@ public class AttributeTest {
               .build();
       assertThat(childAttr2.getName()).isEqualTo("x");
       assertThat(childAttr2.getAllowedFileTypesPredicate()).isEqualTo(txtFiles);
-      assertThat(childAttr2.getAllowedRuleClassesPredicate()).isEqualTo(ruleClasses);
+      assertThat(childAttr2.getAllowedRuleClassesPredicate())
+          .isEqualTo(ruleClasses.asPredicateOfRuleClass());
       assertThat(childAttr2.isMandatory()).isTrue();
       assertThat(childAttr2.isNonEmpty()).isTrue();
-      assertThat(childAttr2.getAspects(null /* rule */)).hasSize(2);
+      assertThat(childAttr2.getAspects(/* rule= */ null)).hasSize(2);
     }
 
     // Check if the parent attribute is unchanged
@@ -269,10 +254,14 @@ public class AttributeTest {
   @Test
   public void testSplitTransition() throws Exception {
     TestSplitTransition splitTransition = new TestSplitTransition();
-    Attribute attr = attr("foo", LABEL).cfg(splitTransition).allowedFileTypes().build();
-    assertThat(attr.getConfigurationTransition()).isEqualTo(SPLIT);
-    assertThat(attr.hasSplitConfigurationTransition()).isTrue();
-    assertThat(attr.getSplitTransition(null)).isEqualTo(splitTransition);
+    Attribute attr =
+        attr("foo", LABEL).cfg(TransitionFactories.of(splitTransition)).allowedFileTypes().build();
+    assertThat(attr.getTransitionFactory().isSplit()).isTrue();
+    ConfigurationTransition transition =
+        attr.getTransitionFactory()
+            .create(
+                AttributeTransitionData.builder().attributes(FakeAttributeMapper.empty()).build());
+    assertThat(transition).isEqualTo(splitTransition);
   }
 
   @Test
@@ -280,44 +269,53 @@ public class AttributeTest {
     TestSplitTransitionProvider splitTransitionProvider = new TestSplitTransitionProvider();
     Attribute attr =
         attr("foo", LABEL).cfg(splitTransitionProvider).allowedFileTypes().build();
-    assertThat(attr.getConfigurationTransition()).isEqualTo(SPLIT);
-    assertThat(attr.hasSplitConfigurationTransition()).isTrue();
-    assertThat(attr.getSplitTransition(null) instanceof TestSplitTransition).isTrue();
+    assertThat(attr.getTransitionFactory().isSplit()).isTrue();
+    ConfigurationTransition transition =
+        attr.getTransitionFactory()
+            .create(
+                AttributeTransitionData.builder().attributes(FakeAttributeMapper.empty()).build());
+    assertThat(transition).isInstanceOf(TestSplitTransition.class);
   }
 
   @Test
   public void testHostTransition() throws Exception {
-    Attribute attr = attr("foo", LABEL).cfg(HOST).allowedFileTypes().build();
-    assertThat(attr.getConfigurationTransition()).isEqualTo(HOST);
-    assertThat(attr.hasSplitConfigurationTransition()).isFalse();
+    Attribute attr =
+        attr("foo", LABEL).cfg(HostTransition.createFactory()).allowedFileTypes().build();
+    assertThat(attr.getTransitionFactory().isHost()).isTrue();
+    assertThat(attr.getTransitionFactory().isSplit()).isFalse();
   }
 
-  private static class TestSplitTransition implements SplitTransition<BuildOptions> {
+  private static class TestSplitTransition implements SplitTransition {
     @Override
     public List<BuildOptions> split(BuildOptions buildOptions) {
       return ImmutableList.of(buildOptions.clone(), buildOptions.clone());
     }
   }
 
-  private static class TestSplitTransitionProvider implements SplitTransitionProvider {
+  private static class TestSplitTransitionProvider
+      implements TransitionFactory<AttributeTransitionData> {
     @Override
-    public SplitTransition<?> apply(AttributeMap attrMapper) {
+    public SplitTransition create(AttributeTransitionData data) {
       return new TestSplitTransition();
+    }
+
+    @Override
+    public boolean isSplit() {
+      return true;
     }
   }
 
   @Test
   public void allowedRuleClassesAndAllowedRuleClassesWithWarningsCannotOverlap() throws Exception {
-    try {
-      attr("x", LABEL_LIST)
-          .allowedRuleClasses("foo", "bar", "baz")
-          .allowedRuleClassesWithWarning("bar")
-          .allowedFileTypes()
-          .build();
-      fail("Expected illegal state exception because rule classes and rule classes with warning "
-          + "overlap");
-    } catch (IllegalStateException e) {
-      assertThat(e).hasMessageThat().contains("may not contain the same rule classes");
-    }
+    IllegalStateException e =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                attr("x", LABEL_LIST)
+                    .allowedRuleClasses("foo", "bar", "baz")
+                    .allowedRuleClassesWithWarning("bar")
+                    .allowedFileTypes()
+                    .build());
+    assertThat(e).hasMessageThat().contains("may not contain the same rule classes");
   }
 }

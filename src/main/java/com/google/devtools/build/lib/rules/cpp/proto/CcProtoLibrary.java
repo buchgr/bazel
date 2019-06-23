@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.rules.cpp.proto;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode.TARGET;
 
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
@@ -29,7 +30,7 @@ import com.google.devtools.build.lib.rules.cpp.CcSkylarkApiProvider;
 public class CcProtoLibrary implements RuleConfiguredTargetFactory {
   @Override
   public ConfiguredTarget create(RuleContext ruleContext)
-      throws InterruptedException, RuleErrorException {
+      throws InterruptedException, RuleErrorException, ActionConflictException {
 
     if (ruleContext.getPrerequisites("deps", TARGET).size() != 1) {
       ruleContext.throwWithAttributeError(
@@ -51,12 +52,13 @@ public class CcProtoLibrary implements RuleConfiguredTargetFactory {
         .addProvider(
             RunfilesProvider.class, RunfilesProvider.withData(Runfiles.EMPTY, Runfiles.EMPTY))
         .addProviders(depProviders.providerMap);
-    for (String groupName : depProviders.outputGroupProvider) {
+
+    for (String groupName : depProviders.outputGroupInfo) {
       ruleConfiguredTargetBuilder.addOutputGroup(groupName,
-          depProviders.outputGroupProvider.getOutputGroup(groupName));
+          depProviders.outputGroupInfo.getOutputGroup(groupName));
     }
-    return ruleConfiguredTargetBuilder
-        .addSkylarkTransitiveInfo(CcSkylarkApiProvider.NAME, new CcSkylarkApiProvider())
-        .build();
+
+    CcSkylarkApiProvider.maybeAdd(ruleContext, ruleConfiguredTargetBuilder);
+    return ruleConfiguredTargetBuilder.build();
   }
 }

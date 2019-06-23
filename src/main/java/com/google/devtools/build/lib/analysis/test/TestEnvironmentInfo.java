@@ -15,15 +15,15 @@
 package com.google.devtools.build.lib.analysis.test;
 
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.NativeInfo;
 import com.google.devtools.build.lib.packages.NativeProvider;
+import com.google.devtools.build.lib.skylarkbuildapi.test.TestEnvironmentInfoApi;
 import java.util.Map;
 
 /** Provider containing any additional environment variables for use in the test action. */
 @Immutable
-public final class TestEnvironmentInfo extends NativeInfo {
+public final class TestEnvironmentInfo extends NativeInfo implements TestEnvironmentInfoApi {
 
   /** Skylark constructor and identifier for TestEnvironmentInfo. */
   public static final NativeProvider<TestEnvironmentInfo> PROVIDER =
@@ -34,13 +34,14 @@ public final class TestEnvironmentInfo extends NativeInfo {
 
   /** Constructs a new provider with the given variable name to variable value mapping. */
   public TestEnvironmentInfo(Map<String, String> environment) {
-    super(PROVIDER, ImmutableMap.<String, Object>of("environment", environment));
+    super(PROVIDER);
     this.environment = Preconditions.checkNotNull(environment);
   }
 
   /**
    * Returns environment variables which should be set on the test action.
    */
+  @Override
   public Map<String, String> getEnvironment() {
     return environment;
   }

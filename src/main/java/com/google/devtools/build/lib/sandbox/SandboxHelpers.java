@@ -14,21 +14,24 @@
 
 package com.google.devtools.build.lib.sandbox;
 
+import com.google.auto.value.AutoValue;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.ImmutableSet.Builder;
-import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
+import com.google.devtools.build.lib.actions.CommandLines.ParamFileActionInput;
 import com.google.devtools.build.lib.actions.Spawn;
+import com.google.devtools.build.lib.actions.Spawns;
+import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
+import com.google.devtools.build.lib.actions.cache.VirtualActionInput.EmptyActionInput;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration;
-import com.google.devtools.build.lib.exec.SpawnInputExpander;
-import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionPolicy;
-import com.google.devtools.build.lib.rules.fileset.FilesetActionContext;
+import com.google.devtools.build.lib.exec.SpawnRunner.SpawnExecutionContext;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.common.options.OptionsProvider;
+import com.google.devtools.common.options.OptionsParsingResult;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -40,43 +43,38 @@ public final class SandboxHelpers {
   /**
    * Returns the inputs of a Spawn as a map of PathFragments relative to an execRoot to paths in the
    * host filesystem where the input files can be found.
+   *
+   * <p>Also writes any supported {@link VirtualActionInput}s found.
+   *
+   * @throws IOException If any files could not be written.
    */
-  public static Map<PathFragment, Path> getInputFiles(
-      SpawnInputExpander spawnInputExpander,
+  public static Map<PathFragment, Path> processInputFiles(
+      Spawn spawn,
+      SpawnExecutionContext context,
       Path execRoot,
-      Spawn spawn,
-      ActionExecutionContext executionContext)
+      boolean expandTreeArtifactsInRunfiles)
       throws IOException {
-    Map<PathFragment, ActionInput> inputMap =
-        spawnInputExpander.getInputMapping(
-            spawn,
-            executionContext.getArtifactExpander(),
-            executionContext.getActionInputFileCache(),
-            executionContext.getContext(FilesetActionContext.class));
-    return postProcess(inputMap, spawn, executionContext.getArtifactExpander(), execRoot);
+    return processInputFiles(
+        context.getInputMapping(expandTreeArtifactsInRunfiles),
+        spawn,
+        context.getArtifactExpander(),
+        execRoot);
   }
 
   /**
    * Returns the inputs of a Spawn as a map of PathFragments relative to an execRoot to paths in the
    * host filesystem where the input files can be found.
+   *
+   * <p>Also writes any supported {@link VirtualActionInput}s found.
+   *
+   * @throws IOException If any files could not be written.
    */
-  public static Map<PathFragment, Path> getInputFiles(
-      Spawn spawn,
-      SpawnExecutionPolicy policy,
-      Path execRoot)
-          throws IOException {
-    return postProcess(policy.getInputMapping(), spawn, policy.getArtifactExpander(), execRoot);
-  }
-
-  /**
-   * Returns the inputs of a Spawn as a map of PathFragments relative to an execRoot to paths in the
-   * host filesystem where the input files can be found.
-   */
-  private static Map<PathFragment, Path> postProcess(
+  private static Map<PathFragment, Path> processInputFiles(
       Map<PathFragment, ActionInput> inputMap,
-      Spawn spawn, 
+      Spawn spawn,
       ArtifactExpander artifactExpander,
-      Path execRoot) {
+      Path execRoot)
+      throws IOException {
     // SpawnInputExpander#getInputMapping uses ArtifactExpander#expandArtifacts to expand
     // middlemen and tree artifacts, which expands empty tree artifacts to no entry. However,
     // actions that accept TreeArtifacts as inputs generally expect that the empty directory is
@@ -96,30 +94,64 @@ public final class SandboxHelpers {
 
     Map<PathFragment, Path> inputFiles = new TreeMap<>();
     for (Map.Entry<PathFragment, ActionInput> e : inputMap.entrySet()) {
+      PathFragment pathFragment = e.getKey();
+      ActionInput actionInput = e.getValue();
+      if (actionInput instanceof VirtualActionInput) {
+        if (actionInput instanceof ParamFileActionInput) {
+          ParamFileActionInput paramFileInput = (ParamFileActionInput) actionInput;
+          Path outputPath = execRoot.getRelative(paramFileInput.getExecPath());
+          outputPath.getParentDirectory().createDirectoryAndParents();
+          try (OutputStream outputStream = outputPath.getOutputStream()) {
+            paramFileInput.writeTo(outputStream);
+          }
+        } else {
+          // TODO(ulfjack): Handle all virtual inputs, e.g., by writing them to a file.
+          Preconditions.checkState(actionInput instanceof EmptyActionInput);
+        }
+      }
       Path inputPath =
-          e.getValue() == SpawnInputExpander.EMPTY_FILE
+          actionInput instanceof EmptyActionInput
               ? null
-              : execRoot.getRelative(e.getValue().getExecPath());
-      inputFiles.put(e.getKey(), inputPath);
+              : execRoot.getRelative(actionInput.getExecPath());
+      inputFiles.put(pathFragment, inputPath);
     }
     return inputFiles;
   }
 
-  public static ImmutableSet<PathFragment> getOutputFiles(Spawn spawn) {
-    Builder<PathFragment> outputFiles = ImmutableSet.builder();
-    for (ActionInput output : spawn.getOutputFiles()) {
-      outputFiles.add(PathFragment.create(output.getExecPathString()));
+  /** The file and directory outputs of a sandboxed spawn. */
+  @AutoValue
+  public abstract static class SandboxOutputs {
+    public abstract ImmutableSet<PathFragment> files();
+
+    public abstract ImmutableSet<PathFragment> dirs();
+
+    public static SandboxOutputs create(
+        ImmutableSet<PathFragment> files, ImmutableSet<PathFragment> dirs) {
+      return new AutoValue_SandboxHelpers_SandboxOutputs(files, dirs);
     }
-    return outputFiles.build();
+  }
+
+  public static SandboxOutputs getOutputs(Spawn spawn) {
+    ImmutableSet.Builder<PathFragment> files = ImmutableSet.builder();
+    ImmutableSet.Builder<PathFragment> dirs = ImmutableSet.builder();
+    for (ActionInput output : spawn.getOutputFiles()) {
+      PathFragment path = PathFragment.create(output.getExecPathString());
+      if (output instanceof Artifact && ((Artifact) output).isTreeArtifact()) {
+        dirs.add(path);
+      } else {
+        files.add(path);
+      }
+    }
+    return SandboxOutputs.create(files.build(), dirs.build());
   }
 
   /**
    * Returns true if the build options are set in a way that requires network access for all
-   * actions. This is separate from {@link #shouldAllowNetwork(Spawn)} to avoid having to keep a
+   * actions. This is separate from {@link Spawns#requiresNetwork} to avoid having to keep a
    * reference to the full set of build options (and also for performance, since this only needs to
    * be checked once-per-build).
    */
-  static boolean shouldAllowNetwork(OptionsProvider buildOptions) {
+  static boolean shouldAllowNetwork(OptionsParsingResult buildOptions) {
     // Allow network access, when --java_debug is specified, otherwise we can't connect to the
     // remote debug server of the test. This intentionally overrides the "block-network" execution
     // tag.
@@ -127,16 +159,5 @@ public final class SandboxHelpers {
         .getOptions(TestConfiguration.TestOptions.class)
         .testArguments
         .contains("--wrapper_script_flag=--debug");
-  }
-
-  /** Returns true if this specific spawn requires network access. */
-  static boolean shouldAllowNetwork(Spawn spawn) {
-    // If the Spawn requests to block network access, do so.
-    if (spawn.getExecutionInfo().containsKey("block-network")) {
-      return false;
-    }
-
-    // Network access is allowed by default.
-    return true;
   }
 }

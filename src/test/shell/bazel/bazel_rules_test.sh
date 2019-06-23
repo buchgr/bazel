@@ -17,19 +17,52 @@
 # Test rules provided in Bazel not tested by examples
 #
 
-function die() {
-  echo >&2 "ERROR[$(basename "$0") $(date +%H:%M:%S.%N)] $@"
-  exit 1
-}
-
-if ! type rlocation &> /dev/null; then
-  die "the rlocation() Bash function is undefined"
+set -euo pipefail
+# --- begin runfiles.bash initialization ---
+if [[ ! -d "${RUNFILES_DIR:-/dev/null}" && ! -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+    if [[ -f "$0.runfiles_manifest" ]]; then
+      export RUNFILES_MANIFEST_FILE="$0.runfiles_manifest"
+    elif [[ -f "$0.runfiles/MANIFEST" ]]; then
+      export RUNFILES_MANIFEST_FILE="$0.runfiles/MANIFEST"
+    elif [[ -f "$0.runfiles/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+      export RUNFILES_DIR="$0.runfiles"
+    fi
 fi
+if [[ -f "${RUNFILES_DIR:-/dev/null}/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+  source "${RUNFILES_DIR}/bazel_tools/tools/bash/runfiles/runfiles.bash"
+elif [[ -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+  source "$(grep -m1 "^bazel_tools/tools/bash/runfiles/runfiles.bash " \
+            "$RUNFILES_MANIFEST_FILE" | cut -d ' ' -f 2-)"
+else
+  echo >&2 "ERROR: cannot find @bazel_tools//tools/bash/runfiles:runfiles.bash"
+  exit 1
+fi
+# --- end runfiles.bash initialization ---
 
-# Load the test setup defined in the parent directory
-source $(rlocation io_bazel/src/test/shell/integration_test_setup.sh) \
-  || die "integration_test_setup.sh not found!"
+source "$(rlocation "io_bazel/src/test/shell/integration_test_setup.sh")" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
+# `uname` returns the current platform, e.g "MSYS_NT-10.0" or "Linux".
+# `tr` converts all upper case letters to lower case.
+# `case` matches the result if the `uname | tr` expression to string prefixes
+# that use the same wildcards as names do in Bash, i.e. "msys*" matches strings
+# starting with "msys", and "*" matches everything (it's the default case).
+case "$(uname -s | tr [:upper:] [:lower:])" in
+msys*)
+  # As of 2019-01-15, Bazel on Windows only supports MSYS Bash.
+  declare -r is_windows=true
+  ;;
+*)
+  declare -r is_windows=false
+  ;;
+esac
+
+if "$is_windows"; then
+  # Disable MSYS path conversion that converts path-looking command arguments to
+  # Windows paths (even if they arguments are not in fact paths).
+  export MSYS_NO_PATHCONV=1
+  export MSYS2_ARG_CONV_EXCL="*"
+fi
 
 function test_sh_test() {
   mkdir -p a
@@ -71,10 +104,35 @@ function test_extra_action() {
   # Make a program to run on each action that just prints the path to the extra
   # action file. This file is a proto, but I don't want to bother implementing
   # a program that parses the proto here.
-  cat > mypkg/echoer.sh <<EOF
-#!/bin/sh
-if [[ ! -e \$0.runfiles/__main__/mypkg/runfile ]]; then
-  echo "Runfile not found" >&2
+  # The workspace name is initialized in testenv.sh; use that var rather than
+  # hardcoding it here. The extra sed pass is so we can selectively expand that
+  # one var while keeping the rest of the heredoc literal.
+  sed "s/{{WORKSPACE_NAME}}/$WORKSPACE_NAME/" > mypkg/echoer.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+# --- begin runfiles.bash initialization ---
+if [[ ! -d "${RUNFILES_DIR:-/dev/null}" && ! -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+    if [[ -f "$0.runfiles_manifest" ]]; then
+      export RUNFILES_MANIFEST_FILE="$0.runfiles_manifest"
+    elif [[ -f "$0.runfiles/MANIFEST" ]]; then
+      export RUNFILES_MANIFEST_FILE="$0.runfiles/MANIFEST"
+    elif [[ -f "$0.runfiles/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+      export RUNFILES_DIR="$0.runfiles"
+    fi
+fi
+if [[ -f "${RUNFILES_DIR:-/dev/null}/bazel_tools/tools/bash/runfiles/runfiles.bash" ]]; then
+  source "${RUNFILES_DIR}/bazel_tools/tools/bash/runfiles/runfiles.bash"
+elif [[ -f "${RUNFILES_MANIFEST_FILE:-/dev/null}" ]]; then
+  source "$(grep -m1 "^bazel_tools/tools/bash/runfiles/runfiles.bash " \
+            "$RUNFILES_MANIFEST_FILE" | cut -d ' ' -f 2-)"
+else
+  echo >&2 "ERROR: cannot find @bazel_tools//tools/bash/runfiles:runfiles.bash"
+  exit 1
+fi
+# --- end runfiles.bash initialization ---
+
+if [[ ! -e "$(rlocation {{WORKSPACE_NAME}}/mypkg/runfile)" ]]; then
+  echo "ERROR: Runfile not found" >&2
   exit 1
 fi
 echo EXTRA ACTION FILE: \$1
@@ -109,7 +167,10 @@ action_listener(
 sh_binary(
     name = "echoer",
     srcs = ["echoer.sh"],
-    data = ["runfile"],
+    data = [
+        "runfile",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
 )
 
 java_library(
@@ -232,36 +293,34 @@ EOF
 
 function test_genrule_default_env() {
   mkdir -p pkg
-  cat <<'EOF' >pkg/BUILD
+  cat >pkg/BUILD  <<'EOF'
 genrule(
-  name = "test",
-  outs = ["test.out"],
-  cmd = "(echo \"PATH=$$PATH\"; echo \"TMPDIR=$$TMPDIR\") > $@",
+    name = "test",
+    outs = ["test.out"],
+    cmd = "env > $@",
 )
 EOF
-  local old_path="${PATH}"
-  local old_tmpdir="${TMPDIR-}"
+
   local new_tmpdir="$(mktemp -d "${TEST_TMPDIR}/newfancytmpdirXXXXXX")"
-  [ -d "${new_tmpdir}" ] || \
-    fail "Could not create new temporary directory ${new_tmpdir}"
-  export PATH="$PATH_TO_BAZEL_WRAPPER:/bin:/usr/bin:/random/path"
-  export TMPDIR="${new_tmpdir}"
-  # batch mode to force reload of the environment
-  bazel --batch build //pkg:test --spawn_strategy=standalone \
-    || fail "Failed to build //pkg:test"
-  assert_contains "PATH=$PATH_TO_BAZEL_WRAPPER:/bin:/usr/bin:/random/path" \
-    bazel-genfiles/pkg/test.out
-  assert_contains "TMPDIR=.*execroot.*tmp[0-9a-fA-F]\+$" \
-    bazel-genfiles/pkg/test.out
-  assert_not_contains "TMPDIR=.*newfancytmpdir" \
-    bazel-genfiles/pkg/test.out
-  if [ -n "${old_tmpdir}" ]
-  then
-    export TMPDIR="${old_tmpdir}"
+  if $is_windows; then
+    PATH="/random/path:$PATH" TMP="${new_tmpdir}" \
+      bazel build //pkg:test --spawn_strategy=standalone --action_env=PATH \
+      &> $TEST_log || fail "Failed to build //pkg:test"
+
+    # Test that Bazel respects the client environment's TMP.
+    # new_tmpdir is based on $TEST_TMPDIR which is not Unix-style -- convert it.
+    assert_contains "TMP=$(cygpath -u "${new_tmpdir}")" bazel-bin/pkg/test.out
   else
-    unset TMPDIR
+    PATH="/random/path:$PATH" TMPDIR="${new_tmpdir}" \
+      bazel build //pkg:test --spawn_strategy=standalone --action_env=PATH \
+      &> $TEST_log || fail "Failed to build //pkg:test"
+
+    # Test that Bazel respects the client environment's TMPDIR.
+    assert_contains "TMPDIR=${new_tmpdir}" bazel-bin/pkg/test.out
   fi
-  export PATH="${old_path}"
+
+  # Test that Bazel passed through the PATH from --action_env.
+  assert_contains "PATH=/random/path" bazel-bin/pkg/test.out
 }
 
 function test_genrule_remote() {
@@ -315,8 +374,8 @@ genrule(
 EOF
 
   bazel build @r//package:hi >$TEST_log 2>&1 || fail "Should build"
-  expect_log "bazel-\(bin\|genfiles\)/external/r/package/a/b"
-  expect_log "bazel-\(bin\|genfiles\)/external/r/package/c/d"
+  expect_log "bazel-.*bin/external/r/package/a/b"
+  expect_log "bazel-.*bin/external/r/package/c/d"
 }
 
 function test_genrule_toolchain_dependency {
@@ -325,11 +384,12 @@ function test_genrule_toolchain_dependency {
 genrule(
     name = "toolchain_check",
     outs = ["version"],
+    toolchains = ['@bazel_tools//tools/jdk:current_host_java_runtime'],
     cmd = "ls -al \$(JAVABASE) > \$@",
 )
 EOF
   bazel build //t:toolchain_check >$TEST_log 2>&1 || fail "Should build"
-  expect_log "bazel-\(bin\|genfiles\)/t/version"
+  expect_log "bazel-.*bin/t/version"
   expect_not_log "ls: cannot access"
 }
 
@@ -359,12 +419,12 @@ EOF
  cat > module_b/bar.py <<EOF
 from module_a import foo
 def PrintNumber():
-  print "Print the number %d" % foo.GetNumber()
+  print("Print the number %d" % foo.GetNumber())
 EOF
 
  cat > module_b/bar2.py <<EOF
 from module_a import foo
-print "The number is %d" % foo.GetNumber()
+print("The number is %d" % foo.GetNumber())
 EOF
 
  cd ${WORKSPACE_DIR}
@@ -385,10 +445,18 @@ EOF
 
 cat > module1/fib.py <<EOF
 def Fib(n):
-  if n == 0 or n == 1:
+  if n < 2:
     return 1
   else:
-    return Fib(n-1) + Fib(n-2)
+    a = 1
+    b = 1
+    i = 2
+    while i <= n:
+      c = a + b
+      a = b
+      b = c
+      i += 1
+    return b
 EOF
 
  cat > module2/bez.py <<EOF
@@ -396,9 +464,9 @@ from remote.module_a import foo
 from remote.module_b import bar
 from module1 import fib
 
-print "The number is %d" % foo.GetNumber()
+print("The number is %d" % foo.GetNumber())
 bar.PrintNumber()
-print "Fib(10) is %d" % fib.Fib(10)
+print("Fib(10) is %d" % fib.Fib(10))
 EOF
  bazel run //module2:bez >$TEST_log
  expect_log "The number is 42"
@@ -422,7 +490,11 @@ EOF
 print("world")
 EOF
   bazel build --build_python_zip //py:bin2 || fail "build failed"
-  unzip -l ./bazel-bin/py/bin2 | grep "data.txt" || fail "failed to zip data file"
+  # `unzip` prints the right output but exits with non-zero, because the zip
+  # file starts with a shebang line. Capture the output and swallow this benign
+  # error, and only assert the output.
+  local found=$(unzip -l ./bazel-bin/py/bin2 | grep "data.txt" || echo "")
+  [[ -n "$found" ]] || fail "failed to zip data file"
 }
 
 function test_build_with_aliased_input_file() {

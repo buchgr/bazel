@@ -16,32 +16,114 @@ package com.google.devtools.build.lib.skyframe;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.devtools.build.skyframe.WalkableGraphUtils.exists;
 
+import com.google.common.base.Optional;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.eventbus.EventBus;
-import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
+import com.google.devtools.build.lib.analysis.BlazeDirectories;
+import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
+import com.google.devtools.build.lib.analysis.ServerDirectories;
+import com.google.devtools.build.lib.analysis.util.AnalysisMock;
+import com.google.devtools.build.lib.analysis.util.DefaultBuildOptionsForTesting;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Reporter;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.packages.PackageFactory;
+import com.google.devtools.build.lib.packages.StarlarkSemanticsOptions;
+import com.google.devtools.build.lib.pkgcache.PackageCacheOptions;
+import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
+import com.google.devtools.build.lib.rules.repository.RepositoryDelegatorFunction;
+import com.google.devtools.build.lib.testutil.FoundationTestCase;
+import com.google.devtools.build.lib.testutil.TestConstants;
+import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.RootedPath;
+import com.google.devtools.build.skyframe.EvaluationContext;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.WalkableGraph;
+import com.google.devtools.common.options.Options;
 import java.io.IOException;
+import java.util.UUID;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 /** Tests for {@link PrepareDepsOfPatternsFunction}. */
 @RunWith(JUnit4.class)
-public class PrepareDepsOfPatternsFunctionSmartNegationTest extends BuildViewTestCase {
+public class PrepareDepsOfPatternsFunctionSmartNegationTest extends FoundationTestCase {
+  private SkyframeExecutor skyframeExecutor;
+  private static final String ADDITIONAL_BLACKLISTED_PACKAGE_PREFIXES_FILE_PATH_STRING =
+      "config/blacklist.txt";
 
   private static SkyKey getKeyForLabel(Label label) {
     // Note that these tests used to look for TargetMarker SkyKeys before TargetMarker was
     // inlined in TransitiveTraversalFunction. Because TargetMarker is now inlined, it doesn't
     // appear in the graph. Instead, these tests now look for TransitiveTraversal keys.
     return TransitiveTraversalValue.key(label);
+  }
+
+  @Before
+  public void setUp() throws Exception {
+    BlazeDirectories directories =
+        new BlazeDirectories(
+            new ServerDirectories(
+                getScratch().dir("/install"),
+                getScratch().dir("/output"),
+                getScratch().dir("/user_root")),
+            rootDirectory,
+            /* defaultSystemJavabase= */ null,
+            AnalysisMock.get().getProductName());
+    ConfiguredRuleClassProvider ruleClassProvider = AnalysisMock.get().createRuleClassProvider();
+
+    PackageFactory pkgFactory =
+        AnalysisMock.get()
+            .getPackageFactoryBuilderForTesting(directories)
+            .build(ruleClassProvider, fileSystem);
+    skyframeExecutor =
+        BazelSkyframeExecutorConstants.newBazelSkyframeExecutorBuilder()
+            .setPkgFactory(pkgFactory)
+            .setFileSystem(fileSystem)
+            .setDirectories(directories)
+            .setActionKeyContext(new ActionKeyContext())
+            .setBuildInfoFactories(
+                AnalysisMock.get().createRuleClassProvider().getBuildInfoFactories())
+            .setDefaultBuildOptions(
+                DefaultBuildOptionsForTesting.getDefaultBuildOptionsForTest(ruleClassProvider))
+            .setExtraSkyFunctions(AnalysisMock.get().getSkyFunctions(directories))
+            .setAdditionalBlacklistedPackagePrefixesFile(
+                PathFragment.create(ADDITIONAL_BLACKLISTED_PACKAGE_PREFIXES_FILE_PATH_STRING))
+            .build();
+    TestConstants.processSkyframeExecutorForTesting(skyframeExecutor);
+    skyframeExecutor.preparePackageLoading(
+        new PathPackageLocator(
+            outputBase,
+            ImmutableList.of(Root.fromPath(rootDirectory)),
+            BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY),
+        Options.getDefaults(PackageCacheOptions.class),
+        Options.getDefaults(StarlarkSemanticsOptions.class),
+        UUID.randomUUID(),
+        ImmutableMap.<String, String>of(),
+        new TimestampGranularityMonitor(null));
+    skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
+    skyframeExecutor.injectExtraPrecomputedValues(
+        ImmutableList.of(
+            PrecomputedValue.injected(
+                RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE,
+                Optional.<RootedPath>absent()),
+            PrecomputedValue.injected(
+                RepositoryDelegatorFunction.REPOSITORY_OVERRIDES,
+                ImmutableMap.<RepositoryName, PathFragment>of()),
+            PrecomputedValue.injected(
+                RepositoryDelegatorFunction.DEPENDENCY_FOR_UNCONDITIONAL_FETCHING,
+                RepositoryDelegatorFunction.DONT_FETCH_UNCONDITIONALLY)));
+    scratch.file(ADDITIONAL_BLACKLISTED_PACKAGE_PREFIXES_FILE_PATH_STRING);
   }
 
   @Test
@@ -89,9 +171,7 @@ public class PrepareDepsOfPatternsFunctionSmartNegationTest extends BuildViewTes
     ImmutableList<String> patternSequence = ImmutableList.of("//foo/...");
 
     // and a blacklist for the malformed package,
-    getSkyframeExecutor().setBlacklistedPackagePrefixesFile(
-        PathFragment.create("config/blacklist.txt"));
-    scratch.file("config/blacklist.txt", "foo/foo");
+    scratch.overwriteFile(ADDITIONAL_BLACKLISTED_PACKAGE_PREFIXES_FILE_PATH_STRING, "foo/foo");
 
     assertSkipsFoo(patternSequence);
   }
@@ -126,8 +206,8 @@ public class PrepareDepsOfPatternsFunctionSmartNegationTest extends BuildViewTes
 
     // Then a event is published that says that negative non-TBD patterns are skipped.
     assertContainsEvent(
-        "Skipping '-//foo/bar': Negative target patterns of types other than \"targets below "
-            + "directory\" are not permitted.");
+        "Skipping '-//foo/bar, excludedSubdirs=[], filteringPolicy=[]': Negative target patterns of"
+            + " types other than \"targets below directory\" are not permitted.");
   }
 
   // Helpers:
@@ -139,14 +219,14 @@ public class PrepareDepsOfPatternsFunctionSmartNegationTest extends BuildViewTes
     ImmutableList<SkyKey> singletonTargetPattern = ImmutableList.of(independentTarget);
 
     // When PrepareDepsOfPatternsFunction completes evaluation,
+    EvaluationContext evaluationContext =
+        EvaluationContext.newBuilder()
+            .setKeepGoing(keepGoing)
+            .setNumThreads(100)
+            .setEventHander(new Reporter(new EventBus(), eventCollector))
+            .build();
     EvaluationResult<SkyValue> evaluationResult =
-        getSkyframeExecutor()
-            .getDriverForTesting()
-            .evaluate(
-                singletonTargetPattern,
-                keepGoing,
-                LOADING_PHASE_THREADS,
-                new Reporter(new EventBus(), eventCollector));
+        skyframeExecutor.getDriverForTesting().evaluate(singletonTargetPattern, evaluationContext);
     // The evaluation has no errors if success was expected.
     assertThat(evaluationResult.hasError()).isNotEqualTo(successExpected);
     return Preconditions.checkNotNull(evaluationResult.getWalkableGraph());

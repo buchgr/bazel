@@ -13,28 +13,53 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.android;
 
-import com.google.auto.value.AutoValue;
+import static com.google.devtools.build.lib.rules.android.AndroidSkylarkData.fromNoneable;
+
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
-import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.packages.BuiltinProvider;
+import com.google.devtools.build.lib.packages.NativeInfo;
+import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
+import com.google.devtools.build.lib.skylarkbuildapi.android.AndroidSdkProviderApi;
+import com.google.devtools.build.lib.syntax.EvalException;
 import javax.annotation.Nullable;
 
 /** Description of the tools Blaze needs from an Android SDK. */
-@AutoValue
 @Immutable
-public abstract class AndroidSdkProvider implements TransitiveInfoProvider {
+public final class AndroidSdkProvider extends NativeInfo
+    implements AndroidSdkProviderApi<Artifact, FilesToRunProvider, TransitiveInfoCollection> {
 
-  public static AndroidSdkProvider create(
+  public static final Provider PROVIDER = new Provider();
+
+  private final String buildToolsVersion;
+  private final Artifact frameworkAidl;
+  private final TransitiveInfoCollection aidlLib;
+  private final Artifact androidJar;
+  private final Artifact sourceProperties;
+  private final Artifact shrinkedAndroidJar;
+  private final Artifact mainDexClasses;
+  private final FilesToRunProvider adb;
+  private final FilesToRunProvider dx;
+  private final FilesToRunProvider mainDexListCreator;
+  private final FilesToRunProvider aidl;
+  private final FilesToRunProvider aapt;
+  private final FilesToRunProvider aapt2;
+  private final FilesToRunProvider apkBuilder;
+  private final FilesToRunProvider apkSigner;
+  private final FilesToRunProvider proguard;
+  private final FilesToRunProvider zipalign;
+
+  public AndroidSdkProvider(
       String buildToolsVersion,
       Artifact frameworkAidl,
       @Nullable TransitiveInfoCollection aidlLib,
       Artifact androidJar,
+      @Nullable Artifact sourceProperties,
       Artifact shrinkedAndroidJar,
-      Artifact annotationsJar,
       Artifact mainDexClasses,
       FilesToRunProvider adb,
       FilesToRunProvider dx,
@@ -46,25 +71,24 @@ public abstract class AndroidSdkProvider implements TransitiveInfoProvider {
       FilesToRunProvider apkSigner,
       FilesToRunProvider proguard,
       FilesToRunProvider zipalign) {
-
-    return new AutoValue_AndroidSdkProvider(
-        buildToolsVersion,
-        frameworkAidl,
-        aidlLib,
-        androidJar,
-        shrinkedAndroidJar,
-        annotationsJar,
-        mainDexClasses,
-        adb,
-        dx,
-        mainDexListCreator,
-        aidl,
-        aapt,
-        aapt2,
-        apkBuilder,
-        apkSigner,
-        proguard,
-        zipalign);
+    super(PROVIDER);
+    this.buildToolsVersion = buildToolsVersion;
+    this.frameworkAidl = frameworkAidl;
+    this.aidlLib = aidlLib;
+    this.androidJar = androidJar;
+    this.sourceProperties = sourceProperties;
+    this.shrinkedAndroidJar = shrinkedAndroidJar;
+    this.mainDexClasses = mainDexClasses;
+    this.adb = adb;
+    this.dx = dx;
+    this.mainDexListCreator = mainDexListCreator;
+    this.aidl = aidl;
+    this.aapt = aapt;
+    this.aapt2 = aapt2;
+    this.apkBuilder = apkBuilder;
+    this.apkSigner = apkSigner;
+    this.proguard = proguard;
+    this.zipalign = zipalign;
   }
 
   /**
@@ -72,64 +96,153 @@ public abstract class AndroidSdkProvider implements TransitiveInfoProvider {
    * not specified.
    */
   public static AndroidSdkProvider fromRuleContext(RuleContext ruleContext) {
-    TransitiveInfoCollection androidSdkDep =
-        ruleContext.getPrerequisite(":android_sdk", Mode.TARGET);
-    AndroidSdkProvider androidSdk = androidSdkDep == null
-        ? null : androidSdkDep.getProvider(AndroidSdkProvider.class);
-
-    return androidSdk;
+    return ruleContext.getPrerequisite(":android_sdk", Mode.TARGET, AndroidSdkProvider.PROVIDER);
   }
 
-  /**
-   * Signals an error if the Android SDK cannot be found.
-   */
-  public static boolean verifyPresence(RuleContext ruleContext) {
+  /** Throws an error if the Android SDK cannot be found. */
+  public static void verifyPresence(RuleContext ruleContext) throws RuleErrorException {
     if (fromRuleContext(ruleContext) == null) {
-      ruleContext.ruleError(
+      throw ruleContext.throwWithRuleError(
           "No Android SDK found. Use the --android_sdk command line option to specify one.");
-      return false;
+    }
+  }
+
+  @Override
+  public String getBuildToolsVersion() {
+    return buildToolsVersion;
+  }
+
+  @Override
+  public Artifact getFrameworkAidl() {
+    return frameworkAidl;
+  }
+
+  @Override
+  @Nullable
+  public TransitiveInfoCollection getAidlLib() {
+    return aidlLib;
+  }
+
+  @Override
+  public Artifact getAndroidJar() {
+    return androidJar;
+  }
+
+  @Override
+  @Nullable
+  public Artifact getSourceProperties() {
+    return sourceProperties;
+  }
+
+  @Override
+  public Artifact getShrinkedAndroidJar() {
+    return shrinkedAndroidJar;
+  }
+
+  @Override
+  public Artifact getMainDexClasses() {
+    return mainDexClasses;
+  }
+
+  @Override
+  public FilesToRunProvider getAdb() {
+    return adb;
+  }
+
+  @Override
+  public FilesToRunProvider getDx() {
+    return dx;
+  }
+
+  @Override
+  public FilesToRunProvider getMainDexListCreator() {
+    return mainDexListCreator;
+  }
+
+  @Override
+  public FilesToRunProvider getAidl() {
+    return aidl;
+  }
+
+  @Override
+  public FilesToRunProvider getAapt() {
+    return aapt;
+  }
+
+  @Override
+  @Nullable
+  public FilesToRunProvider getAapt2() {
+    return aapt2;
+  }
+
+  @Override
+  @Nullable
+  public FilesToRunProvider getApkBuilder() {
+    return apkBuilder;
+  }
+
+  @Override
+  public FilesToRunProvider getApkSigner() {
+    return apkSigner;
+  }
+
+  @Override
+  public FilesToRunProvider getProguard() {
+    return proguard;
+  }
+
+  @Override
+  public FilesToRunProvider getZipalign() {
+    return zipalign;
+  }
+
+  /** The provider can construct the Android SDK provider. */
+  public static class Provider extends BuiltinProvider<AndroidSdkProvider>
+      implements AndroidSdkProviderApi.Provider<
+          Artifact, FilesToRunProvider, TransitiveInfoCollection> {
+
+    private Provider() {
+      super(NAME, AndroidSdkProvider.class);
     }
 
-    return true;
+    @Override
+    public AndroidSdkProvider createInfo(
+        String buildToolsVersion,
+        Artifact frameworkAidl,
+        Object aidlLib,
+        Artifact androidJar,
+        Object sourceProperties,
+        Artifact shrinkedAndroidJar,
+        Artifact mainDexClasses,
+        FilesToRunProvider adb,
+        FilesToRunProvider dx,
+        FilesToRunProvider mainDexListCreator,
+        FilesToRunProvider aidl,
+        FilesToRunProvider aapt,
+        Object aapt2,
+        Object apkBuilder,
+        FilesToRunProvider apkSigner,
+        FilesToRunProvider proguard,
+        FilesToRunProvider zipalign)
+        throws EvalException {
+      return new AndroidSdkProvider(
+          buildToolsVersion,
+          frameworkAidl,
+          fromNoneable(aidlLib, TransitiveInfoCollection.class),
+          androidJar,
+          fromNoneable(sourceProperties, Artifact.class),
+          shrinkedAndroidJar,
+          mainDexClasses,
+          adb,
+          dx,
+          mainDexListCreator,
+          aidl,
+          aapt,
+          fromNoneable(aapt2, FilesToRunProvider.class),
+          fromNoneable(apkBuilder, FilesToRunProvider.class),
+          apkSigner,
+          proguard,
+          zipalign);
+    }
   }
-
-  /** The value of build_tools_version. May be null or empty. */
-  public abstract String getBuildToolsVersion();
-
-  public abstract Artifact getFrameworkAidl();
-
-  @Nullable
-  public abstract TransitiveInfoCollection getAidlLib();
-
-  public abstract Artifact getAndroidJar();
-
-  public abstract Artifact getShrinkedAndroidJar();
-
-  public abstract Artifact getAnnotationsJar();
-
-  public abstract Artifact getMainDexClasses();
-
-  public abstract FilesToRunProvider getAdb();
-
-  public abstract FilesToRunProvider getDx();
-
-  public abstract FilesToRunProvider getMainDexListCreator();
-
-  public abstract FilesToRunProvider getAidl();
-
-  public abstract FilesToRunProvider getAapt();
-
-  @Nullable
-  public abstract FilesToRunProvider getAapt2();
-
-  @Nullable
-  public abstract FilesToRunProvider getApkBuilder();
-
-  public abstract FilesToRunProvider getApkSigner();
-
-  public abstract FilesToRunProvider getProguard();
-
-  public abstract FilesToRunProvider getZipalign();
-
-  AndroidSdkProvider() {}
 }

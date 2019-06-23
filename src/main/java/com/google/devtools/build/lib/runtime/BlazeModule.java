@@ -13,30 +13,36 @@
 // limitations under the License.
 package com.google.devtools.build.lib.runtime;
 
+import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.actions.ExecutorInitException;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.BlazeVersionInfo;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
+import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ServerDirectories;
+import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
+import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.test.CoverageReportActionFactory;
 import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.clock.Clock;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.exec.ExecutorBuilder;
-import com.google.devtools.build.lib.packages.NoSuchThingException;
 import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.lib.packages.PackageFactory;
-import com.google.devtools.build.lib.packages.RuleClassProvider;
-import com.google.devtools.build.lib.skyframe.OutputService;
+import com.google.devtools.build.lib.skyframe.AspectValue;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.io.OutErr;
+import com.google.devtools.build.lib.vfs.DigestHashFunction.DefaultHashFunctionNotSetException;
 import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.build.lib.vfs.OutputService;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.OptionsBase;
-import com.google.devtools.common.options.OptionsClassProvider;
+import com.google.devtools.common.options.OptionsParsingResult;
 import com.google.devtools.common.options.OptionsProvider;
-import java.io.IOException;
 import java.util.UUID;
 import javax.annotation.Nullable;
 
@@ -68,7 +74,7 @@ public abstract class BlazeModule {
    *
    * @throws AbruptExitException to shut down the server immediately
    */
-  public void globalInit(OptionsProvider startupOptions) throws AbruptExitException {
+  public void globalInit(OptionsParsingResult startupOptions) throws AbruptExitException {
   }
 
   /**
@@ -79,27 +85,53 @@ public abstract class BlazeModule {
    * and {@link #blazeStartup}).
    *
    * @param startupOptions the server's startup options
+   * @param realExecRootBase absolute path fragment of the actual, underlying execution root
    */
-  public FileSystem getFileSystem(OptionsProvider startupOptions) {
+  public ModuleFileSystem getFileSystem(
+      OptionsParsingResult startupOptions, PathFragment realExecRootBase)
+      throws AbruptExitException, DefaultHashFunctionNotSetException {
     return null;
   }
 
+  /** Tuple returned by {@link #getFileSystem}. */
+  @AutoValue
+  public abstract static class ModuleFileSystem {
+    public abstract FileSystem fileSystem();
+
+    /** Non-null if this filesystem virtualizes the execroot folder. */
+    @Nullable
+    public abstract Path virtualExecRootBase();
+
+    public static ModuleFileSystem create(
+        FileSystem fileSystem, @Nullable Path virtualExecRootBase) {
+      return new AutoValue_BlazeModule_ModuleFileSystem(fileSystem, virtualExecRootBase);
+    }
+
+    public static ModuleFileSystem create(FileSystem fileSystem) {
+      return create(fileSystem, null);
+    }
+  }
+
   /**
-   * Called when Bazel starts up after {@link #getStartupOptions}, {@link #globalInit}, and
-   * {@link #getFileSystem}.
+   * Called when Bazel starts up after {@link #getStartupOptions}, {@link #globalInit}, and {@link
+   * #getFileSystem}.
    *
    * @param startupOptions the server's startup options
    * @param versionInfo the Bazel version currently running
    * @param instanceId the id of the current Bazel server
+   * @param fileSystem
    * @param directories the install directory
    * @param clock the clock
-   *
    * @throws AbruptExitException to shut down the server immediately
    */
-  public void blazeStartup(OptionsProvider startupOptions,
-      BlazeVersionInfo versionInfo, UUID instanceId, ServerDirectories directories,
-      Clock clock) throws AbruptExitException {
-  }
+  public void blazeStartup(
+      OptionsParsingResult startupOptions,
+      BlazeVersionInfo versionInfo,
+      UUID instanceId,
+      FileSystem fileSystem,
+      ServerDirectories directories,
+      Clock clock)
+      throws AbruptExitException {}
 
   /**
    * Called to initialize a new server ({@link BlazeRuntime}). Modules can override this method to
@@ -111,7 +143,7 @@ public abstract class BlazeModule {
    *
    * @throws AbruptExitException to shut down the server immediately
    */
-  public void serverInit(OptionsProvider startupOptions, ServerBuilder builder)
+  public void serverInit(OptionsParsingResult startupOptions, ServerBuilder builder)
       throws AbruptExitException {
   }
 
@@ -142,13 +174,13 @@ public abstract class BlazeModule {
 
   /**
    * Called to notify modules that the given command is about to be executed. This allows capturing
-   * the {@link com.google.common.eventbus.EventBus}, {@link Command}, or {@link OptionsProvider}.
+   * the {@link com.google.common.eventbus.EventBus}, {@link Command}, or {@link
+   * OptionsParsingResult}.
    *
    * @param env the command
    * @throws AbruptExitException modules can throw this exception to abort the command
    */
-  public void beforeCommand(CommandEnvironment env) throws AbruptExitException {
-  }
+  public void beforeCommand(CommandEnvironment env) throws AbruptExitException {}
 
   /**
    * Returns additional listeners to the console output stream. Called at the beginning of each
@@ -209,6 +241,32 @@ public abstract class BlazeModule {
   }
 
   /**
+   * Returns an instance of BuildOptions to be used to create {@link
+   * BuildOptions.OptionsDiffForReconstruction} with. Only one installed Module should override
+   * this.
+   */
+  public BuildOptions getDefaultBuildOptions(BlazeRuntime runtime) {
+    return null;
+  }
+
+  /**
+   * Called after Bazel analyzes the build's top-level targets. This is called once per build if
+   * --analyze is enabled. Modules can override this to perform extra checks on analysis results.
+   *
+   * @param env the command environment
+   * @param request the build request
+   * @param buildOptions the build's top-level options
+   * @param configuredTargets the build's requested top-level targets as {@link ConfiguredTarget}s
+   */
+  public void afterAnalysis(
+      CommandEnvironment env,
+      BuildRequest request,
+      BuildOptions buildOptions,
+      Iterable<ConfiguredTarget> configuredTargets,
+      ImmutableSet<AspectValue> aspects)
+      throws InterruptedException, ViewCreationFailedException {}
+
+  /**
    * Called when Bazel initializes the action execution subsystem. This is called once per build if
    * action execution is enabled. Modules can override this method to affect how execution is
    * performed.
@@ -217,19 +275,30 @@ public abstract class BlazeModule {
    * @param request the build request
    * @param builder the builder to add action context providers and consumers to
    */
-  public void executorInit(CommandEnvironment env, BuildRequest request, ExecutorBuilder builder) {
-  }
+  public void executorInit(CommandEnvironment env, BuildRequest request, ExecutorBuilder builder)
+      throws ExecutorInitException {}
 
   /**
    * Called after each command.
+   *
+   * @throws AbruptExitException modules can throw this exception to modify the command exit code
    */
-  public void afterCommand() {
-  }
+  public void afterCommand() throws AbruptExitException {}
+
+  /**
+   * Called after {@link #afterCommand()}. This method can be used to close and cleanup resources
+   * specific to the command.
+   *
+   * <p>This method must not throw any exceptions, report any errors or generate any stdout/stderr.
+   * Any of the above will make Bazel crash occasionally. Please use {@link #afterCommand()}
+   * instead.
+   */
+  public void commandComplete() {}
 
   /**
    * Called when Blaze shuts down.
    *
-   * <p>If you are also implementing {@link #shutdownOnCrash()}, consider putting the common
+   * <p>If you are also implementing {@link #blazeShutdownOnCrash()}, consider putting the common
    * shutdown code in the latter and calling that other hook from here.
    */
   public void blazeShutdown() {
@@ -245,9 +314,13 @@ public abstract class BlazeModule {
   public void blazeShutdownOnCrash() {}
 
   /**
-   * Perform module specific check of current command environment.
+   * Returns a {@link QueryRuntimeHelper.Factory} that will be used by the query, cquery, and aquery
+   * commands.
+   *
+   * <p>It is an error if multiple modules return non-null values.
    */
-  public void checkEnvironment(CommandEnvironment env) {
+  public QueryRuntimeHelper.Factory getQueryRuntimeHelperFactory() {
+    return null;
   }
 
   /**
@@ -255,8 +328,8 @@ public abstract class BlazeModule {
    * does not provide any helper, it should return null. Note that only one helper per Bazel/Blaze
    * runtime is allowed.
    */
-  public Package.Builder.Helper getPackageBuilderHelper(RuleClassProvider ruleClassProvider,
-      FileSystem fs) {
+  public Package.Builder.Helper getPackageBuilderHelper(
+      ConfiguredRuleClassProvider ruleClassProvider, FileSystem fs) {
     return null;
   }
 
@@ -278,7 +351,7 @@ public abstract class BlazeModule {
    * @param commandOptions the options for the current command
    */
   @Nullable
-  public CoverageReportActionFactory getCoverageReportFactory(OptionsClassProvider commandOptions) {
+  public CoverageReportActionFactory getCoverageReportFactory(OptionsProvider commandOptions) {
     return null;
   }
 
@@ -287,11 +360,13 @@ public abstract class BlazeModule {
    */
   public interface ModuleEnvironment {
     /**
-     * Gets a file from the depot based on its label and returns the {@link Path} where it can
-     * be found.
+     * Gets a file from the depot based on its label and returns the {@link Path} where it can be
+     * found.
+     *
+     * <p>Returns null when the package designated by the label does not exist.
      */
-    Path getFileFromWorkspace(Label label)
-        throws NoSuchThingException, InterruptedException, IOException;
+    @Nullable
+    Path getFileFromWorkspace(Label label);
 
     /**
      * Exits Blaze as early as possible by sending an interrupt to the command's main thread.
@@ -301,5 +376,10 @@ public abstract class BlazeModule {
 
   public ImmutableList<PrecomputedValue.Injected> getPrecomputedValues() {
     return ImmutableList.of();
+  }
+
+  @Override
+  public String toString() {
+    return this.getClass().getSimpleName();
   }
 }

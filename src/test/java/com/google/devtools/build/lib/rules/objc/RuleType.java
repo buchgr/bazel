@@ -15,9 +15,9 @@
 package com.google.devtools.build.lib.rules.objc;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.testutil.Scratch;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
@@ -157,7 +157,18 @@ public abstract class RuleType {
       Scratch scratch, String... checkSpecificAttrs)
       throws IOException {
     String target = target(scratch, packageDir, targetName, checkSpecificAttrs);
-    scratch.file(packageDir + "/BUILD", target);
+    scratch.file(packageDir + "/BUILD", skylarkLoadPrerequisites() + "\n" + target);
     return target;
+  }
+
+  /**
+   * Returns a string (of one or more lines) required by BUILD files which reference targets of
+   * this rule type.
+   *
+   * <p>Subclasses of {@link RuleType} should override this method if using the rule requires
+   * skylark files to be loaded.
+   */
+  public String skylarkLoadPrerequisites() {
+    return "";
   }
 }

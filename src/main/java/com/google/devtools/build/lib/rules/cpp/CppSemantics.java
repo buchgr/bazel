@@ -14,25 +14,15 @@
 
 package com.google.devtools.build.lib.rules.cpp;
 
-import com.google.common.base.Predicate;
-import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
+import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration.HeadersCheckingMode;
-import com.google.devtools.build.lib.vfs.PathFragment;
 
-/**
- * Pluggable C++ compilation semantics.
- */
+/** Pluggable C++ compilation semantics. */
 public interface CppSemantics {
-  /**
-   * Returns the "effective source path" of a source file.
-   *
-   * <p>It is used, among other things, for computing the output path.
-   */
-  PathFragment getEffectiveSourcePath(Artifact source);
-
   /**
    * Called before a C++ compile action is built.
    *
@@ -40,20 +30,9 @@ public interface CppSemantics {
    * minute.
    */
   void finalizeCompileActionBuilder(
-      RuleContext ruleContext,
-      CppCompileActionBuilder actionBuilder,
-      FeatureSpecification featureSpecification,
-      Predicate<String> coptsFilter,
-      ImmutableSet<String> features);
-
-  /**
-   * Called before {@link CppCompilationContext}s are finalized.
-   *
-   * <p>Gives the semantics implementation the opportunity to change what the C++ rule propagates
-   * to dependent rules.
-   */
-  void setupCompilationContext(
-      RuleContext ruleContext, CppCompilationContext.Builder contextBuilder);
+      BuildConfiguration configuration,
+      FeatureConfiguration featureConfiguration,
+      CppCompileActionBuilder actionBuilder);
 
   /**
    * Returns the set of includes which are not mandatory and may be pruned by include processing.
@@ -68,16 +47,12 @@ public interface CppSemantics {
   /** Returns the include processing closure, which handles include processing for this build */
   IncludeProcessing getIncludeProcessing();
 
-  /**
-   * Returns true iff this build configuration requires inclusion extraction (for include scanning)
-   * in the action graph.
-   */
-  boolean needsIncludeScanning(RuleContext ruleContext);
-  
   /** Returns true iff this build should perform .d input pruning. */
   boolean needsDotdInputPruning();
 
   void validateAttributes(RuleContext ruleContext);
+
+  default void validateDeps(RuleContext ruleContext) {}
 
   /** Returns true iff this build requires include validation. */
   boolean needsIncludeValidation();

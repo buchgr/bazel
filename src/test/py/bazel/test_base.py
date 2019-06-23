@@ -1,4 +1,5 @@
 # pylint: disable=g-bad-file-header
+# pylint: disable=superfluous-parens
 # Copyright 2017 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,9 +16,9 @@
 
 import locale
 import os
+import socket
 import stat
 import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -45,6 +46,9 @@ class TestBase(unittest.TestCase):
   _temp = None
   _tests_root = None
   _test_cwd = None
+  _worker_stdout = None
+  _worker_stderr = None
+  _worker_proc = None
 
   def setUp(self):
     unittest.TestCase.setUp(self)
@@ -55,18 +59,61 @@ class TestBase(unittest.TestCase):
         os.path.join(test_tmpdir, 'tests_root'))
     self._temp = TestBase._CreateDirs(os.path.join(test_tmpdir, 'tmp'))
     self._test_cwd = tempfile.mkdtemp(dir=self._tests_root)
+    self._test_bazelrc = os.path.join(self._temp, 'test_bazelrc')
+    with open(self._test_bazelrc, 'wt') as f:
+      f.write('build --jobs=8\n')
     os.chdir(self._test_cwd)
 
-  def AssertExitCode(self, actual_exit_code, expected_exit_code, stderr_lines):
+  def tearDown(self):
+    self.RunBazel(['shutdown'])
+    super(TestBase, self).tearDown()
+
+  def _AssertExitCodeIs(self,
+                        actual_exit_code,
+                        exit_code_pred,
+                        expectation_msg,
+                        stderr_lines,
+                        stdout_lines=None):
     """Assert that `actual_exit_code` == `expected_exit_code`."""
-    if actual_exit_code != expected_exit_code:
+    if not exit_code_pred(actual_exit_code):
+      # If stdout was provided, include it in the output. This is mostly useful
+      # for tests.
+      stdout = ''
+      if stdout_lines:
+        stdout = '\n'.join([
+            '(start stdout)----------------------------------------',
+        ] + stdout_lines + [
+            '(end stdout)------------------------------------------',
+        ])
+
       self.fail('\n'.join([
-          'Bazel exited with %d (expected %d), stderr:' % (actual_exit_code,
-                                                           expected_exit_code),
+          'Bazel exited with %d %s, stderr:' %
+          (actual_exit_code, expectation_msg),
+          stdout,
           '(start stderr)----------------------------------------',
       ] + (stderr_lines or []) + [
           '(end stderr)------------------------------------------',
       ]))
+
+  def AssertExitCode(self,
+                     actual_exit_code,
+                     expected_exit_code,
+                     stderr_lines,
+                     stdout_lines=None):
+    """Assert that `actual_exit_code` == `expected_exit_code`."""
+    self._AssertExitCodeIs(actual_exit_code, lambda x: x == expected_exit_code,
+                           '(expected %d)' % expected_exit_code, stderr_lines,
+                           stdout_lines)
+
+  def AssertNotExitCode(self,
+                        actual_exit_code,
+                        not_expected_exit_code,
+                        stderr_lines,
+                        stdout_lines=None):
+    """Assert that `actual_exit_code` != `not_expected_exit_code`."""
+    self._AssertExitCodeIs(
+        actual_exit_code, lambda x: x != not_expected_exit_code,
+        '(against expectations)', stderr_lines, stdout_lines)
 
   @staticmethod
   def GetEnv(name, default=None):
@@ -84,7 +131,7 @@ class TestBase(unittest.TestCase):
     """
     value = os.getenv(name, '__undefined_envvar__')
     if value == '__undefined_envvar__':
-      if default:
+      if default is not None:
         return default
       raise EnvVarUndefinedError(name)
     return value
@@ -93,6 +140,11 @@ class TestBase(unittest.TestCase):
   def IsWindows():
     """Returns true if the current platform is Windows."""
     return os.name == 'nt'
+
+  @staticmethod
+  def IsUnix():
+    """Returns true if the current platform is Unix platform."""
+    return os.name == 'posix'
 
   def Path(self, path):
     """Returns the absolute path of `path` relative to self._test_cwd.
@@ -170,33 +222,129 @@ class TestBase(unittest.TestCase):
       os.chmod(abspath, stat.S_IRWXU)
     return abspath
 
+  def CopyFile(self, src_path, dst_path, executable=False):
+    """Copy a file to a path under the test's scratch directory.
+
+    Args:
+      src_path: string; a path, the file to copy
+      dst_path: string; a path, relative to the test's scratch directory, the
+        destination to copy the file to, e.g. "foo/bar/BUILD"
+      executable: bool; whether to make the destination file executable
+    Returns:
+      The absolute path of the destination file.
+    Raises:
+      ArgumentError: if `dst_path` is absolute or contains uplevel references
+      IOError: if an I/O error occurs
+    """
+    if not src_path or not dst_path:
+      return
+    abspath = self.Path(dst_path)
+    if os.path.exists(abspath) and not os.path.isfile(abspath):
+      raise IOError('"%s" (%s) exists and is not a file' % (dst_path, abspath))
+    self.ScratchDir(os.path.dirname(dst_path))
+    with open(src_path, 'rb') as s:
+      with open(abspath, 'wb') as d:
+        d.write(s.read())
+    if executable:
+      os.chmod(abspath, stat.S_IRWXU)
+    return abspath
+
   def RunBazel(self, args, env_remove=None, env_add=None):
     """Runs "bazel <args>", waits for it to exit.
 
     Args:
       args: [string]; flags to pass to bazel (e.g. ['--batch', 'build', '//x'])
-      env_remove: set(string); optional; environment variables to NOT pass to
-        Bazel
-      env_add: set(string); optional; environment variables to pass to
+      env_remove: iterable(string); optional; environment variables to NOT pass
+        to Bazel
+      env_add: {string: string}; optional; environment variables to pass to
         Bazel, won't be removed by env_remove.
     Returns:
       (int, [string], [string]) tuple: exit code, stdout lines, stderr lines
     """
     return self.RunProgram([
         self.Rlocation('io_bazel/src/bazel'),
-        '--bazelrc=/dev/null',
+        '--bazelrc=' + self._test_bazelrc,
         '--nomaster_bazelrc',
     ] + args, env_remove, env_add)
 
-  def RunProgram(self, args, env_remove=None, env_add=None):
+  def StartRemoteWorker(self):
+    """Runs a "local remote worker" to run remote builds and tests on.
+
+    Returns:
+      int: port that the local remote worker runs on.
+    """
+    self._worker_stdout = tempfile.TemporaryFile(dir=self._test_cwd)
+    self._worker_stderr = tempfile.TemporaryFile(dir=self._test_cwd)
+    # Ideally we would use something under TEST_TMPDIR here, but the
+    # worker path must be as short as possible so we don't exceed Windows
+    # path length limits, so we run straight in TEMP. This should ideally
+    # be set to something like C:\temp. On CI this is set to D:\temp.
+    worker_path = TestBase.GetEnv('TEMP')
+
+    # Get an open port. Unfortunately this seems to be the best option in
+    # Python.
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('', 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    # Tip: To help debug remote build problems, add the --debug flag below.
+    self._worker_proc = subprocess.Popen(
+        [
+            self.Rlocation('io_bazel/src/tools/remote/worker.exe'),
+            '--listen_port=' + str(port),
+            # This path has to be extremely short to avoid Windows path
+            # length restrictions.
+            '--work_path=' + worker_path,
+        ],
+        stdout=self._worker_stdout,
+        stderr=self._worker_stderr,
+        cwd=self._test_cwd,
+        env=self._EnvMap(env_add={
+            'RUNFILES_MANIFEST_FILE': TestBase.GetEnv('RUNFILES_MANIFEST_FILE'),
+        }))
+
+    return port
+
+  def StopRemoteWorker(self):
+    """Stop the "local remote worker" started by StartRemoteWorker.
+
+    Prints its stdout and stderr out for debug purposes.
+    """
+    self._worker_proc.terminate()
+    self._worker_proc.wait()
+
+    self._worker_stdout.seek(0)
+    stdout_lines = [
+        l.decode(locale.getpreferredencoding()).strip()
+        for l in self._worker_stdout.readlines()
+    ]
+    if stdout_lines:
+      print('Local remote worker stdout')
+      print('--------------------------')
+      print('\n'.join(stdout_lines))
+
+    self._worker_stderr.seek(0)
+    stderr_lines = [
+        l.decode(locale.getpreferredencoding()).strip()
+        for l in self._worker_stderr.readlines()
+    ]
+    if stderr_lines:
+      print('Local remote worker stderr')
+      print('--------------------------')
+      print('\n'.join(stderr_lines))
+
+  def RunProgram(self, args, env_remove=None, env_add=None, shell=False):
     """Runs a program (args[0]), waits for it to exit.
 
     Args:
       args: [string]; the args to run; args[0] should be the program itself
-      env_remove: set(string); optional; environment variables to NOT pass to
-        the program
-      env_add: set(string); optional; environment variables to pass to
+      env_remove: iterable(string); optional; environment variables to NOT pass
+        to the program
+      env_add: {string: string}; optional; environment variables to pass to
         the program, won't be removed by env_remove.
+      shell: {bool: bool}; optional; whether to use the shell as the program
+        to execute
     Returns:
       (int, [string], [string]) tuple: exit code, stdout lines, stderr lines
     """
@@ -207,7 +355,8 @@ class TestBase(unittest.TestCase):
             stdout=stdout,
             stderr=stderr,
             cwd=self._test_cwd,
-            env=self._EnvMap(env_remove, env_add))
+            env=self._EnvMap(env_remove, env_add),
+            shell=shell)
         exit_code = proc.wait()
 
         stdout.seek(0)
@@ -227,45 +376,21 @@ class TestBase(unittest.TestCase):
   def _EnvMap(self, env_remove=None, env_add=None):
     """Returns the environment variable map to run Bazel or other programs."""
     if TestBase.IsWindows():
-      result = []
-      if sys.version_info.major == 3:
-        # Python 3.2 has os.listdir
-        result = [
-            n for n in os.listdir('c:\\program files\\java')
-            if n.startswith('jdk')
-        ]
-      else:
-        # Python 2.7 has os.path.walk
-        def _Visit(result, _, names):
-          result.extend(n for n in names if n.startswith('jdk'))
-          while names:
-            names.pop()
-
-        os.path.walk('c:\\program files\\java\\', _Visit, result)
-
       env = {
-          'SYSTEMROOT': TestBase.GetEnv('SYSTEMROOT'),
-          # TODO(laszlocsomor): Let Bazel pass BAZEL_SH and JAVA_HOME to tests
-          # and use those here instead of hardcoding paths.
-          'JAVA_HOME': 'c:\\program files\\java\\' + sorted(result)[-1],
-          'BAZEL_SH': 'c:\\tools\\msys64\\usr\\bin\\bash.exe',
-          # TODO(pcloudy): Remove this after no longer need to debug
-          # https://github.com/bazelbuild/bazel/issues/3273
-          'CC_CONFIGURE_DEBUG': '1'
+          'SYSTEMROOT':
+              TestBase.GetEnv('SYSTEMROOT'),
+          # TODO(laszlocsomor): Let Bazel pass BAZEL_SH to tests and use that
+          # here instead of hardcoding paths.
+          #
+          # You can override this with
+          # --action_env=BAZEL_SH=C:\path\to\my\bash.exe.
+          'BAZEL_SH':
+              TestBase.GetEnv('BAZEL_SH',
+                              'c:\\tools\\msys64\\usr\\bin\\bash.exe'),
       }
-
-      # TODO(pcloudy): Remove these hardcoded paths after resolving
-      # https://github.com/bazelbuild/bazel/issues/3273
-      env['BAZEL_VC'] = 'visual-studio-not-found'
-      for p in [
-          (r'C:\Program Files (x86)\Microsoft Visual Studio\2017\Professional'
-           r'\VC'),
-          r'C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools\VC',
-          r'C:\Program Files (x86)\Microsoft Visual Studio 14.0\VC'
-      ]:
-        if os.path.exists(p):
-          env['BAZEL_VC'] = p
-          break
+      java_home = TestBase.GetEnv('JAVA_HOME', '')
+      if java_home:
+        env['JAVA_HOME'] = java_home
     else:
       env = {'HOME': os.path.join(self._temp, 'home')}
 
@@ -277,7 +402,8 @@ class TestBase(unittest.TestCase):
     env['TMP'] = self._temp
     if env_remove:
       for e in env_remove:
-        del env[e]
+        if e in env:
+          del env[e]
     if env_add:
       for e in env_add:
         env[e] = env_add[e]

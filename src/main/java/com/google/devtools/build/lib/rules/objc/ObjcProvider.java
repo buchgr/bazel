@@ -18,9 +18,11 @@ import static com.google.devtools.build.lib.collect.nestedset.Order.LINK_ORDER;
 import static com.google.devtools.build.lib.collect.nestedset.Order.STABLE_ORDER;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
@@ -29,36 +31,69 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.packages.NativeInfo;
-import com.google.devtools.build.lib.packages.NativeProvider;
+import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.packages.BuiltinProvider;
+import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.packages.NativeProvider.WithLegacySkylarkName;
-import com.google.devtools.build.lib.rules.cpp.CcLinkParamsInfo;
 import com.google.devtools.build.lib.rules.cpp.CppModuleMap;
-import com.google.devtools.build.lib.rules.cpp.LinkerInputs;
-import com.google.devtools.build.lib.rules.cpp.LinkerInputs.LibraryToLink;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.rules.cpp.LibraryToLink;
+import com.google.devtools.build.lib.rules.cpp.LibraryToLink.CcLinkingContext;
+import com.google.devtools.build.lib.skylarkbuildapi.apple.ObjcProviderApi;
+import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.EvalUtils;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.syntax.SkylarkList;
+import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
+import com.google.devtools.build.lib.syntax.StarlarkSemantics;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import javax.annotation.Nullable;
 
 /**
  * A provider that provides all compiling and linking information in the transitive closure of its
  * deps that are needed for building Objective-C rules.
+ *
+ * <p>The functional contents within the provider are stored in three maps, each of which maps a
+ * {@link Key} to {@link NestedSet}. The three maps differ in how they are propagated to dependent
+ * providers:
+ *
+ * <ul>
+ *   <li>{@code items}: This map contains items that should be propagated transitively to all
+ *       dependent ObjcProviders. Most items are stored in this map.
+ *   <li>{@code strictDependencyItems}: This map contains items that should only be propagated to
+ *       directly dependent ObjcProviders, but not to indirect ones. This is used to implement
+ *       {@link ObjcProtoLibrary}'s requirement that its header path should only be propagated to
+ *       its direct dependency, and also the experimental (and soon-to-be-deprecated) feature to
+ *       propagate module maps only to direct dependencies.
+ *   <li>{@code nonPropagatedItems}: This map contains items that should not be propagated. There is
+ *       no longer any direct usage of this feature, but strictDependencyItems turn into
+ *       nonPropagatedItems when they get propagated to their dependent ObjcProviders.
+ * </ul>
+ *
+ * <p>All three maps contribute to the final value of a key in an ObjcProvider as returned by {@link
+ * #get(Key<E>)}.
+ *
+ * <p>New usage of {@code strictDependencyItems} and {@code nonPropagatedItems} is strongly
+ * discouraged, as they complicate ongoing tasks of migrating ObjcProvider to CcInfo.
+ *
+ * <p>There is a fourth map, {@code directItems}, that contains items whose values originate from
+ * this ObjcProvider (as opposed to those that came from a dependent ObjcProvider). {@link
+ * #KEYS_FOR_DIRECT} contains the keys whose items are inserted into this map. The map is created as
+ * a performance optimization for IDEs (i.e. Tulsi), so that the IDEs don't have to flatten large
+ * transitive nested sets returned by ObjcProvider queries. It does not materially affect other
+ * operations of the ObjcProvider.
  */
 @Immutable
-@SkylarkModule(
-  name = "ObjcProvider",
-  category = SkylarkModuleCategory.PROVIDER,
-  doc = "A provider for compilation and linking of objc."
-)
-public final class ObjcProvider extends NativeInfo {
+public final class ObjcProvider extends Info implements ObjcProviderApi<Artifact> {
 
   /** Skylark name for the ObjcProvider. */
   public static final String SKYLARK_NAME = "objc";
+
+  /** Expected suffix for a framework-containing directory. */
+  public static final String FRAMEWORK_SUFFIX = ".framework";
 
   /**
    * Represents one of the things this provider can provide transitively. Things are provided as
@@ -163,25 +198,11 @@ public final class ObjcProvider extends NativeInfo {
    */
   public static final Key<String> DEFINE = new Key<>(STABLE_ORDER, "define", String.class);
 
-  public static final Key<Artifact> ASSET_CATALOG =
-      new Key<>(STABLE_ORDER, "asset_catalog", Artifact.class);
-
-  /**
-   * Files that are plopped into the final bundle at some arbitrary bundle path. Do not include
-   * information about where the file originated from.
-   */
-  public static final Key<BundleableFile> BUNDLE_FILE =
-      new Key<>(STABLE_ORDER, "bundle_file", BundleableFile.class);
-
-  public static final Key<PathFragment> XCASSETS_DIR =
-      new Key<>(STABLE_ORDER, "xcassets_dir", PathFragment.class);
   public static final Key<String> SDK_DYLIB = new Key<>(STABLE_ORDER, "sdk_dylib", String.class);
   public static final Key<SdkFramework> SDK_FRAMEWORK =
       new Key<>(STABLE_ORDER, "sdk_framework", SdkFramework.class);
   public static final Key<SdkFramework> WEAK_SDK_FRAMEWORK =
       new Key<>(STABLE_ORDER, "weak_sdk_framework", SdkFramework.class);
-  public static final Key<Artifact> XCDATAMODEL =
-      new Key<>(STABLE_ORDER, "xcdatamodel", Artifact.class);
   public static final Key<Flag> FLAG = new Key<>(STABLE_ORDER, "flag", Flag.class);
 
   /**
@@ -215,17 +236,6 @@ public final class ObjcProvider extends NativeInfo {
       new Key<>(STABLE_ORDER, "merge_zip", Artifact.class);
 
   /**
-   * Merge zips to include in the ipa and outside the bundle root.
-   *
-   * e.g. For a bundle Test.ipa, unzipped content will be in:
-   *    Test.ipa/<unzipped>
-   *    Test.ipa/Payload
-   *    Test.ipa/Payload/Test.app
-   */
-  public static final Key<Artifact> ROOT_MERGE_ZIP =
-      new Key<>(STABLE_ORDER, "root_merge_zip", Artifact.class);
-
-  /**
    * Exec paths of {@code .framework} directories corresponding to frameworks to include in search
    * paths, but not to link.  These cause -F arguments (framework search paths) to be added to
    * each compile action, but do not cause -framework (link framework) arguments to be added to
@@ -234,20 +244,7 @@ public final class ObjcProvider extends NativeInfo {
   public static final Key<PathFragment> FRAMEWORK_SEARCH_PATH_ONLY =
       new Key<>(LINK_ORDER, "framework_search_paths", PathFragment.class);
 
-  /**
-   * Exec paths of {@code .framework} directories corresponding to static frameworks to link. These
-   * cause -F arguments (framework search paths) to be added to each compile action, and
-   * -framework (link framework) arguments to be added to each link action. These differ from
-   * dynamic frameworks in that they are statically linked into the binary.
-   */
-  // TODO(cparsons): Rename this key to static_framework_dir.
-  public static final Key<PathFragment> STATIC_FRAMEWORK_DIR =
-      new Key<>(LINK_ORDER, "framework_dir", PathFragment.class);
-
-  /**
-   * Files in {@code .framework} directories that should be included as inputs when compiling and
-   * linking.
-   */
+  /** The static library files of user-specified static frameworks. */
   public static final Key<Artifact> STATIC_FRAMEWORK_FILE =
       new Key<>(STABLE_ORDER, "static_framework_file", Artifact.class);
 
@@ -260,31 +257,9 @@ public final class ObjcProvider extends NativeInfo {
   public static final Key<PathFragment> DYNAMIC_FRAMEWORK_DIR =
       new Key<>(LINK_ORDER, "dynamic_framework_dir", PathFragment.class);
 
-  /**
-   * Files in {@code .framework} directories belonging to a dynamically linked framework. They
-   * should be included as inputs when compiling and linking as well as copied into the final
-   * application bundle.
-   */
+  /** The dynamic library files of user-specified dynamic frameworks. */
   public static final Key<Artifact> DYNAMIC_FRAMEWORK_FILE =
       new Key<>(STABLE_ORDER, "dynamic_framework_file", Artifact.class);
-
-  /**
-   * Bundles which should be linked in as a nested bundle to the final application.
-   */
-  public static final Key<Bundling> NESTED_BUNDLE =
-      new Key<>(STABLE_ORDER, "nested_bundle", Bundling.class);
-
-  /**
-   * Artifact containing information on debug symbols.
-   */
-  public static final Key<Artifact> DEBUG_SYMBOLS =
-      new Key<>(STABLE_ORDER, "debug_symbols", Artifact.class);
-
-  /**
-   * Artifact containing the plist of the debug symbols.
-   */
-  public static final Key<Artifact> DEBUG_SYMBOLS_PLIST =
-      new Key<>(STABLE_ORDER, "debug_symbols_plist", Artifact.class);
 
   /**
    * Debug artifacts that should be exported by the top-level target.
@@ -298,27 +273,9 @@ public final class ObjcProvider extends NativeInfo {
   public static final Key<Artifact> LINKMAP_FILE =
       new Key<>(STABLE_ORDER, "linkmap_file", Artifact.class);
 
-  /**
-   * Artifacts for storyboard sources.
-   */
-  public static final Key<Artifact> STORYBOARD =
-      new Key<>(STABLE_ORDER, "storyboard", Artifact.class);
-
-  /**
-   * Artifacts for .xib file sources.
-   */
-  public static final Key<Artifact> XIB = new Key<>(STABLE_ORDER, "xib", Artifact.class);
-
-  /**
-   * Artifacts for strings source files.
-   */
-  public static final Key<Artifact> STRINGS = new Key<>(STABLE_ORDER, "strings", Artifact.class);
-
-  /**
-   * Linking information from cc dependencies.
-   */
-  public static final Key<LinkerInputs.LibraryToLink> CC_LIBRARY =
-      new Key<>(LINK_ORDER, "cc_library", LinkerInputs.LibraryToLink.class);
+  /** Linking information from cc dependencies. */
+  public static final Key<LibraryToLink> CC_LIBRARY =
+      new Key<>(LINK_ORDER, "cc_library", LibraryToLink.class);
 
   /**
    * Linking options from dependencies.
@@ -371,20 +328,35 @@ public final class ObjcProvider extends NativeInfo {
     HAS_WATCH2_EXTENSION,
   }
 
+  private final StarlarkSemantics semantics;
+
+  // Items which are propagated transitively to dependents.
   private final ImmutableMap<Key<?>, NestedSet<?>> items;
+
+  /**
+   * This is intended to be used by clients which need to collect transitive information without
+   * paying the O(n^2) behavior to flatten it during analysis time.
+   *
+   * <p>For example, IDEs may use this to identify all direct header files for a target and fetch
+   * all transitive headers from its dependencies by recursing through this field.
+   */
+  private final ImmutableListMultimap<Key<?>, ?> directItems;
 
   // Items which should not be propagated to dependents.
   private final ImmutableMap<Key<?>, NestedSet<?>> nonPropagatedItems;
+
+  // Items which should be passed to strictly direct dependers, but not transitive dependers.
+  private final ImmutableMap<Key<?>, NestedSet<?>> strictDependencyItems;
+
+  // Lazily initialized because it's only needed when header thinning is not enabled.
+  @Nullable private volatile NestedSet<Artifact> generatedHeaders;
+
   /** All keys in ObjcProvider that will be passed in the corresponding Skylark provider. */
   static final ImmutableList<Key<?>> KEYS_FOR_SKYLARK =
       ImmutableList.<Key<?>>of(
-          ASSET_CATALOG,
-          BUNDLE_FILE,
           DEFINE,
           DYNAMIC_FRAMEWORK_DIR,
           DYNAMIC_FRAMEWORK_FILE,
-          DEBUG_SYMBOLS,
-          DEBUG_SYMBOLS_PLIST,
           EXPORTED_DEBUG_ARTIFACTS,
           FRAMEWORK_SEARCH_PATH_ONLY,
           FORCE_LOAD_LIBRARY,
@@ -405,20 +377,192 @@ public final class ObjcProvider extends NativeInfo {
           MULTI_ARCH_DYNAMIC_LIBRARIES,
           MULTI_ARCH_LINKED_ARCHIVES,
           MULTI_ARCH_LINKED_BINARIES,
-          ROOT_MERGE_ZIP,
           SDK_DYLIB,
           SDK_FRAMEWORK,
           SOURCE,
-          STATIC_FRAMEWORK_DIR,
           STATIC_FRAMEWORK_FILE,
-          STORYBOARD,
-          STRINGS,
           UMBRELLA_HEADER,
-          WEAK_SDK_FRAMEWORK,
-          XCASSETS_DIR,
-          XCDATAMODEL,
-          XIB);
-  
+          WEAK_SDK_FRAMEWORK);
+
+  /**
+   * Keys that should be kept as directItems. This is limited to a few keys that have larger
+   * performance implications when flattened in a transitive fashion and/or require non-transitive
+   * access (e.g. what module map did a target generate?).
+   *
+   * <p>Keys:
+   *
+   * <ul>
+   *   <li>HEADER: To expose all header files, including generated proto header files, to IDEs.
+   *   <li>SOURCE: To expose all source files, including generated J2Objc source files, to IDEs.
+   *   <li>MODULE_MAP: To expose generated module maps to IDEs (only one is expected per target).
+   * </ul>
+   */
+  static final ImmutableSet<Key<?>> KEYS_FOR_DIRECT =
+      ImmutableSet.<Key<?>>of(HEADER, MODULE_MAP, SOURCE);
+
+  @Override
+  public NestedSet<String> define() {
+    return get(DEFINE);
+  }
+
+  @Override
+  public SkylarkNestedSet dynamicFrameworkDir() {
+    return ObjcProviderSkylarkConverters.convertPathFragmentsToSkylark(get(DYNAMIC_FRAMEWORK_DIR));
+  }
+
+  @Override
+  public NestedSet<Artifact> dynamicFrameworkFile() {
+    return get(DYNAMIC_FRAMEWORK_FILE);
+  }
+
+  @Override
+  public NestedSet<Artifact> exportedDebugArtifacts() {
+    return get(EXPORTED_DEBUG_ARTIFACTS);
+  }
+
+  @Override
+  public SkylarkNestedSet frameworkSearchPathOnly() {
+    return ObjcProviderSkylarkConverters.convertPathFragmentsToSkylark(
+        get(FRAMEWORK_SEARCH_PATH_ONLY));
+  }
+
+  @Override
+  public NestedSet<Artifact> forceLoadLibrary() {
+    return get(FORCE_LOAD_LIBRARY);
+  }
+
+  @Override
+  public NestedSet<Artifact> header() {
+    return get(HEADER);
+  }
+
+  @Override
+  public SkylarkList<Artifact> directHeaders() {
+    return getDirect(HEADER);
+  }
+
+  @Override
+  public NestedSet<Artifact> importedLibrary() {
+    return get(IMPORTED_LIBRARY);
+  }
+
+  @Override
+  public SkylarkNestedSet include() {
+    return ObjcProviderSkylarkConverters.convertPathFragmentsToSkylark(get(INCLUDE));
+  }
+
+  @Override
+  public SkylarkNestedSet includeSystem() {
+    return ObjcProviderSkylarkConverters.convertPathFragmentsToSkylark(get(INCLUDE_SYSTEM));
+  }
+
+  @Override
+  public SkylarkNestedSet iquote() {
+    return ObjcProviderSkylarkConverters.convertPathFragmentsToSkylark(get(IQUOTE));
+  }
+
+  @Override
+  public NestedSet<Artifact> j2objcLibrary() {
+    return get(J2OBJC_LIBRARY);
+  }
+
+  @Override
+  public NestedSet<Artifact> jreLibrary() {
+    return get(JRE_LIBRARY);
+  }
+
+  @Override
+  public NestedSet<Artifact> library() {
+    return get(LIBRARY);
+  }
+
+  @Override
+  public NestedSet<Artifact> linkInputs() {
+    return get(LINK_INPUTS);
+  }
+
+  @Override
+  public NestedSet<Artifact> linkedBinary() {
+    return get(LINKED_BINARY);
+  }
+
+  @Override
+  public NestedSet<Artifact> linkmapFile() {
+    return get(LINKMAP_FILE);
+  }
+
+  @Override
+  public NestedSet<String> linkopt() {
+    return get(LINKOPT);
+  }
+
+  @Override
+  public NestedSet<Artifact> mergeZip() {
+    return get(MERGE_ZIP);
+  }
+
+  @Override
+  public NestedSet<Artifact> moduleMap() {
+    return get(MODULE_MAP);
+  }
+
+  @Override
+  public SkylarkList<Artifact> directModuleMaps() {
+    return getDirect(MODULE_MAP);
+  }
+
+  @Override
+  public NestedSet<Artifact> multiArchDynamicLibraries() {
+    return get(MULTI_ARCH_DYNAMIC_LIBRARIES);
+  }
+
+  @Override
+  public NestedSet<Artifact> multiArchLinkedArchives() {
+    return get(MULTI_ARCH_LINKED_ARCHIVES);
+  }
+
+  @Override
+  public NestedSet<Artifact> multiArchLinkedBinaries() {
+    return get(MULTI_ARCH_LINKED_BINARIES);
+  }
+
+  @Override
+  public NestedSet<String> sdkDylib() {
+    return get(SDK_DYLIB);
+  }
+
+  @Override
+  public SkylarkNestedSet sdkFramework() {
+    return (SkylarkNestedSet) ObjcProviderSkylarkConverters.convertToSkylark(SDK_FRAMEWORK,
+        get(SDK_FRAMEWORK));
+  }
+
+  @Override
+  public NestedSet<Artifact> source() {
+    return get(SOURCE);
+  }
+
+  @Override
+  public SkylarkList<Artifact> directSources() {
+    return getDirect(SOURCE);
+  }
+
+  @Override
+  public NestedSet<Artifact> staticFrameworkFile() {
+    return get(STATIC_FRAMEWORK_FILE);
+  }
+
+  @Override
+  public NestedSet<Artifact> umbrellaHeader() {
+    return get(UMBRELLA_HEADER);
+  }
+
+  @Override
+  public SkylarkNestedSet weakSdkFramework() {
+    return (SkylarkNestedSet) ObjcProviderSkylarkConverters.convertToSkylark(WEAK_SDK_FRAMEWORK,
+        get(WEAK_SDK_FRAMEWORK));
+  }
+
   /**
    * All keys in ObjcProvider that are explicitly not exposed to skylark. This is used for
    * testing and verification purposes to ensure that a conscious decision is made for all keys;
@@ -431,8 +575,6 @@ public final class ObjcProvider extends NativeInfo {
       CC_LIBRARY,
       // Flag enum is not exposed to skylark.
       FLAG,
-      // Bundle not exposed to skylark.
-      NESTED_BUNDLE,
       // CppModuleMap is not exposed to skylark.
       TOP_LEVEL_MODULE_MAP);
 
@@ -452,7 +594,6 @@ public final class ObjcProvider extends NativeInfo {
           DYNAMIC_FRAMEWORK_FILE,
           FLAG,
           MERGE_ZIP,
-          ROOT_MERGE_ZIP,
           FRAMEWORK_SEARCH_PATH_ONLY,
           HEADER,
           INCLUDE,
@@ -477,21 +618,21 @@ public final class ObjcProvider extends NativeInfo {
     return null;
   }
 
-  // Items which should be passed to strictly direct dependers, but not transitive dependers.
-  private final ImmutableMap<Key<?>, NestedSet<?>> strictDependencyItems;
-
   /** Skylark constructor and identifier for ObjcProvider. */
-  public static final NativeProvider<ObjcProvider> SKYLARK_CONSTRUCTOR = new Constructor();
+  public static final BuiltinProvider<ObjcProvider> SKYLARK_CONSTRUCTOR = new Constructor();
 
   private ObjcProvider(
+      StarlarkSemantics semantics,
       ImmutableMap<Key<?>, NestedSet<?>> items,
       ImmutableMap<Key<?>, NestedSet<?>> nonPropagatedItems,
       ImmutableMap<Key<?>, NestedSet<?>> strictDependencyItems,
-      ImmutableMap<String, Object> skylarkFields) {
-    super(SKYLARK_CONSTRUCTOR, skylarkFields);
+      ImmutableListMultimap<Key<?>, ?> directItems) {
+    super(SKYLARK_CONSTRUCTOR, Location.BUILTIN);
+    this.semantics = semantics;
     this.items = Preconditions.checkNotNull(items);
     this.nonPropagatedItems = Preconditions.checkNotNull(nonPropagatedItems);
     this.strictDependencyItems = Preconditions.checkNotNull(strictDependencyItems);
+    this.directItems = Preconditions.checkNotNull(directItems);
   }
 
   /**
@@ -511,6 +652,15 @@ public final class ObjcProvider extends NativeInfo {
       builder.addTransitive((NestedSet<E>) items.get(key));
     }
     return builder.build();
+  }
+
+  /** All direct artifacts, bundleable files, etc. of the type specified by {@code key}. */
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public <E> SkylarkList<E> getDirect(Key<E> key) {
+    if (directItems.containsKey(key)) {
+      return SkylarkList.createImmutable((List) directItems.get(key));
+    }
+    return SkylarkList.createImmutable(ImmutableList.of());
   }
 
   /**
@@ -546,14 +696,6 @@ public final class ObjcProvider extends NativeInfo {
     return Iterables.contains(get(FLAG), flag);
   }
 
-  /**
-   * Indicates whether this provider has any asset catalogs. This is true whenever some target in
-   * its transitive dependency tree specifies a non-empty {@code asset_catalogs} attribute.
-   */
-  public boolean hasAssetCatalogs() {
-    return !get(XCASSETS_DIR).isEmpty();
-  }
-
   /** Returns the list of .a files required for linking that arise from objc libraries. */
   ImmutableList<Artifact> getObjcLibraries() {
     // JRE libraries must be ordered after all regular objc libraries.
@@ -566,42 +708,63 @@ public final class ObjcProvider extends NativeInfo {
   }
 
   /** Returns the list of .a files required for linking that arise from cc libraries. */
-  ImmutableList<Artifact> getCcLibraries() {
-    ImmutableList.Builder<Artifact> ccLibraryBuilder = ImmutableList.builder();
-    for (LinkerInputs.LibraryToLink libraryToLink : get(CC_LIBRARY)) {
-      ccLibraryBuilder.add(libraryToLink.getArtifact());
+  List<Artifact> getCcLibraries() {
+    NestedSetBuilder<LibraryToLink> libraryToLinkListBuilder = NestedSetBuilder.linkOrder();
+    for (LibraryToLink libraryToLink : get(CC_LIBRARY)) {
+      libraryToLinkListBuilder.add(libraryToLink);
     }
-    return ccLibraryBuilder.build();
+    CcLinkingContext ccLinkingContext =
+        CcLinkingContext.builder().addLibraries(libraryToLinkListBuilder.build()).build();
+    return ccLinkingContext.getStaticModeParamsForExecutableLibraries();
+  }
+
+  /** Returns the set of generated header files. */
+  NestedSet<Artifact> getGeneratedHeaders() {
+    if (generatedHeaders == null) {
+      synchronized (this) {
+        if (generatedHeaders == null) {
+          NestedSet<Artifact> headers = header();
+          NestedSetBuilder<Artifact> generatedHeadersBuilder =
+              new NestedSetBuilder<>(headers.getOrder());
+          for (Artifact header : headers) {
+            if (!header.isSourceArtifact()) {
+              generatedHeadersBuilder.add(header);
+            }
+          }
+          generatedHeaders = generatedHeadersBuilder.build();
+        }
+      }
+    }
+    return generatedHeaders;
   }
 
   /**
    * Subtracts dependency subtrees from this provider and returns the result (subtraction does not
    * mutate this provider). Note that not all provider keys are subtracted; generally only keys
    * which correspond with compiled libraries will be subtracted.
-   * 
-   * <p>This is an expensive operation, as it requires flattening of all nested sets contained
-   * in each provider.
+   *
+   * <p>This is an expensive operation, as it requires flattening of all nested sets contained in
+   * each provider.
    *
    * @param avoidObjcProviders objc providers which contain the dependency subtrees to subtract
    * @param avoidCcProviders cc providers which contain the dependency subtrees to subtract
    */
   // TODO(b/65156211): Investigate subtraction generalized to NestedSet.
   @SuppressWarnings("unchecked") // Due to depending on Key types, when the keys map erases type.
-  public ObjcProvider subtractSubtrees(Iterable<ObjcProvider> avoidObjcProviders,
-      Iterable<CcLinkParamsInfo> avoidCcProviders) {
+  public ObjcProvider subtractSubtrees(
+      Iterable<ObjcProvider> avoidObjcProviders, Iterable<CcLinkingContext> avoidCcProviders) {
     // LIBRARY and CC_LIBRARY need to be special cased for objc-cc interop.
     // A library which is a dependency of a cc_library may be present in all or any of
     // three possible locations (and may be duplicated!):
     // 1. ObjcProvider.LIBRARY
     // 2. ObjcProvider.CC_LIBRARY
-    // 3. CcLinkParamsInfo->LibraryToLink->getArtifact()
+    // 3. CcLinkingContext->LibraryToLink->getArtifact()
     // TODO(cpeyser): Clean up objc-cc interop.
     HashSet<PathFragment> avoidLibrariesSet = new HashSet<>();
-    for (CcLinkParamsInfo linkProvider : avoidCcProviders) {
-      NestedSet<LibraryToLink> librariesToLink =
-          linkProvider.getCcLinkParams(true, false).getLibraries();
-      for (LibraryToLink libraryToLink : librariesToLink.toList()) {
-        avoidLibrariesSet.add(libraryToLink.getArtifact().getRunfilesPath());
+    for (CcLinkingContext ccLinkingContext : avoidCcProviders) {
+      List<Artifact> libraries = ccLinkingContext.getStaticModeParamsForExecutableLibraries();
+      for (Artifact library : libraries) {
+        avoidLibrariesSet.add(library.getRunfilesPath());
       }
     }
     for (ObjcProvider avoidProvider : avoidObjcProviders) {
@@ -612,7 +775,7 @@ public final class ObjcProvider extends NativeInfo {
         avoidLibrariesSet.add(libraryToAvoid.getRunfilesPath());
       }
     }
-    ObjcProvider.Builder objcProviderBuilder = new ObjcProvider.Builder();
+    ObjcProvider.Builder objcProviderBuilder = new ObjcProvider.Builder(semantics);
     for (Key<?> key : getValuedKeys()) {
       if (key == CC_LIBRARY) {
         addTransitiveAndFilter(objcProviderBuilder, CC_LIBRARY,
@@ -652,8 +815,33 @@ public final class ObjcProvider extends NativeInfo {
    */
   private static Predicate<LibraryToLink> ccLibraryNotYetLinked(
       final HashSet<PathFragment> runfilesPaths) {
-    return libraryToLink -> !runfilesPaths.contains(
-        libraryToLink.getArtifact().getRunfilesPath());
+    return libraryToLink -> !checkIfLibraryIsInPaths(libraryToLink, runfilesPaths);
+  }
+
+  private static boolean checkIfLibraryIsInPaths(
+      LibraryToLink libraryToLink, HashSet<PathFragment> runfilesPaths) {
+    ImmutableList.Builder<PathFragment> libraryRunfilesPaths = ImmutableList.builder();
+    if (libraryToLink.getStaticLibrary() != null) {
+      libraryRunfilesPaths.add(libraryToLink.getStaticLibrary().getRunfilesPath());
+    }
+    if (libraryToLink.getPicStaticLibrary() != null) {
+      libraryRunfilesPaths.add(libraryToLink.getPicStaticLibrary().getRunfilesPath());
+    }
+    if (libraryToLink.getDynamicLibrary() != null) {
+      libraryRunfilesPaths.add(libraryToLink.getDynamicLibrary().getRunfilesPath());
+    }
+    if (libraryToLink.getResolvedSymlinkDynamicLibrary() != null) {
+      libraryRunfilesPaths.add(libraryToLink.getResolvedSymlinkDynamicLibrary().getRunfilesPath());
+    }
+    if (libraryToLink.getInterfaceLibrary() != null) {
+      libraryRunfilesPaths.add(libraryToLink.getInterfaceLibrary().getRunfilesPath());
+    }
+    if (libraryToLink.getResolvedSymlinkInterfaceLibrary() != null) {
+      libraryRunfilesPaths.add(
+          libraryToLink.getResolvedSymlinkInterfaceLibrary().getRunfilesPath());
+    }
+
+    return !Collections.disjoint(libraryRunfilesPaths.build(), runfilesPaths);
   }
 
   @SuppressWarnings("unchecked")
@@ -701,13 +889,108 @@ public final class ObjcProvider extends NativeInfo {
   }
 
   /**
+   * Returns all unique static framework directories (directories ending in '.framework') for all
+   * static framework files in this provider.
+   */
+  public Iterable<PathFragment> getStaticFrameworkDirs() {
+    return ObjcCommon.uniqueContainers(get(STATIC_FRAMEWORK_FILE),
+        ObjcCommon.FRAMEWORK_CONTAINER_TYPE);
+  }
+
+  /**
+   * Returns all unique static framework directories (directories ending in '.framework') for all
+   * static framework files in this provider.
+   */
+  @Override
+  public SkylarkNestedSet getStaticFrameworkDirsForSkylark() {
+    return ObjcProviderSkylarkConverters.convertPathFragmentsToSkylark(getStaticFrameworkDirs());
+  }
+
+  /**
+   * Check whether that a path fragment is a framework directory (i.e. ends in FRAMEWORK_SUFFIX).
+   */
+  private static void checkIsFrameworkDirectory(PathFragment dir) {
+    Preconditions.checkState(dir.getBaseName().endsWith(FRAMEWORK_SUFFIX));
+  }
+
+  /** The input path must be of the form <path>/<name>.FRAMEWORK_SUFFIX. Return the names. */
+  private static String getFrameworkName(PathFragment frameworkPath) {
+    String segment = frameworkPath.getBaseName();
+    return segment.substring(0, segment.length() - FRAMEWORK_SUFFIX.length());
+  }
+
+  /** The input path must be of the form <path>/<name>.FRAMEWORK_SUFFIX. Return the paths. */
+  private static String getFrameworkPath(PathFragment frameworkPath) {
+    return frameworkPath.getParentDirectory().getSafePathString();
+  }
+
+  /**
+   * @param key either DYNAMIC_FRAMEWORK_FILE or STATIC_FRAMEWORK_FILE. Return the corresponding
+   *     framework names, i.e. for a given a file <path>/<name>.FRAMEWORK_SUFFIX/<name>, return
+   *     <name>.
+   */
+  private NestedSet<String> getFrameworkNames(Key<Artifact> key) {
+    NestedSetBuilder<String> names = new NestedSetBuilder<>(key.order);
+    for (Artifact file : get(key)) {
+      PathFragment frameworkDir = file.getExecPath().getParentDirectory();
+      checkIsFrameworkDirectory(frameworkDir);
+      names.add(getFrameworkName(frameworkDir));
+    }
+    return names.build();
+  }
+
+  /**
+   * @param key either DYNAMIC_FRAMEWORK_FILE or STATIC_FRAMEWORK_FILE. Return the corresponding
+   *     framework paths, i.e. for a given a file <path>/<name>.FRAMEWORK_SUFFIX/<name>, return
+   *     <path>.
+   */
+  private NestedSet<String> getFrameworkPaths(Key<Artifact> key) {
+    NestedSetBuilder<String> paths = new NestedSetBuilder<>(key.order);
+    for (Artifact file : get(key)) {
+      PathFragment frameworkDir = file.getExecPath().getParentDirectory();
+      checkIsFrameworkDirectory(frameworkDir);
+      paths.add(getFrameworkPath(frameworkDir));
+    }
+    return paths.build();
+  }
+
+  @Override
+  public NestedSet<String> dynamicFrameworkNames() {
+    return getFrameworkNames(DYNAMIC_FRAMEWORK_FILE);
+  }
+
+  @Override
+  public NestedSet<String> dynamicFrameworkPaths() {
+    return getFrameworkPaths(DYNAMIC_FRAMEWORK_FILE);
+  }
+
+  @Override
+  public NestedSet<String> staticFrameworkNames() {
+    return getFrameworkNames(STATIC_FRAMEWORK_FILE);
+  }
+
+  @Override
+  public NestedSet<String> staticFrameworkPaths() {
+    return getFrameworkPaths(STATIC_FRAMEWORK_FILE);
+  }
+
+  /**
    * A builder for this context with an API that is optimized for collecting information from
    * several transitive dependencies.
    */
   public static final class Builder {
+    private final StarlarkSemantics starlarkSemantics;
     private final Map<Key<?>, NestedSetBuilder<?>> items = new HashMap<>();
     private final Map<Key<?>, NestedSetBuilder<?>> nonPropagatedItems = new HashMap<>();
     private final Map<Key<?>, NestedSetBuilder<?>> strictDependencyItems = new HashMap<>();
+
+    // Only includes items or lists added directly, never flattens any NestedSets.
+    private final ImmutableListMultimap.Builder<Key<?>, ?> directItems =
+        new ImmutableListMultimap.Builder<>();
+
+    public Builder(StarlarkSemantics semantics) {
+      this.starlarkSemantics = semantics;
+    }
 
     private static void maybeAddEmptyBuilder(Map<Key<?>, NestedSetBuilder<?>> set, Key<?> key) {
       set.computeIfAbsent(key, k -> new NestedSetBuilder<>(k.order));
@@ -720,8 +1003,14 @@ public final class ObjcProvider extends NativeInfo {
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private void uncheckedAddTransitive(Key key, NestedSet toAdd,
-        Map<Key<?>, NestedSetBuilder<?>> set) {
+    private void uncheckedAddAllDirect(
+        Key key, Iterable<?> toAdd, ImmutableListMultimap.Builder<Key<?>, ?> builder) {
+      builder.putAll(key, (Iterable) toAdd);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void uncheckedAddTransitive(
+        Key key, NestedSet toAdd, Map<Key<?>, NestedSetBuilder<?>> set) {
       maybeAddEmptyBuilder(set, key);
       set.get(key).addTransitive(toAdd);
     }
@@ -744,21 +1033,6 @@ public final class ObjcProvider extends NativeInfo {
     public Builder addTransitiveAndPropagate(ObjcProvider provider) {
       for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.items.entrySet()) {
         uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(), this.items);
-      }
-      for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.strictDependencyItems.entrySet()) {
-        uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(), this.nonPropagatedItems);
-      }
-      return this;
-    }
-   
-    /**
-     * Add all keys and values from the given provider, but propagate any normally-propagated items
-     * only to direct dependers of this ObjcProvider.
-     */
-    public Builder addAsDirectDeps(ObjcProvider provider) {
-      for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.items.entrySet()) {
-        uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(),
-            this.strictDependencyItems);
       }
       for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.strictDependencyItems.entrySet()) {
         uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(), this.nonPropagatedItems);
@@ -791,25 +1065,13 @@ public final class ObjcProvider extends NativeInfo {
     }
 
     /**
-     * Add elements from providers, but don't propagate them to any dependers on this ObjcProvider.
-     * These elements will be exposed to {@link #get(Key)} calls, but not to any ObjcProviders
-     * which add this provider to themselves.
+     * Add all keys and values from the given provider, but propagate any normally-propagated items
+     * only to direct dependers of this ObjcProvider.
      */
-    public Builder addTransitiveWithoutPropagating(Iterable<ObjcProvider> providers) {
-      for (ObjcProvider provider : providers) {
-        addTransitiveWithoutPropagating(provider);
-      }
-      return this;
-    }
-
-    /**
-     * Add all keys and values from provider, without propagating them to any (transitive) dependers
-     * on this ObjcProvider. These elements will be exposed to {@link #get(Key)} calls, but not to
-     * any ObjcProviders which add this provider to themselves.
-     */
-    public Builder addTransitiveWithoutPropagating(ObjcProvider provider) {
+    public Builder addAsDirectDeps(ObjcProvider provider) {
       for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.items.entrySet()) {
-        uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(), this.nonPropagatedItems);
+        uncheckedAddTransitive(
+            typeEntry.getKey(), typeEntry.getValue(), this.strictDependencyItems);
       }
       for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.strictDependencyItems.entrySet()) {
         uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(), this.nonPropagatedItems);
@@ -818,35 +1080,13 @@ public final class ObjcProvider extends NativeInfo {
     }
 
     /**
-     * Add a single key from provider, without propagating them to any (transitive) dependers
-     * on this ObjcProvider. These elements will be exposed to {@link #get(Key)} calls, but not to
-     * any ObjcProviders which add this provider to themselves.
-     */
-    public Builder addTransitiveWithoutPropagating(Key key, ObjcProvider provider) {
-      if (provider.items.containsKey(key)) {
-        uncheckedAddTransitive(key, provider.items.get(key), this.nonPropagatedItems);
-      }
-      if (provider.strictDependencyItems.containsKey(key)) {
-        uncheckedAddTransitive(
-            key, provider.strictDependencyItems.get(key), this.nonPropagatedItems);
-      }
-      return this;
-    }
-
-    /**
-     * Adds elements in items, without propagating them to any (transitive) dependers on this
-     * ObjcProvider.
-     */
-    public <E> Builder addTransitiveWithoutPropagating(Key<E> key, NestedSet<E> items) {
-      uncheckedAddTransitive(key, items, this.nonPropagatedItems);
-      return this;
-    }
-
-    /**
      * Add element, and propagate it to any (transitive) dependers on this ObjcProvider.
      */
     public <E> Builder add(Key<E> key, E toAdd) {
       uncheckedAddAll(key, ImmutableList.of(toAdd), this.items);
+      if (ObjcProvider.KEYS_FOR_DIRECT.contains(key)) {
+        uncheckedAddAllDirect(key, ImmutableList.of(toAdd), this.directItems);
+      }
       return this;
     }
 
@@ -855,6 +1095,9 @@ public final class ObjcProvider extends NativeInfo {
      */
     public <E> Builder addAll(Key<E> key, Iterable<? extends E> toAdd) {
       uncheckedAddAll(key, toAdd, this.items);
+      if (ObjcProvider.KEYS_FOR_DIRECT.contains(key)) {
+        uncheckedAddAllDirect(key, toAdd, this.directItems);
+      }
       return this;
     }
 
@@ -883,11 +1126,15 @@ public final class ObjcProvider extends NativeInfo {
     }
 
     /**
-     * Add elements in toAdd with the given key from skylark.  An error is thrown if toAdd is not
-     * an appropriate SkylarkNestedSet.
+     * Add elements in toAdd with the given key from skylark. An error is thrown if toAdd is not an
+     * appropriate SkylarkNestedSet.
      */
-    void addElementsFromSkylark(Key<?> key, Object toAdd) {
-      uncheckedAddAll(key, ObjcProviderSkylarkConverters.convertToJava(key, toAdd), this.items);
+    void addElementsFromSkylark(Key<?> key, Object skylarkToAdd) throws EvalException {
+      NestedSet<?> toAdd = ObjcProviderSkylarkConverters.convertToJava(key, skylarkToAdd);
+      uncheckedAddTransitive(key, toAdd, this.items);
+      if (ObjcProvider.KEYS_FOR_DIRECT.contains(key)) {
+        uncheckedAddAllDirect(key, toAdd, this.directItems);
+      }
     }
 
     /**
@@ -895,16 +1142,18 @@ public final class ObjcProvider extends NativeInfo {
      * ObjcProvider instances.
      */
     @SuppressWarnings("unchecked")
-    void addProvidersFromSkylark(Object toAdd) {
+    void addProvidersFromSkylark(Object toAdd) throws EvalException {
       if (!(toAdd instanceof Iterable)) {
-        throw new IllegalArgumentException(
+        throw new EvalException(
+            null,
             String.format(
                 AppleSkylarkCommon.BAD_PROVIDERS_ITER_ERROR, EvalUtils.getDataTypeName(toAdd)));
       } else {
         Iterable<Object> toAddIterable = (Iterable<Object>) toAdd;
         for (Object toAddObject : toAddIterable) {
           if (!(toAddObject instanceof ObjcProvider)) {
-            throw new IllegalArgumentException(
+            throw new EvalException(
+                null,
                 String.format(
                     AppleSkylarkCommon.BAD_PROVIDERS_ELEM_ERROR,
                     EvalUtils.getDataTypeName(toAddObject)));
@@ -916,21 +1165,22 @@ public final class ObjcProvider extends NativeInfo {
     }
 
     /**
-     * Adds the given providers from skylark, but propagate any normally-propagated items
-     * only to direct dependers. An error is thrown if toAdd is not an iterable of ObjcProvider
-     * instances.
+     * Adds the given providers from skylark, but propagate any normally-propagated items only to
+     * direct dependers. An error is thrown if toAdd is not an iterable of ObjcProvider instances.
      */
     @SuppressWarnings("unchecked")
-    void addDirectDepProvidersFromSkylark(Object toAdd) {
+    void addDirectDepProvidersFromSkylark(Object toAdd) throws EvalException {
       if (!(toAdd instanceof Iterable)) {
-        throw new IllegalArgumentException(
+        throw new EvalException(
+            null,
             String.format(
                 AppleSkylarkCommon.BAD_PROVIDERS_ITER_ERROR, EvalUtils.getDataTypeName(toAdd)));
       } else {
         Iterable<Object> toAddIterable = (Iterable<Object>) toAdd;
         for (Object toAddObject : toAddIterable) {
           if (!(toAddObject instanceof ObjcProvider)) {
-            throw new IllegalArgumentException(
+            throw new EvalException(
+                null,
                 String.format(
                     AppleSkylarkCommon.BAD_PROVIDERS_ELEM_ERROR,
                     EvalUtils.getDataTypeName(toAddObject)));
@@ -958,35 +1208,19 @@ public final class ObjcProvider extends NativeInfo {
         strictDependencyBuilder.put(typeEntry.getKey(), typeEntry.getValue().build());
       }
 
-      ImmutableMap<Key<?>, NestedSet<?>> propagated = propagatedBuilder.build();
-      ImmutableMap<Key<?>, NestedSet<?>> nonPropagated = nonPropagatedBuilder.build();
-      ImmutableMap<Key<?>, NestedSet<?>> strictDependency = strictDependencyBuilder.build();
-
-      ImmutableMap.Builder<String, Object> skylarkFields = new ImmutableMap.Builder<>();
-      for (Key<?> key : KEYS_FOR_SKYLARK) {
-        NestedSetBuilder union = new NestedSetBuilder(key.order);
-        if (propagated.containsKey(key)) {
-          union.addTransitive((NestedSet<?>) propagated.get(key));
-        }
-        if (strictDependency.containsKey(key)) {
-          union.addTransitive(strictDependency.get(key));
-        }
-        if (nonPropagated.containsKey(key)) {
-          union.addTransitive(nonPropagated.get(key));
-        }
-        skylarkFields.put(
-            key.getSkylarkKeyName(),
-            ObjcProviderSkylarkConverters.convertToSkylark(key, union.build()));
-      }
-
-      return new ObjcProvider(propagated, nonPropagated, strictDependency, skylarkFields.build());
+      return new ObjcProvider(
+          starlarkSemantics,
+          propagatedBuilder.build(),
+          nonPropagatedBuilder.build(),
+          strictDependencyBuilder.build(),
+          directItems.build());
     }
   }
 
-  private static class Constructor extends NativeProvider<ObjcProvider>
+  private static class Constructor extends BuiltinProvider<ObjcProvider>
       implements WithLegacySkylarkName {
     public Constructor() {
-      super(ObjcProvider.class, ObjcProvider.SKYLARK_NAME);
+      super(ObjcProvider.SKYLARK_NAME, ObjcProvider.class);
     }
 
     @Override
@@ -995,8 +1229,8 @@ public final class ObjcProvider extends NativeInfo {
     }
 
     @Override
-    public String getErrorMessageFormatForInstances() {
-      return "ObjcProvider field %s could not be instantiated";
+    public String getErrorMessageFormatForUnknownField() {
+      return "ObjcProvider field '%s' could not be instantiated";
     }
   }
 }

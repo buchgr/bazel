@@ -22,12 +22,13 @@ import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.packages.ConstantRuleVisibility;
 import com.google.devtools.build.lib.packages.Rule;
-import com.google.devtools.build.lib.packages.SkylarkSemanticsOptions;
+import com.google.devtools.build.lib.packages.StarlarkSemanticsOptions;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.pkgcache.PackageCacheOptions;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.common.options.Options;
@@ -55,22 +56,22 @@ public class SkylarkFileContentHashTests extends BuildViewTestCase {
 
     scratch.file(
         "foo/ext.bzl",
-        "load('/helper/ext', 'rule_impl')",
+        "load('//helper:ext.bzl', 'rule_impl')",
         "",
         "foo1 = rule(implementation = rule_impl)",
         "foo2 = rule(implementation = rule_impl)");
 
     scratch.file(
         "bar/ext.bzl",
-        "load('/helper/ext', 'rule_impl')",
+        "load('//helper:ext.bzl', 'rule_impl')",
         "",
         "bar1 = rule(implementation = rule_impl)");
 
     scratch.file(
         "pkg/BUILD",
-        "load('/foo/ext', 'foo1')",
-        "load('/foo/ext', 'foo2')",
-        "load('/bar/ext', 'bar1')",
+        "load('//foo:ext.bzl', 'foo1')",
+        "load('//foo:ext.bzl', 'foo2')",
+        "load('//bar:ext.bzl', 'bar1')",
         "",
         "foo1(name = 'foo1')",
         "foo2(name = 'foo2')",
@@ -87,7 +88,7 @@ public class SkylarkFileContentHashTests extends BuildViewTestCase {
     String bar1 = getHash("pkg", "bar1");
     scratch.overwriteFile(
         "bar/ext.bzl",
-        "load('/helper/ext', 'rule_impl')",
+        "load('//helper:ext.bzl', 'rule_impl')",
         "",
         "bar1 = rule(implementation = rule_impl)");
     invalidatePackages();
@@ -109,7 +110,7 @@ public class SkylarkFileContentHashTests extends BuildViewTestCase {
     String bar1 = getHash("pkg", "bar1");
     scratch.overwriteFile(
         "bar/ext.bzl",
-        "load('/helper/ext', 'rule_impl')",
+        "load('//helper:ext.bzl', 'rule_impl')",
         "# Some comments to change file hash",
         "",
         "bar1 = rule(implementation = rule_impl)");
@@ -139,7 +140,7 @@ public class SkylarkFileContentHashTests extends BuildViewTestCase {
     String foo2 = getHash("pkg", "foo2");
     scratch.overwriteFile(
         "bar/ext.bzl",
-        "load('/helper/ext', 'rule_impl')",
+        "load('//helper:ext.bzl', 'rule_impl')",
         "# Some comments to change file hash",
         "",
         "bar1 = rule(implementation = rule_impl)");
@@ -163,14 +164,16 @@ public class SkylarkFileContentHashTests extends BuildViewTestCase {
     packageCacheOptions.globbingThreads = 7;
     getSkyframeExecutor()
         .preparePackageLoading(
-            new PathPackageLocator(outputBase, ImmutableList.of(rootDirectory)),
+            new PathPackageLocator(
+                outputBase,
+                ImmutableList.of(Root.fromPath(rootDirectory)),
+                BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY),
             packageCacheOptions,
-            Options.getDefaults(SkylarkSemanticsOptions.class),
-            "",
+            Options.getDefaults(StarlarkSemanticsOptions.class),
             UUID.randomUUID(),
             ImmutableMap.<String, String>of(),
-            ImmutableMap.<String, String>of(),
             new TimestampGranularityMonitor(BlazeClock.instance()));
+    skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
     SkyKey pkgLookupKey = PackageValue.key(PackageIdentifier.parse("@//" + pkg));
     EvaluationResult<PackageValue> result =
         SkyframeExecutorTestUtils.evaluate(
@@ -179,10 +182,7 @@ public class SkylarkFileContentHashTests extends BuildViewTestCase {
     Collection<Target> targets = result.get(pkgLookupKey).getPackage().getTargets().values();
     for (Target target : targets) {
       if (target.getName().equals(name)) {
-        return ((Rule) target)
-            .getRuleClassObject()
-            .getRuleDefinitionEnvironment()
-            .getTransitiveContentHashCode();
+        return ((Rule) target).getRuleClassObject().getRuleDefinitionEnvironmentHashCode();
       }
     }
     throw new IllegalStateException("target not found: " + name);

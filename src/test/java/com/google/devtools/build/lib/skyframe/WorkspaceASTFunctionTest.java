@@ -16,6 +16,8 @@ package com.google.devtools.build.lib.skyframe;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.common.base.Optional;
+import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.skyframe.WorkspaceFileFunctionTest.FakeFileValue;
@@ -24,6 +26,7 @@ import com.google.devtools.build.lib.syntax.BuildFileAST;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
@@ -33,8 +36,8 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-import org.mockito.Matchers;
 import org.mockito.Mockito;
+import org.mockito.hamcrest.MockitoHamcrest;
 
 /**
  * Test for WorkspaceASTFunction.
@@ -60,13 +63,17 @@ public class WorkspaceASTFunctionTest extends BuildViewTestCase {
     Path workspacePath = scratch.overwriteFile("WORKSPACE", contents);
     fakeWorkspaceFileValue.setSize(workspacePath.getFileSize());
     return RootedPath.toRootedPath(
-        workspacePath.getParentDirectory(), PathFragment.create(workspacePath.getBaseName()));
+        Root.fromPath(workspacePath.getParentDirectory()),
+        PathFragment.create(workspacePath.getBaseName()));
   }
 
   private SkyFunction.Environment getEnv() throws InterruptedException {
     SkyFunction.Environment env = Mockito.mock(SkyFunction.Environment.class);
-    Mockito.when(env.getValue(Matchers.argThat(new SkyKeyMatchers(SkyFunctions.FILE))))
+    Mockito.when(env.getValue(MockitoHamcrest.argThat(new SkyKeyMatchers(FileValue.FILE))))
         .thenReturn(fakeWorkspaceFileValue);
+    Mockito.when(
+            env.getValue(MockitoHamcrest.argThat(new SkyKeyMatchers(SkyFunctions.PRECOMPUTED))))
+        .thenReturn(new PrecomputedValue(Optional.<RootedPath>absent()));
     return env;
   }
 

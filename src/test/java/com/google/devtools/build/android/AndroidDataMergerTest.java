@@ -22,18 +22,18 @@ import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.jimfs.Jimfs;
-import com.google.common.truth.FailureStrategy;
-import com.google.common.truth.SubjectFactory;
+import com.google.common.truth.Subject;
 import com.google.devtools.build.android.AndroidDataBuilder.ResourceType;
+import com.google.devtools.build.android.AndroidDataMerger.ContentComparingChecker;
 import com.google.devtools.build.android.AndroidDataMerger.MergeConflictException;
 import com.google.devtools.build.android.AndroidDataMerger.SourceChecker;
 import com.google.devtools.build.android.xml.IdXmlResourceValue;
 import com.google.devtools.build.android.xml.PublicXmlResourceValue;
 import com.google.devtools.build.android.xml.SimpleXmlResourceValue;
-import com.google.devtools.build.android.xml.SimpleXmlResourceValue.Type;
 import com.google.devtools.build.android.xml.StyleableXmlResourceValue;
 import java.io.IOException;
 import java.nio.file.FileSystem;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -89,7 +89,9 @@ public class AndroidDataMergerTest {
                 file("layout/exit").source("res/layout/exit.xml"),
                 xml("string/exit")
                     .source(directStrings)
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .combining(xml("id/exit").source("values/ids.xml").value(IdXmlResourceValue.of()))
             .build();
 
@@ -112,7 +114,9 @@ public class AndroidDataMergerTest {
                 .overwritable(
                     xml("string/exit")
                         .source(primaryStrings.overwrite(directStrings))
-                        .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")))
+                        .value(
+                            SimpleXmlResourceValue.createWithValue(
+                                SimpleXmlResourceValue.Type.STRING, "way out")))
                 .build(),
             ParsedAndroidDataBuilder.buildOn(fqnFactory)
                 .overwritable(file("layout/exit").root(directRoot).source("res/layout/exit.xml"))
@@ -148,7 +152,9 @@ public class AndroidDataMergerTest {
                 file("layout/exit").source("res/layout/exit.xml"),
                 xml("string/exit")
                     .source(directString)
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .combining(xml("id/exit").source("values/ids.xml").value(IdXmlResourceValue.of()))
             .build();
 
@@ -172,7 +178,9 @@ public class AndroidDataMergerTest {
                     xml("string/exit")
                         .root(primaryRoot)
                         .source(primaryString.overwrite(directString))
-                        .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")))
+                        .value(
+                            SimpleXmlResourceValue.createWithValue(
+                                SimpleXmlResourceValue.Type.STRING, "way out")))
                 .build(),
             ParsedAndroidDataBuilder.buildOn(fqnFactory)
                 .overwritable(
@@ -213,7 +221,9 @@ public class AndroidDataMergerTest {
                 file("layout/exit").source("res/layout/exit.xml"),
                 xml("string/exit")
                     .source(directStrings)
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .combining(xml("id/exit").source("values/ids.xml").value(IdXmlResourceValue.of()))
             .build();
 
@@ -236,7 +246,9 @@ public class AndroidDataMergerTest {
                 .overwritable(
                     xml("string/exit")
                         .source(primaryString.overwrite(directStrings))
-                        .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")))
+                        .value(
+                            SimpleXmlResourceValue.createWithValue(
+                                SimpleXmlResourceValue.Type.STRING, "way out")))
                 .build(),
             ParsedAndroidDataBuilder.buildOn(fqnFactory)
                 .overwritable(
@@ -264,10 +276,14 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")),
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")),
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .build();
 
     UnvalidatedAndroidData primary =
@@ -285,10 +301,12 @@ public class AndroidDataMergerTest {
                     fqnFactory.parse("string/exit"),
                     DataResourceXml.createWithNoNamespace(
                         directRoot.resolve("res/values/strings.xml"),
-                        SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")),
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")),
                     DataResourceXml.createWithNoNamespace(
                         directRoot.resolve("res/values/strings.xml"),
-                        SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")))
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")))
                 .toConflictMessage());
   }
 
@@ -305,10 +323,14 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")),
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "way out")),
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "way out")))
             .build();
 
     UnvalidatedAndroidData primary =
@@ -336,7 +358,9 @@ public class AndroidDataMergerTest {
                         xml("string/exit")
                             .root(directRoot)
                             .source("values/strings.xml")
-                            .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")))
+                            .value(
+                                SimpleXmlResourceValue.createWithValue(
+                                    SimpleXmlResourceValue.Type.STRING, "way out")))
                     .build()));
   }
 
@@ -353,13 +377,19 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")),
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "way out")),
                 xml("string/exit")
                     .source("values/more_strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")),
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "way out")),
                 xml("string/another_key")
                     .source("values/more_strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "another way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "another way out")))
             .build();
 
     UnvalidatedAndroidData primary =
@@ -369,6 +399,41 @@ public class AndroidDataMergerTest {
 
     AndroidDataMerger merger = AndroidDataMerger.createWithDefaults();
     merger.merge(transitiveDependency, directDependency, primary, false, true);
+
+    assertThat(loggingHandler.warnings).isEmpty();
+  }
+
+  @Test
+  public void mergeDirectConflictWithPseudoLocale() throws Exception {
+    fqnFactory = FullyQualifiedName.Factory.from(ImmutableList.of("en-rXA"));
+    Path primaryRoot = fileSystem.getPath("primary");
+    Path directRoot = fileSystem.getPath("direct");
+
+    ParsedAndroidData transitiveDependency = ParsedAndroidDataBuilder.empty();
+
+    ParsedAndroidData directDependency =
+        ParsedAndroidDataBuilder.buildOn(directRoot, fqnFactory)
+            // Two string/exit will create conflict.
+            .overwritable(
+                xml("string/exit")
+                    .source("values/strings.xml")
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")),
+                xml("string/exit")
+                    .source("values/strings.xml")
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
+            .build();
+
+    UnvalidatedAndroidData primary =
+        AndroidDataBuilder.of(primaryRoot)
+            .createManifest("AndroidManifest.xml", "com.google.mergetest")
+            .buildUnvalidated();
+
+    AndroidDataMerger merger = AndroidDataMerger.createWithDefaults();
+    merger.merge(transitiveDependency, directDependency, primary, false, false);
 
     assertThat(loggingHandler.warnings).isEmpty();
   }
@@ -388,10 +453,14 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source(directStrings)
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")),
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")),
                 xml("string/exit")
                     .source(directStrings)
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .build();
 
     UnvalidatedAndroidData primary =
@@ -411,7 +480,9 @@ public class AndroidDataMergerTest {
                 .overwritable(
                     xml("string/exit")
                         .source(primaryStrings.overwrite(directStrings))
-                        .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")))
+                        .value(
+                            SimpleXmlResourceValue.createWithValue(
+                                SimpleXmlResourceValue.Type.STRING, "way out")))
                 .build(),
             ParsedAndroidDataBuilder.empty());
     assertAbout(unwrittenMergedAndroidData).that(data).isEqualTo(expected);
@@ -428,10 +499,14 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")),
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")),
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .build();
 
     ParsedAndroidData directDependency = ParsedAndroidDataBuilder.empty();
@@ -451,10 +526,12 @@ public class AndroidDataMergerTest {
                     fqnFactory.parse("string/exit"),
                     DataResourceXml.createWithNoNamespace(
                         transitiveRoot.resolve("res/values/strings.xml"),
-                        SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")),
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")),
                     DataResourceXml.createWithNoNamespace(
                         transitiveRoot.resolve("res/values/strings.xml"),
-                        SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")))
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")))
                 .toConflictMessage());
   }
 
@@ -471,11 +548,15 @@ public class AndroidDataMergerTest {
                 xml("string/exit")
                     .root(transitiveRoot.resolve("1"))
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")),
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")),
                 xml("string/exit")
                     .root(transitiveRoot.resolve("2"))
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .build();
 
     ParsedAndroidData directDependency =
@@ -499,10 +580,52 @@ public class AndroidDataMergerTest {
                     xml("string/exit")
                         .root(primaryRoot)
                         .source("values/strings.xml")
-                        .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")))
+                        .value(
+                            SimpleXmlResourceValue.createWithValue(
+                                SimpleXmlResourceValue.Type.STRING, "way out")))
                 .build(),
             ParsedAndroidDataBuilder.empty());
     assertAbout(unwrittenMergedAndroidData).that(data).isEqualTo(expected);
+  }
+
+  @Test
+  public void mergeTransitiveConflictBetweenDataResourceXmlAndDataValueFile() throws Exception {
+    Path primaryRoot = fileSystem.getPath("primary");
+    Path transitiveRoot = fileSystem.getPath("transitive");
+
+    ParsedAndroidData transitiveDependency =
+        ParsedAndroidDataBuilder.buildOn(transitiveRoot, fqnFactory)
+            // Two drawable/ambiguous_name (one from xml, one from file) will create conflict.
+            .overwritable(
+                xml("drawable/ambiguous_name")
+                    .source("values/resources.xml")
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.DRAWABLE, "#99000000")),
+                file("drawable/ambiguous_name").source("drawable/ambiguous_name.png"))
+            .build();
+
+    ParsedAndroidData directDependency = ParsedAndroidDataBuilder.empty();
+
+    UnvalidatedAndroidData primary =
+        AndroidDataBuilder.of(primaryRoot)
+            .createManifest("AndroidManifest.xml", "com.google.mergetest")
+            .buildUnvalidated();
+
+    AndroidDataMerger merger = AndroidDataMerger.createWithDefaults();
+
+    merger.merge(transitiveDependency, directDependency, primary, false, false);
+
+    assertThat(loggingHandler.warnings)
+        .containsExactly(
+            MergeConflict.of(
+                    fqnFactory.parse("drawable/ambiguous_name"),
+                    DataResourceXml.createWithNoNamespace(
+                        transitiveRoot.resolve("res/values/resources.xml"),
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.DRAWABLE, "#99000000")),
+                    DataValueFile.from(transitiveRoot.resolve("res/drawable/ambiguous_name.png")))
+                .toConflictMessage());
   }
 
   @Test
@@ -516,7 +639,9 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .build();
 
     ParsedAndroidData directDependency =
@@ -524,7 +649,9 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")))
             .build();
 
     UnvalidatedAndroidData primary =
@@ -541,10 +668,12 @@ public class AndroidDataMergerTest {
                     fqnFactory.parse("string/exit"),
                     DataResourceXml.createWithNoNamespace(
                         directRoot.resolve("res/values/strings.xml"),
-                        SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")),
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")),
                     DataResourceXml.createWithNoNamespace(
                         transitiveRoot.resolve("res/values/strings.xml"),
-                        SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")))
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
                 .toConflictMessage());
   }
 
@@ -559,7 +688,9 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .build();
 
     ParsedAndroidData directDependency =
@@ -567,7 +698,9 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")))
             .build();
 
     UnvalidatedAndroidData primary =
@@ -585,13 +718,15 @@ public class AndroidDataMergerTest {
     assertThat(loggingHandler.warnings)
         .containsExactly(
             MergeConflict.of(
-                fullyQualifiedName,
-                DataResourceXml.createWithNoNamespace(
-                    directRoot.resolve("res/values/strings.xml"),
-                    SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")),
-                DataResourceXml.createWithNoNamespace(
-                    transitiveRoot.resolve("res/values/strings.xml"),
-                    SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")))
+                    fullyQualifiedName,
+                    DataResourceXml.createWithNoNamespace(
+                        transitiveRoot.resolve("res/values/strings.xml"),
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")),
+                    DataResourceXml.createWithNoNamespace(
+                        directRoot.resolve("res/values/strings.xml"),
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")))
                 .toConflictMessage());
   }
 
@@ -606,7 +741,9 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .build();
 
     ParsedAndroidData directDependency =
@@ -614,7 +751,9 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source("values/strings.xml")
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")))
             .build();
 
     UnvalidatedAndroidData primary =
@@ -649,7 +788,9 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source(transitiveStrings)
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "no way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "no way out")))
             .build();
 
     ParsedAndroidData directDependency =
@@ -657,7 +798,9 @@ public class AndroidDataMergerTest {
             .overwritable(
                 xml("string/exit")
                     .source(directStrings)
-                    .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "wrong way out")))
+                    .value(
+                        SimpleXmlResourceValue.createWithValue(
+                            SimpleXmlResourceValue.Type.STRING, "wrong way out")))
             .build();
 
     UnvalidatedAndroidData primary =
@@ -678,7 +821,9 @@ public class AndroidDataMergerTest {
                 .overwritable(
                     xml("string/exit")
                         .source(primaryStrings.overwrite(directStrings))
-                        .value(SimpleXmlResourceValue.createWithValue(Type.STRING, "way out")))
+                        .value(
+                            SimpleXmlResourceValue.createWithValue(
+                                SimpleXmlResourceValue.Type.STRING, "way out")))
                 .build(),
             ParsedAndroidDataBuilder.empty());
     assertAbout(unwrittenMergedAndroidData).that(data).isEqualTo(expected);
@@ -716,6 +861,87 @@ public class AndroidDataMergerTest {
                     DataValueFile.of(directRoot.resolve("res/drawable/rounded_corners.png")),
                     DataValueFile.of(transitiveRoot.resolve("res/drawable/rounded_corners.9.png")))
                 .toConflictMessage());
+  }
+
+  @Test
+  public void mergeDirectAndTransitiveFileConflict() throws Exception {
+    Path primaryRoot = fileSystem.getPath("primary");
+    Path directRoot = fileSystem.getPath("direct");
+    Path transitiveRoot = fileSystem.getPath("transitive");
+
+    Path transitiveDrawableRoot = Files.createDirectories(transitiveRoot.resolve("res/drawable"));
+    Files.write(transitiveDrawableRoot.resolve("app_icon.png"), new byte[] {0x01, 0x02, 0x03});
+    ParsedAndroidData transitiveDependency =
+        ParsedAndroidDataBuilder.buildOn(transitiveRoot, fqnFactory)
+            .overwritable(file("drawable/app_icon").source("drawable/app_icon.png"))
+            .build();
+
+    Path directDrawableRoot = Files.createDirectories(directRoot.resolve("res/drawable"));
+    Files.write(directDrawableRoot.resolve("app_icon.png"), new byte[] {0x01, 0x02, 0x04});
+    ParsedAndroidData directDependency =
+        ParsedAndroidDataBuilder.buildOn(directRoot, fqnFactory)
+            .overwritable(file("drawable/app_icon").source("drawable/app_icon.png"))
+            .build();
+
+    UnvalidatedAndroidData primary =
+        AndroidDataBuilder.of(primaryRoot)
+            .createManifest("AndroidManifest.xml", "com.google.mergetest")
+            .buildUnvalidated();
+
+    AndroidDataMerger merger =
+        AndroidDataMerger.createWithDefaultThreadPool(ContentComparingChecker.create());
+
+    merger.merge(transitiveDependency, directDependency, primary, false, false);
+
+    assertThat(loggingHandler.warnings)
+        .containsExactly(
+            MergeConflict.of(
+                    fqnFactory.parse("drawable/app_icon"),
+                    DataValueFile.from(transitiveRoot.resolve("res/drawable/app_icon.png")),
+                    DataValueFile.from(directRoot.resolve("res/drawable/app_icon.png")))
+                .toConflictMessage());
+  }
+
+  @Test
+  public void mergeDirectAndTransitiveFileConflictDuplicatedContent() throws Exception {
+    Path primaryRoot = fileSystem.getPath("primary");
+    Path directRoot = fileSystem.getPath("direct");
+    Path transitiveRoot = fileSystem.getPath("transitive");
+
+    Path transitiveDrawableRoot = Files.createDirectories(transitiveRoot.resolve("res/drawable"));
+    Files.write(transitiveDrawableRoot.resolve("app_icon.png"), new byte[] {0x01, 0x02, 0x03});
+    ParsedAndroidData transitiveDependency =
+        ParsedAndroidDataBuilder.buildOn(transitiveRoot, fqnFactory)
+            .overwritable(file("drawable/app_icon").source("drawable/app_icon.png"))
+            .build();
+
+    Path directDrawableRoot = Files.createDirectories(directRoot.resolve("res/drawable"));
+    Files.write(directDrawableRoot.resolve("app_icon.png"), new byte[] {0x01, 0x02, 0x03});
+    ParsedAndroidData directDependency =
+        ParsedAndroidDataBuilder.buildOn(directRoot, fqnFactory)
+            .overwritable(file("drawable/app_icon").source("drawable/app_icon.png"))
+            .build();
+
+    UnvalidatedAndroidData primary =
+        AndroidDataBuilder.of(primaryRoot)
+            .createManifest("AndroidManifest.xml", "com.google.mergetest")
+            .buildUnvalidated();
+
+    AndroidDataMerger merger =
+        AndroidDataMerger.createWithDefaultThreadPool(ContentComparingChecker.create());
+
+    merger.merge(transitiveDependency, directDependency, primary, false, false);
+
+    assertAbout(unwrittenMergedAndroidData)
+        .that(merger.merge(transitiveDependency, directDependency, primary, false, true))
+        .isEqualTo(
+            UnwrittenMergedAndroidData.of(
+                primary.getManifest(),
+                ParsedAndroidDataBuilder.empty(),
+                ParsedAndroidDataBuilder.buildOn(fqnFactory)
+                    .overwritable(
+                        file("drawable/app_icon").root(directRoot).source("drawable/app_icon.png"))
+                    .build()));
   }
 
   @Test
@@ -1289,7 +1515,7 @@ public class AndroidDataMergerTest {
     UnwrittenMergedAndroidData data =
         AndroidDataMerger.createWithDefaults()
             .merge(transitiveDependency, directDependency, primary, true, true);
-    
+
     UnwrittenMergedAndroidData expected =
         UnwrittenMergedAndroidData.of(
             primary.getManifest(),
@@ -1300,15 +1526,8 @@ public class AndroidDataMergerTest {
     assertAbout(unwrittenMergedAndroidData).that(data).isEqualTo(expected);
   }
 
-  final SubjectFactory<UnwrittenMergedAndroidDataSubject, UnwrittenMergedAndroidData>
-      unwrittenMergedAndroidData =
-          new SubjectFactory<UnwrittenMergedAndroidDataSubject, UnwrittenMergedAndroidData>() {
-            @Override
-            public UnwrittenMergedAndroidDataSubject getSubject(
-                FailureStrategy fs, UnwrittenMergedAndroidData that) {
-              return new UnwrittenMergedAndroidDataSubject(fs, that);
-            }
-          };
+  final Subject.Factory<UnwrittenMergedAndroidDataSubject, UnwrittenMergedAndroidData>
+      unwrittenMergedAndroidData = UnwrittenMergedAndroidDataSubject::new;
 
   private static final class TestLoggingHandler extends Handler {
     public final List<String> warnings = new ArrayList<String>();

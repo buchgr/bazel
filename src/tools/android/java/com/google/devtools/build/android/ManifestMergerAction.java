@@ -34,9 +34,7 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.attribute.FileTime;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.logging.Logger;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -76,7 +74,9 @@ public class ManifestMergerAction {
       category = "input",
       documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
       effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Path of primary manifest."
+      help =
+          "Path of primary manifest. If not passed, a dummy manifest will be generated and used as"
+              + " the primary."
     )
     public Path manifest;
 
@@ -178,16 +178,18 @@ public class ManifestMergerAction {
     // Write resulting manifest to the output directory, maintaining full path to prevent collisions
     Path output = outputDir.resolve(manifest.toString().replaceFirst("^/", ""));
     Files.createDirectories(output.getParent());
-    TransformerFactory.newInstance().newTransformer().transform(
-        new DOMSource(doc),
-        new StreamResult(output.toFile()));
+    TransformerFactory.newInstance()
+        .newTransformer()
+        .transform(new DOMSource(doc), new StreamResult(output.toFile()));
     return output;
   }
 
   public static void main(String[] args) throws Exception {
-    OptionsParser optionsParser = OptionsParser.newOptionsParser(Options.class);
-    optionsParser.enableParamsFileSupport(
-        new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()));
+    OptionsParser optionsParser =
+        OptionsParser.builder()
+            .optionsClasses(Options.class)
+            .argsPreProcessor(new ShellQuotedParamsFilePreProcessor(FileSystems.getDefault()))
+            .build();
     optionsParser.parseAndExitUponError(args);
     options = optionsParser.getOptions(Options.class);
 
@@ -199,15 +201,21 @@ public class ManifestMergerAction {
       Path tmp = Files.createTempDirectory("manifest_merge_tmp");
       tmp.toFile().deleteOnExit();
       ImmutableMap.Builder<Path, String> mergeeManifests = ImmutableMap.builder();
-      for (Entry<Path, String> mergeeManifest : options.mergeeManifests.entrySet()) {
+      for (Map.Entry<Path, String> mergeeManifest : options.mergeeManifests.entrySet()) {
         mergeeManifests.put(
-            removePermissions(mergeeManifest.getKey(), tmp),
-            mergeeManifest.getValue());
+            removePermissions(mergeeManifest.getKey(), tmp), mergeeManifest.getValue());
+      }
+
+      Path manifest = options.manifest;
+      if (manifest == null) {
+        // No primary manifest was passed. Generate a dummy primary.
+
+        manifest = AndroidManifest.asEmpty().writeDummyManifestForAapt(tmp, options.customPackage);
       }
 
       mergedManifest =
           manifestProcessor.mergeManifest(
-              options.manifest,
+              manifest,
               mergeeManifests.build(),
               options.mergeType,
               options.manifestValues,
@@ -216,17 +224,19 @@ public class ManifestMergerAction {
               options.log);
 
       if (!mergedManifest.equals(options.manifestOutput)) {
-        Files.copy(options.manifest, options.manifestOutput, StandardCopyOption.REPLACE_EXISTING);
+        // manifestProcess.mergeManifest returns the merged manifest, or, if merging was a no-op,
+        // the original primary manifest. In the latter case, explicitly copy that primary manifest
+        // to the expected location of the output.
+        Files.copy(manifest, options.manifestOutput, StandardCopyOption.REPLACE_EXISTING);
       }
-
-      // Set to the epoch for caching purposes.
-      Files.setLastModifiedTime(options.manifestOutput, FileTime.fromMillis(0L));
     } catch (AndroidManifestProcessor.ManifestProcessingException e) {
-      System.exit(1);
+      // We special case ManifestProcessingExceptions here to indicate that this is
+      // caused by a build error, not an Bazel-internal error.
+      logger.log(SEVERE, "Error during merging manifests", e);
+      System.exit(1); // Don't duplicate the error to the user or bubble up the exception.
     } catch (Exception e) {
       logger.log(SEVERE, "Error during merging manifests", e);
-      throw e;
+      throw e; // This is a proper internal exception, so we bubble it up.
     }
   }
 }
-

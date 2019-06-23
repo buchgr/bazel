@@ -17,12 +17,21 @@ package com.google.devtools.build.lib.rules.objc;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
+import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.analysis.skylark.SkylarkRuleContext;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
-import com.google.devtools.build.lib.packages.Info;
+import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.packages.NativeProvider;
 import com.google.devtools.build.lib.packages.Provider;
+import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
+import com.google.devtools.build.lib.packages.SkylarkAspect;
+import com.google.devtools.build.lib.packages.SkylarkInfo;
+import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
 import com.google.devtools.build.lib.rules.apple.ApplePlatform;
 import com.google.devtools.build.lib.rules.apple.ApplePlatform.PlatformType;
@@ -30,29 +39,29 @@ import com.google.devtools.build.lib.rules.apple.AppleToolchain;
 import com.google.devtools.build.lib.rules.apple.DottedVersion;
 import com.google.devtools.build.lib.rules.apple.XcodeConfigProvider;
 import com.google.devtools.build.lib.rules.apple.XcodeVersionProperties;
+import com.google.devtools.build.lib.rules.objc.AppleBinary.AppleBinaryOutput;
 import com.google.devtools.build.lib.rules.objc.ObjcProvider.Key;
-import com.google.devtools.build.lib.skylarkinterface.Param;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.skylarkinterface.SkylarkSignature;
-import com.google.devtools.build.lib.syntax.BuiltinFunction;
+import com.google.devtools.build.lib.skylarkbuildapi.FileApi;
+import com.google.devtools.build.lib.skylarkbuildapi.SkylarkRuleContextApi;
+import com.google.devtools.build.lib.skylarkbuildapi.SplitTransitionProviderApi;
+import com.google.devtools.build.lib.skylarkbuildapi.apple.AppleCommonApi;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
+import com.google.devtools.build.lib.syntax.Environment;
+import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.Runtime;
 import com.google.devtools.build.lib.syntax.SkylarkDict;
+import com.google.devtools.build.lib.syntax.SkylarkList;
 import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
-import com.google.devtools.build.lib.syntax.SkylarkSignatureProcessor;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import java.util.Map.Entry;
+import java.util.Map;
 import javax.annotation.Nullable;
 
 /**
  * A class that exposes apple rule implementation internals to skylark.
  */
-@SkylarkModule(
-  name = "apple_common",
-  doc = "Functions for skylark to access internals of the apple rule implementations."
-)
-public class AppleSkylarkCommon {
- 
+public class AppleSkylarkCommon
+    implements AppleCommonApi<Artifact, ObjcProvider, XcodeConfigProvider, ApplePlatform> {
+
   @VisibleForTesting
   public static final String BAD_KEY_ERROR = "Argument %s not a recognized key, 'providers',"
       + " or 'direct_dep_providers'.";
@@ -76,443 +85,204 @@ public class AppleSkylarkCommon {
   @VisibleForTesting
   public static final String MISSING_KEY_ERROR = "No value for required key %s was present.";
 
-  @Nullable private Info platformType;
-  @Nullable private Info platform;
+  @Nullable private StructImpl platformType;
+  @Nullable private StructImpl platform;
 
-  @SkylarkCallable(
-      name = "apple_toolchain",
-      doc = "Utilities for resolving items from the apple toolchain."
-  )
+  private ObjcProtoAspect objcProtoAspect;
+
+  public AppleSkylarkCommon(ObjcProtoAspect objcProtoAspect) {
+    this.objcProtoAspect = objcProtoAspect;
+  }
+
+  @Override
   public AppleToolchain getAppleToolchain() {
     return new AppleToolchain();
   }
 
-  @SkylarkCallable(
-    name = "platform_type",
-    doc =
-        "An enum-like struct that contains the following fields corresponding to Apple platform "
-            + "types:<br><ul>"
-            + "<li><code>ios</code></li>"
-            + "<li><code>macos</code></li>"
-            + "<li><code>tvos</code></li>"
-            + "<li><code>watchos</code></li>"
-            + "</ul><p>"
-            + "These values can be passed to methods that expect a platform type, like the 'apple' "
-            + "configuration fragment's "
-            + "<a href='apple.html#multi_arch_platform'>multi_arch_platform</a> method.<p>"
-            + "Example:<p>"
-            + "<pre class='language-python'>\n"
-            + "ctx.fragments.apple.multi_arch_platform(apple_common.platform_type.ios)\n"
-            + "</pre>",
-    structField = true
-  )
-  public Info getPlatformTypeStruct() {
+  @Override
+  public StructImpl getPlatformTypeStruct() {
     if (platformType == null) {
       platformType = PlatformType.getSkylarkStruct();
     }
     return platformType;
   }
 
-  @SkylarkCallable(
-    name = "platform",
-    doc =
-        "An enum-like struct that contains the following fields corresponding to Apple "
-            + "platforms:<br><ul>"
-            + "<li><code>ios_device</code></li>"
-            + "<li><code>ios_simulator</code></li>"
-            + "<li><code>macos</code></li>"
-            + "<li><code>tvos_device</code></li>"
-            + "<li><code>tvos_simulator</code></li>"
-            + "<li><code>watchos_device</code></li>"
-            + "<li><code>watchos_device</code></li>"
-            + "</ul><p>"
-            + "These values can be passed to methods that expect a platform, like "
-            + "<a href='apple.html#sdk_version_for_platform'>apple.sdk_version_for_platform</a>.",
-    structField = true
-  )
-  public Info getPlatformStruct() {
+  @Override
+  public StructImpl getPlatformStruct() {
     if (platform == null) {
       platform = ApplePlatform.getSkylarkStruct();
     }
     return platform;
   }
 
-  @SkylarkCallable(
-    name = XcodeVersionProperties.SKYLARK_NAME,
-    doc =
-        "The constructor/key for the <code>XcodeVersionProperties</code> provider.<p>"
-            + "If a target propagates the <code>XcodeVersionProperties</code> provider,"
-            + " use this as the key with which to retrieve it. Example:<br>"
-            + "<pre class='language-python'>\n"
-            + "dep = ctx.attr.deps[0]\n"
-            + "p = dep[apple_common.XcodeVersionProperties]\n"
-            + "</pre>",
-    structField = true
-  )
+  @Override
   public Provider getXcodeVersionPropertiesConstructor() {
     return XcodeVersionProperties.SKYLARK_CONSTRUCTOR;
   }
 
-  @SkylarkCallable(
-      name = XcodeConfigProvider.SKYLARK_NAME,
-      doc = "The constructor/key for the <code>XcodeVersionConfig</code> provider.",
-      structField =  true
-  )
+  @Override
   public Provider getXcodeVersionConfigConstructor() {
     return XcodeConfigProvider.PROVIDER;
   }
 
-  @SkylarkCallable(
-    // TODO(b/63899207): This currently does not match ObjcProvider.SKYLARK_NAME as it requires
-    // a migration of existing skylark rules.
-    name = "Objc",
-    doc =
-        "The constructor/key for the <code>Objc</code> provider.<p>"
-            + "If a target propagates the <code>Objc</code> provider, use this as the "
-            + "key with which to retrieve it. Example:<br>"
-            + "<pre class='language-python'>\n"
-            + "dep = ctx.attr.deps[0]\n"
-            + "p = dep[apple_common.Objc]\n"
-            + "</pre>",
-    structField = true
-  )
+  @Override
   public Provider getObjcProviderConstructor() {
     return ObjcProvider.SKYLARK_CONSTRUCTOR;
   }
 
-  @SkylarkCallable(
-    name = AppleDynamicFrameworkProvider.SKYLARK_NAME,
-    doc =
-        "The constructor/key for the <code>AppleDynamicFramework</code> provider.<p>"
-            + "If a target propagates the <code>AppleDynamicFramework</code> provider, use this "
-            + "as the key with which to retrieve it. Example:<br>"
-            + "<pre class='language-python'>\n"
-            + "dep = ctx.attr.deps[0]\n"
-            + "p = dep[apple_common.AppleDynamicFramework]\n"
-            + "</pre>",
-    structField = true
-  )
+  @Override
   public Provider getAppleDynamicFrameworkConstructor() {
-    return AppleDynamicFrameworkProvider.SKYLARK_CONSTRUCTOR;
+    return AppleDynamicFrameworkInfo.SKYLARK_CONSTRUCTOR;
   }
 
-  @SkylarkCallable(
-    name = AppleDylibBinaryProvider.SKYLARK_NAME,
-    doc =
-        "The constructor/key for the <code>AppleDylibBinary</code> provider.<p>"
-            + "If a target propagates the <code>AppleDylibBinary</code> provider, use this as the "
-            + "key with which to retrieve it. Example:<br>"
-            + "<pre class='language-python'>\n"
-            + "dep = ctx.attr.deps[0]\n"
-            + "p = dep[apple_common.AppleDylibBinary]\n"
-            + "</pre>",
-    structField = true
-  )
+  @Override
   public Provider getAppleDylibBinaryConstructor() {
-    return AppleDylibBinaryProvider.SKYLARK_CONSTRUCTOR;
+    return AppleDylibBinaryInfo.SKYLARK_CONSTRUCTOR;
   }
 
-  @SkylarkCallable(
-    name = AppleExecutableBinaryProvider.SKYLARK_NAME,
-    doc =
-        "The constructor/key for the <code>AppleExecutableBinary</code> provider.<p>"
-            + "If a target propagates the <code>AppleExecutableBinary</code> provider,"
-            + " use this as the key with which to retrieve it. Example:<br>"
-            + "<pre class='language-python'>\n"
-            + "dep = ctx.attr.deps[0]\n"
-            + "p = dep[apple_common.AppleExecutableBinary]\n"
-            + "</pre>",
-    structField = true
-  )
+  @Override
   public Provider getAppleExecutableBinaryConstructor() {
-    return AppleExecutableBinaryProvider.SKYLARK_CONSTRUCTOR;
+    return AppleExecutableBinaryInfo.SKYLARK_CONSTRUCTOR;
   }
 
-  @SkylarkCallable(
-    name = AppleStaticLibraryProvider.SKYLARK_NAME,
-    doc =
-        "The constructor/key for the <code>AppleStaticLibrary</code> provider.<p>"
-            + "If a target propagates the <code>AppleStaticLibrary</code> provider, use "
-            + "this as the key with which to retrieve it. Example:<br>"
-            + "<pre class='language-python'>\n"
-            + "dep = ctx.attr.deps[0]\n"
-            + "p = dep[apple_common.AppleStaticLibrary]\n"
-            + "</pre>",
-    structField = true
-  )
-  public Provider getAppleStaticLibraryProvider() {
-    return AppleStaticLibraryProvider.SKYLARK_CONSTRUCTOR;
+  @Override
+  public AppleStaticLibraryInfo.Provider getAppleStaticLibraryProvider() {
+    return AppleStaticLibraryInfo.SKYLARK_CONSTRUCTOR;
   }
 
-  @SkylarkCallable(
-    name = AppleDebugOutputsProvider.SKYLARK_NAME,
-    doc =
-        "The constructor/key for the <code>AppleDebugOutputs</code> provider.<p>"
-            + "If a target propagates the <code>AppleDebugOutputs</code> provider, use this as the "
-            + "key with which to retrieve it. Example:<br>"
-            + "<pre class='language-python'>\n"
-            + "dep = ctx.attr.deps[0]\n"
-            + "p = dep[apple_common.AppleDebugOutputs]\n"
-            + "</pre>",
-    structField = true
-  )
+  @Override
   public Provider getAppleDebugOutputsConstructor() {
-    return AppleDebugOutputsProvider.SKYLARK_CONSTRUCTOR;
+    return AppleDebugOutputsInfo.SKYLARK_CONSTRUCTOR;
   }
 
-  @SkylarkCallable(
-    name = AppleLoadableBundleBinaryProvider.SKYLARK_NAME,
-    doc =
-        "The constructor/key for the <code>AppleLoadableBundleBinary</code> provider.<p>"
-            + "If a target propagates the <code>AppleLoadableBundleBinary</code> provider, "
-            + "use this as the key with which to retrieve it. Example:<br>"
-            + "<pre class='language-python'>\n"
-            + "dep = ctx.attr.deps[0]\n"
-            + "p = dep[apple_common.AppleLoadableBundleBinary]\n"
-            + "</pre>",
-    structField = true
-  )
+  @Override
   public Provider getAppleLoadableBundleBinaryConstructor() {
-    return AppleLoadableBundleBinaryProvider.SKYLARK_CONSTRUCTOR;
+    return AppleLoadableBundleBinaryInfo.SKYLARK_CONSTRUCTOR;
   }
 
-  @SkylarkCallable(
-    name = IosDeviceProvider.SKYLARK_NAME,
-    doc =
-        "<b>Deprecated. Use the new Skylark testing rules instead.</b> Returns the provider "
-            + "constructor for IosDeviceProvider. Use this as a key to access the attributes "
-            + "exposed by ios_device.",
-    structField = true
-  )
-  public Provider getIosDeviceProviderConstructor() {
-    return IosDeviceProvider.SKYLARK_CONSTRUCTOR;
-  }
-
-  @SkylarkCallable(
-      name = "apple_host_system_env",
-      doc =
-          "Returns a <a href='dict.html'>dict</a> of environment variables that should be set "
-              + "for actions that need to run build tools on an Apple host system, such as the "
-              + " version of Xcode that should be used. The keys are variable names and the values "
-              + " are their corresponding values."
-  )
+  @Override
   public ImmutableMap<String, String> getAppleHostSystemEnv(XcodeConfigProvider xcodeConfig) {
     return AppleConfiguration.getXcodeVersionEnv(xcodeConfig.getXcodeVersion());
   }
 
-  @SkylarkCallable(
-      name = "target_apple_env",
-      doc =
-          "Returns a <code>dict</code> of environment variables that should be set for actions "
-              + "that build targets of the given Apple platform type. For example, this dictionary "
-              + "contains variables that denote the platform name and SDK version with which to "
-              + "build. The keys are variable names and the values are their corresponding values."
-  )
+  @Override
   public ImmutableMap<String, String> getTargetAppleEnvironment(
-      XcodeConfigProvider xcodeConfig, ApplePlatform platform) {
+      XcodeConfigProvider xcodeConfigApi, ApplePlatform platformApi) {
+    XcodeConfigProvider xcodeConfig = (XcodeConfigProvider) xcodeConfigApi;
+    ApplePlatform platform = (ApplePlatform) platformApi;
     return AppleConfiguration.appleTargetPlatformEnv(
         platform, xcodeConfig.getSdkVersionForPlatform(platform));
   }
 
-  @SkylarkSignature(
-    name = "new_objc_provider",
-    objectType = AppleSkylarkCommon.class,
-    returnType = ObjcProvider.class,
-    doc = "Creates a new ObjcProvider instance.",
-    parameters = {
-      @Param(name = "self", type = AppleSkylarkCommon.class, doc = "The apple_common instance."),
-      @Param(
-        name = "uses_swift",
-        type = Boolean.class,
-        defaultValue = "False",
-        named = true,
-        positional = false,
-        doc = "Whether this provider should enable Swift support."
-      )
-    },
-    extraKeywords =
-        @Param(
-          name = "kwargs",
-          type = SkylarkDict.class,
-          defaultValue = "{}",
-          doc = "Dictionary of arguments."
-        )
-  )
-  public static final BuiltinFunction NEW_OBJC_PROVIDER =
-      new BuiltinFunction("new_objc_provider") {
-        @SuppressWarnings("unused")
-        // This method is registered statically for skylark, and never called directly.
-        public ObjcProvider invoke(
-            AppleSkylarkCommon self, Boolean usesSwift, SkylarkDict<String, Object> kwargs) {
-          ObjcProvider.Builder resultBuilder = new ObjcProvider.Builder();
-          if (usesSwift) {
-            resultBuilder.add(ObjcProvider.FLAG, ObjcProvider.Flag.USES_SWIFT);
-          }
-          for (Entry<String, Object> entry : kwargs.entrySet()) {
-            Key<?> key = ObjcProvider.getSkylarkKeyForString(entry.getKey());
-            if (key != null) {
-              resultBuilder.addElementsFromSkylark(key, entry.getValue());
-            } else if (entry.getKey().equals("providers")) {
-              resultBuilder.addProvidersFromSkylark(entry.getValue());
-            } else if (entry.getKey().equals("direct_dep_providers")) {
-              resultBuilder.addDirectDepProvidersFromSkylark(entry.getValue());
-            } else {
-              throw new IllegalArgumentException(String.format(BAD_KEY_ERROR, entry.getKey()));
-            }
-          }
-          return resultBuilder.build();
-        }
-      };
+  @Override
+  public SplitTransitionProviderApi getMultiArchSplitProvider() {
+    return new MultiArchSplitTransitionProvider();
+  }
 
-  @SkylarkSignature(
-    name = "new_xctest_app_provider",
-    objectType = AppleSkylarkCommon.class,
-    returnType = XcTestAppProvider.class,
-    doc = "Creates a new XcTestAppProvider instance.",
-    parameters = {
-      @Param(name = "self", type = AppleSkylarkCommon.class, doc = "The apple_common instance."),
-      @Param(
-        name = "bundle_loader",
-        type = Artifact.class,
-        named = true,
-        positional = false,
-        doc = "The bundle loader for the test. Corresponds to the binary inside the test IPA."
-      ),
-      @Param(
-        name = "ipa",
-        type = Artifact.class,
-        named = true,
-        positional = false,
-        doc = "The test IPA."
-      ),
-      @Param(
-        name = "objc_provider",
-        type = ObjcProvider.class,
-        named = true,
-        positional = false,
-        doc = "An ObjcProvider that should be included by tests using this test bundle."
-      )
+  @Override
+  // This method is registered statically for skylark, and never called directly.
+  public ObjcProvider newObjcProvider(
+      Boolean usesSwift, SkylarkDict<?, ?> kwargs, Environment environment) throws EvalException {
+    ObjcProvider.Builder resultBuilder = new ObjcProvider.Builder(environment.getSemantics());
+    if (usesSwift) {
+      resultBuilder.add(ObjcProvider.FLAG, ObjcProvider.Flag.USES_SWIFT);
     }
-  )
-  public static final BuiltinFunction NEW_XCTEST_APP_PROVIDER =
-      new BuiltinFunction("new_xctest_app_provider") {
-        @SuppressWarnings("unused")
-        // This method is registered statically for skylark, and never called directly.
-        public XcTestAppProvider invoke(
-            AppleSkylarkCommon self,
-            Artifact bundleLoader,
-            Artifact ipa,
-            ObjcProvider objcProvider) {
-          return new XcTestAppProvider(bundleLoader, ipa, objcProvider);
-        }
-      };
-
-  @SkylarkSignature(
-    name = "new_dynamic_framework_provider",
-    objectType = AppleSkylarkCommon.class,
-    returnType = AppleDynamicFrameworkProvider.class,
-    doc = "Creates a new AppleDynamicFramework provider instance.",
-    parameters = {
-      @Param(name = "self", type = AppleSkylarkCommon.class, doc = "The apple_common instance."),
-      @Param(
-        name = AppleDynamicFrameworkProvider.DYLIB_BINARY_FIELD_NAME,
-        type = Artifact.class,
-        named = true,
-        positional = false,
-        doc = "The dylib binary artifact of the dynamic framework."
-      ),
-      @Param(
-        name = AppleDynamicFrameworkProvider.OBJC_PROVIDER_FIELD_NAME,
-        type = ObjcProvider.class,
-        named = true,
-        positional = false,
-        doc =
-            "An ObjcProvider which contains information about the transitive "
-                + "dependencies linked into the binary."
-      ),
-      @Param(
-        name = AppleDynamicFrameworkProvider.FRAMEWORK_DIRS_FIELD_NAME,
-        type = SkylarkNestedSet.class,
-        generic1 = String.class,
-        named = true,
-        noneable = true,
-        positional = false,
-        defaultValue = "None",
-        doc =
-            "The framework path names used as link inputs in order to link against the dynamic "
-                + "framework."
-      ),
-      @Param(
-        name = AppleDynamicFrameworkProvider.FRAMEWORK_FILES_FIELD_NAME,
-        type = SkylarkNestedSet.class,
-        generic1 = Artifact.class,
-        named = true,
-        noneable = true,
-        positional = false,
-        defaultValue = "None",
-        doc =
-            "The full set of artifacts that should be included as inputs to link against the "
-                + "dynamic framework"
-      )
+    for (Map.Entry<?, ?> entry : kwargs.entrySet()) {
+      Key<?> key = ObjcProvider.getSkylarkKeyForString((String) entry.getKey());
+      if (key != null) {
+        resultBuilder.addElementsFromSkylark(key, entry.getValue());
+      } else if (entry.getKey().equals("providers")) {
+        resultBuilder.addProvidersFromSkylark(entry.getValue());
+      } else if (entry.getKey().equals("direct_dep_providers")) {
+        resultBuilder.addDirectDepProvidersFromSkylark(entry.getValue());
+      } else {
+        throw new EvalException(null, String.format(BAD_KEY_ERROR, entry.getKey()));
+      }
     }
-  )
-  public static final BuiltinFunction NEW_DYNAMIC_FRAMEWORK_PROVIDER =
-      new BuiltinFunction("new_dynamic_framework_provider") {
-        @SuppressWarnings("unused")
-        // This method is registered statically for skylark, and never called directly.
-        public AppleDynamicFrameworkProvider invoke(
-            AppleSkylarkCommon self,
-            Artifact dylibBinary,
-            ObjcProvider depsObjcProvider,
-            Object dynamicFrameworkDirs,
-            Object dynamicFrameworkFiles) {
-          NestedSet<PathFragment> frameworkDirs;
-          if (dynamicFrameworkDirs == Runtime.NONE) {
-            frameworkDirs = NestedSetBuilder.<PathFragment>emptySet(Order.STABLE_ORDER);
-          } else {
-            Iterable<String> pathStrings =
-                ((SkylarkNestedSet) dynamicFrameworkDirs).getSet(String.class);
-            frameworkDirs =
-                NestedSetBuilder.<PathFragment>stableOrder()
-                    .addAll(Iterables.transform(pathStrings, PathFragment::create))
-                    .build();
-          }
-          NestedSet<Artifact> frameworkFiles =
-              dynamicFrameworkFiles != Runtime.NONE
-                  ? ((SkylarkNestedSet) dynamicFrameworkFiles).getSet(Artifact.class)
-                  : NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER);
-          return new AppleDynamicFrameworkProvider(
-              dylibBinary, depsObjcProvider, frameworkDirs, frameworkFiles);
-        }
-      };
+    return resultBuilder.build();
+  }
 
-  @SkylarkSignature(
-    name = "dotted_version",
-    objectType = AppleSkylarkCommon.class,
-    returnType = DottedVersion.class,
-    doc = "Creates a new <a href=\"DottedVersion.html\">DottedVersion</a> instance.",
-    parameters = {
-      @Param(name = "self", type = AppleSkylarkCommon.class, doc = "The apple_common instance."),
-      @Param(
-        name = "version",
-        type = String.class,
-        named = false,
-        positional = false,
-        doc = "The string representation of the DottedVersion."
-      )
+  @Override
+  public AppleDynamicFrameworkInfo newDynamicFrameworkProvider(
+      Object dylibBinary,
+      ObjcProvider depsObjcProvider,
+      Object dynamicFrameworkDirs,
+      Object dynamicFrameworkFiles) {
+    NestedSet<PathFragment> frameworkDirs;
+    if (dynamicFrameworkDirs == Runtime.NONE) {
+      frameworkDirs = NestedSetBuilder.<PathFragment>emptySet(Order.STABLE_ORDER);
+    } else {
+      Iterable<String> pathStrings =
+          ((SkylarkNestedSet) dynamicFrameworkDirs).getSet(String.class);
+      frameworkDirs =
+          NestedSetBuilder.<PathFragment>stableOrder()
+              .addAll(Iterables.transform(pathStrings, PathFragment::create))
+              .build();
     }
-  )
-  public static final BuiltinFunction DOTTED_VERSION =
-      new BuiltinFunction("dotted_version") {
-        @SuppressWarnings("unused")
-        // This method is registered statically for skylark, and never called directly.
-        public DottedVersion invoke(
-            AppleSkylarkCommon self, String version) {
-          return DottedVersion.fromString(version);
-        }
-      };
+    NestedSet<Artifact> frameworkFiles =
+        dynamicFrameworkFiles != Runtime.NONE
+            ? ((SkylarkNestedSet) dynamicFrameworkFiles).getSet(Artifact.class)
+            : NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER);
+    Artifact binary = (dylibBinary != Runtime.NONE) ? (Artifact) dylibBinary : null;
 
-  static {
-    SkylarkSignatureProcessor.configureSkylarkFunctions(AppleSkylarkCommon.class);
+    return new AppleDynamicFrameworkInfo(
+        binary, depsObjcProvider, frameworkDirs, frameworkFiles);
+  }
+
+  @Override
+  public StructImpl linkMultiArchBinary(
+      SkylarkRuleContextApi skylarkRuleContextApi,
+      SkylarkList<String> extraLinkopts,
+      SkylarkList<? extends FileApi> extraLinkInputs,
+      Environment environment)
+      throws EvalException, InterruptedException {
+    SkylarkRuleContext skylarkRuleContext = (SkylarkRuleContext) skylarkRuleContextApi;
+    try {
+      RuleContext ruleContext = skylarkRuleContext.getRuleContext();
+      AppleBinaryOutput appleBinaryOutput =
+          AppleBinary.linkMultiArchBinary(
+              ruleContext,
+              extraLinkopts.getImmutableList(),
+              SkylarkList.castList(extraLinkInputs, Artifact.class, "extra_link_inputs"));
+      return createAppleBinaryOutputSkylarkStruct(appleBinaryOutput, environment);
+    } catch (RuleErrorException | ActionConflictException exception) {
+      throw new EvalException(null, exception);
+    }
+  }
+
+  @Override
+  public DottedVersion dottedVersion(String version) throws EvalException {
+    try {
+      return DottedVersion.fromString(version);
+    } catch (DottedVersion.InvalidDottedVersionException e) {
+      throw new EvalException(null, e.getMessage());
+    }
+  }
+
+  @Override
+  public SkylarkAspect getObjcProtoAspect() {
+    return objcProtoAspect;
+  }
+
+  /**
+   * Creates a Skylark struct that contains the results of the {@code link_multi_arch_binary}
+   * function.
+   */
+  private StructImpl createAppleBinaryOutputSkylarkStruct(
+      AppleBinaryOutput output, Environment environment) {
+    Provider constructor =
+        new NativeProvider<StructImpl>(StructImpl.class, "apple_binary_output") {};
+    // We have to transform the output group dictionary into one that contains SkylarkValues instead
+    // of plain NestedSets because the Skylark caller may want to return this directly from their
+    // implementation function.
+    Map<String, SkylarkValue> outputGroups =
+        Maps.transformValues(output.getOutputGroups(), v -> SkylarkNestedSet.of(Artifact.class, v));
+
+    ImmutableMap<String, Object> fields =
+        ImmutableMap.of(
+            "binary_provider", output.getBinaryInfoProvider(),
+            "debug_outputs_provider", output.getDebugOutputsProvider(),
+            "output_groups", SkylarkDict.copyOf(environment, outputGroups));
+    return SkylarkInfo.createSchemaless(constructor, fields, Location.BUILTIN);
   }
 }

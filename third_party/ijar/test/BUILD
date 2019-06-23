@@ -9,10 +9,10 @@ sh_test(
     size = "enormous",
     srcs = ["ijar_test.sh"],
     args = [
-        "../local_jdk/bin/javac",
-        "../local_jdk/bin/java",
-        "../local_jdk/bin/jar",
-        "../local_jdk/bin/javap",
+        "$(JAVABASE)/bin/javac",
+        "$(JAVABASE)/bin/java",
+        "$(JAVABASE)/bin/jar",
+        "$(JAVABASE)/bin/javap",
         "$(location //third_party/ijar)",
         "$(location //tools/jdk:langtools)",
         # We assume unzip and zip to be on the path
@@ -31,7 +31,11 @@ sh_test(
         "WellCompressed2.java",
         ":libtypeannotations2.jar",
         ":libmethodparameters.jar",
+        # This is a precompiled .jar file because it needs to be compiled with JDK 11.
+        # TODO(cushon): build from source once we have a JDK 11
+        "nestmates/nestmates.jar",
         ":source_debug_extension.jar",
+        ":keep_for_compile_lib.jar",
         ":largest_regular.jar",
         ":smallest_zip64.jar",
         ":definitely_zip64.jar",
@@ -41,13 +45,13 @@ sh_test(
         # Intentionally bad test JAR: file count in central directory
         # wrong.
         "libwrongcentraldir.jar",
-        "//tools/defaults:jdk",
+        "@bazel_tools//tools/jdk:current_java_runtime",
         "//tools/jdk:langtools",
     ],
     shard_count = 5,
-    tags = [
-        "jdk8",
-        "zip",
+    tags = ["zip"],
+    toolchains = [
+        "@bazel_tools//tools/jdk:current_java_runtime",
     ],
 )
 
@@ -73,7 +77,6 @@ java_library(
     name = "invokedynamic",
     testonly = 1,
     srcs = ["invokedynamic/ClassWithLambda.java"],
-    tags = ["jdk8"],
 )
 
 # For testing purposes: a class which exposes a private nested class in
@@ -101,17 +104,71 @@ genrule(
     tools = ["//third_party/ijar"],
 )
 
+genrule(
+    name = "interface_ijar_testlib_with_target_label",
+    srcs = [":ijar_testlib"],
+    outs = ["interface_ijar_testlib_with_target_label.jar"],
+    cmd = "$(location //third_party/ijar) --target_label //foo:foo --injecting_rule_kind foo_library $< $@",
+    tools = ["//third_party/ijar"],
+)
+
+genrule(
+    name = "interface_ijar_testlib_nostrip",
+    srcs = [":ijar_testlib"],
+    outs = ["interface_ijar_testlib_nostrip.jar"],
+    cmd = "$(location //third_party/ijar) --target_label //foo:foo --nostrip_jar $< $@",
+    tools = ["//third_party/ijar"],
+)
+
+genrule(
+    name = "jar_with_manifest_nostrip",
+    srcs = ["jar-with-manifest.jar"],
+    outs = ["jar-with-manifest-nostrip.jar"],
+    cmd = "$(location //third_party/ijar) --target_label //foo:foo --nostrip_jar $< $@",
+    tools = ["//third_party/ijar"],
+)
+
+genrule(
+    name = "jar_with_manifest_and_target_label_nostrip",
+    srcs = ["jar-with-manifest-and-target-label.jar"],
+    outs = ["jar-with-manifest-and-target-label-nostrip.jar"],
+    cmd = "$(location //third_party/ijar) --target_label //foo:foo --nostrip_jar $< $@",
+    tools = ["//third_party/ijar"],
+)
+
+genrule(
+    name = "jar_without_manifest_nostrip",
+    srcs = ["jar-without-manifest.jar"],
+    outs = ["jar-without-manifest-nostrip.jar"],
+    cmd = "$(location //third_party/ijar) --target_label //foo:foo --nostrip_jar $< $@",
+    tools = ["//third_party/ijar"],
+)
+
+genrule(
+    name = "jar_without_manifest_nostrip_idempotence",
+    srcs = ["jar-without-manifest-nostrip.jar"],
+    outs = ["jar-without-manifest-nostrip-idempotence.jar"],
+    cmd = "$(location //third_party/ijar) --target_label //foo:foo --nostrip_jar $< $@",
+    tools = ["//third_party/ijar"],
+)
+
+genrule(
+    name = "empty_with_target_label",
+    srcs = [":empty_zip.jar"],
+    outs = ["empty_with_target_label.jar"],
+    cmd = "$(location //third_party/ijar) $< $@ --target_label //empty",
+    tools = ["//third_party/ijar"],
+)
+
 java_library(
     name = "typeannotations2",
     srcs = glob(["typeannotations2/**/*.java"]),
-    tags = ["jdk8"],
 )
 
 java_library(
     name = "methodparameters",
     srcs = ["methodparameters/Test.java"],
     javacopts = ["-parameters"],
-    tags = ["jdk8"],
 )
 
 java_binary(
@@ -143,6 +200,24 @@ genrule(
 )
 
 java_binary(
+    name = "GenKeepForCompile",
+    testonly = 1,
+    srcs = ["GenKeepForCompile.java"],
+    main_class = "GenKeepForCompile",
+    deps = [
+        "//third_party:asm",
+    ],
+)
+
+genrule(
+    name = "keep_for_compile_lib",
+    testonly = 1,
+    outs = ["keep_for_compile_lib.jar"],
+    cmd = "$(location :GenKeepForCompile) $@",
+    tools = [":GenKeepForCompile"],
+)
+
+java_binary(
     name = "GenModuleInfo",
     testonly = 1,
     srcs = ["GenModuleInfo.java"],
@@ -167,6 +242,31 @@ genrule(
     tools = ["//third_party/ijar"],
 )
 
+java_binary(
+    name = "GenKotlinModule",
+    testonly = 1,
+    srcs = ["GenKotlinModule.java"],
+    main_class = "GenKotlinModule",
+    deps = ["//third_party:guava"],
+)
+
+genrule(
+    name = "kotlin_module",
+    testonly = 1,
+    outs = ["kotlin_module.jar"],
+    cmd = "$(location :GenKotlinModule) $@",
+    tools = [":GenKotlinModule"],
+)
+
+genrule(
+    name = "kotlin_module_interface",
+    testonly = 1,
+    srcs = [":kotlin_module.jar"],
+    outs = ["kotlin_module-interface.jar"],
+    cmd = "$(location //third_party/ijar) $< $@",
+    tools = ["//third_party/ijar"],
+)
+
 java_test(
     name = "IjarTests",
     size = "small",
@@ -178,21 +278,27 @@ java_test(
         "PrivateNestedClass.java",
         "UseDeprecatedParts.java",
         "UseRestrictedAnnotation.java",
+        "jar-with-manifest.jar",
+        "jar-with-manifest-and-target-label.jar",
+        "jar-without-manifest.jar",
         "package-info.java",
+        ":empty_with_target_label",
+        ":ijar_testlib",
         ":interface_ijar_testlib",
+        ":interface_ijar_testlib_nostrip",
+        ":interface_ijar_testlib_with_target_label",
+        ":jar_with_manifest_and_target_label_nostrip",
+        ":jar_with_manifest_nostrip",
+        ":jar_without_manifest_nostrip",
+        ":jar_without_manifest_nostrip_idempotence",
+        ":kotlin_module-interface.jar",
         ":liblocal_and_anonymous_lib.jar",
         ":local_and_anonymous-interface.jar",
         ":module_info-interface.jar",
-        "//third_party/java/jdk/langtools:javac_jar",
-    ],
-    jvm_flags = [
-        # Simulates how Bazel invokes javac
-        "-Xbootclasspath/p:$(location //third_party/java/jdk/langtools:javac_jar)",
     ],
     tags = ["zip"],
     test_class = "IjarTests",
     deps = [
-        "//src/java_tools/buildjar:BazelJavaCompiler",
         "//third_party:asm",
         "//third_party:guava",
         "//third_party:junit4",
@@ -225,6 +331,7 @@ java_binary(
         ("largest_regular", 65535),
         ("smallest_zip64", 65536),
         ("definitely_zip64", 70000),
+        ("empty_zip", 1),
     ]
 ]
 

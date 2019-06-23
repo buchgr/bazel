@@ -12,9 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+
 #include <windows.h>
 
+#include <algorithm>
 #include <type_traits>  // static_assert
 
 #include "src/main/native/windows/jni-util.h"
@@ -30,16 +34,6 @@ using std::wstring;
 static_assert(sizeof(jchar) == sizeof(WCHAR),
               "jchar and WCHAR should be the same size");
 
-string GetJavaUTFString(JNIEnv* env, jstring str) {
-  string result;
-  if (str != nullptr) {
-    const char* jstr = env->GetStringUTFChars(str, nullptr);
-    result.assign(jstr);
-    env->ReleaseStringUTFChars(str, jstr);
-  }
-  return result;
-}
-
 wstring GetJavaWstring(JNIEnv* env, jstring str) {
   wstring result;
   if (str != nullptr) {
@@ -49,6 +43,12 @@ wstring GetJavaWstring(JNIEnv* env, jstring str) {
     result.assign(reinterpret_cast<const WCHAR*>(jstr));
     env->ReleaseStringChars(str, jstr);
   }
+  return result;
+}
+
+std::wstring GetJavaWpath(JNIEnv* env, jstring str) {
+  std::wstring result = GetJavaWstring(env, str);
+  std::replace(result.begin(), result.end(), L'/', L'\\');
   return result;
 }
 

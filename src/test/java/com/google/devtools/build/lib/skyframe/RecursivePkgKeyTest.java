@@ -13,16 +13,15 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
-import com.google.devtools.build.lib.skyframe.RecursivePkgValue.RecursivePkgKey;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyKey;
-
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -35,18 +34,15 @@ public class RecursivePkgKeyTest extends BuildViewTestCase {
       RepositoryName repository,
       PathFragment rootRelativePath,
       ImmutableSet<PathFragment> excludedPaths) {
-    RootedPath rootedPath = RootedPath.toRootedPath(rootDirectory, rootRelativePath);
+    RootedPath rootedPath = RootedPath.toRootedPath(Root.fromPath(rootDirectory), rootRelativePath);
     return RecursivePkgValue.key(repository, rootedPath, excludedPaths);
   }
 
   private void invalidHelper(
       PathFragment rootRelativePath, ImmutableSet<PathFragment> excludedPaths) {
-    try {
-      buildRecursivePkgKey(
-          RepositoryName.MAIN, rootRelativePath, excludedPaths);
-      fail();
-    } catch (IllegalArgumentException expected) {
-    }
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> buildRecursivePkgKey(RepositoryName.MAIN, rootRelativePath, excludedPaths));
   }
 
   @Test

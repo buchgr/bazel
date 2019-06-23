@@ -13,10 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.lib.runtime;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Sets;
 import com.google.common.eventbus.EventBus;
 import com.google.common.eventbus.Subscribe;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.AliasProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.test.TestProvider;
@@ -28,7 +30,6 @@ import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.packages.TestSize;
 import com.google.devtools.build.lib.packages.TestTimeout;
 import com.google.devtools.build.lib.runtime.TerminalTestResultNotifier.TestSummaryOptions;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import java.util.ArrayList;
@@ -99,7 +100,7 @@ public class TestResultAnalyzer {
     int passCount = 0;
 
     for (ConfiguredTarget testTarget : testTargets) {
-      TestSummary summary = aggregateAndReportSummary(testTarget, listener).build();
+      TestSummary summary = aggregateAndReportSummary(testTarget, listener);
       summaries.add(summary);
 
       // Finished aggregating; build the final console output.
@@ -134,20 +135,19 @@ public class TestResultAnalyzer {
   }
 
   /**
-   * Helper for differential analysis which aggregates the TestSummary
-   * for an individual target, reporting runs on the EventBus if necessary.
+   * Helper for differential analysis which aggregates the TestSummary for an individual target,
+   * reporting runs on the EventBus if necessary.
    */
-  private TestSummary.Builder aggregateAndReportSummary(
-      ConfiguredTarget testTarget,
-      AggregatingTestListener listener) {
+  private TestSummary aggregateAndReportSummary(
+      ConfiguredTarget testTarget, AggregatingTestListener listener) {
 
     // If already reported by the listener, no work remains for this target.
     TestSummary.Builder summary = listener.getCurrentSummary(testTarget);
-    Label testLabel = testTarget.getLabel();
+    Label testLabel = AliasProvider.getDependencyLabel(testTarget);
     Preconditions.checkNotNull(summary,
         "%s did not complete test filtering, but has a test result", testLabel);
     if (listener.targetReported(testTarget)) {
-      return summary;
+      return summary.build();
     }
 
     Collection<Artifact> incompleteRuns = listener.getIncompleteRuns(testTarget);
@@ -181,8 +181,9 @@ public class TestResultAnalyzer {
     }
 
     // The target was not posted by the listener and must be posted now.
-    eventBus.post(summary.build());
-    return summary;
+    TestSummary result = summary.build();
+    eventBus.post(result);
+    return result;
   }
 
   /**
@@ -199,10 +200,6 @@ public class TestResultAnalyzer {
     Preconditions.checkNotNull(result);
     Preconditions.checkNotNull(summaryBuilder);
     TestSummary existingSummary = Preconditions.checkNotNull(summaryBuilder.peek());
-
-    TransitiveInfoCollection target = existingSummary.getTarget();
-    Preconditions.checkNotNull(
-        target, "The existing TestSummary must be associated with a target");
 
     BlazeTestStatus status = existingSummary.getStatus();
     int numCached = existingSummary.numCached();
@@ -223,6 +220,9 @@ public class TestResultAnalyzer {
     if (coverageData != null) {
       summaryBuilder.addCoverageFiles(Collections.singletonList(coverageData));
     }
+
+    TransitiveInfoCollection target = existingSummary.getTarget();
+    Preconditions.checkNotNull(target, "The existing TestSummary must be associated with a target");
 
     if (!executionOptions.runsPerTestDetectsFlakes) {
       status = aggregateStatus(status, result.getData().getStatus());
@@ -250,23 +250,19 @@ public class TestResultAnalyzer {
       }
     }
 
-    List<Path> passed = new ArrayList<>();
     if (result.getData().hasPassedLog()) {
-      passed.add(result.getTestAction().getTestLog().getPath().getRelative(
-          result.getData().getPassedLog()));
+      summaryBuilder.addPassedLog(
+          result.getTestLogPath().getRelative(result.getData().getPassedLog()));
     }
-
-    List<Path> failed = new ArrayList<>();
     for (String path : result.getData().getFailedLogsList()) {
-      failed.add(result.getTestAction().getTestLog().getPath().getRelative(path));
+      summaryBuilder.addFailedLog(result.getTestLogPath().getRelative(path));
     }
 
     summaryBuilder
         .addTestTimes(result.getData().getTestTimesList())
-        .addPassedLogs(passed)
-        .addFailedLogs(failed)
         .addWarnings(result.getData().getWarningList())
         .collectFailedTests(result.getData().getTestCase())
+        .countTotalTestCases(result.getData().getTestCase())
         .setRanRemotely(result.getData().getIsRemoteStrategy());
 
     List<String> warnings = new ArrayList<>();
@@ -342,7 +338,7 @@ public class TestResultAnalyzer {
         StringBuilder builder = new StringBuilder(String.format(
             "%s: Test execution time (%.1fs excluding execution overhead) outside of "
             + "range for %s tests. Consider setting timeout=\"%s\"",
-            target.getLabel(),
+            AliasProvider.getDependencyLabel(target),
             maxTimeOfShard / 1000.0,
             specifiedTimeout.prettyPrint(),
             expectedTimeout));

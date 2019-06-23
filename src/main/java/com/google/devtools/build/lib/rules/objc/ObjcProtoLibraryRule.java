@@ -14,7 +14,6 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
@@ -27,10 +26,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
+import com.google.devtools.build.lib.analysis.config.HostTransition;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
+import com.google.devtools.build.lib.rules.cpp.CppRuleClasses;
 import com.google.devtools.build.lib.rules.proto.ProtoSourceFileBlacklist;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.FileTypeSet;
@@ -56,7 +56,7 @@ public class ObjcProtoLibraryRule implements RuleDefinition {
   }
 
   @Override
-  public RuleClass build(Builder builder, final RuleDefinitionEnvironment env) {
+  public RuleClass build(RuleClass.Builder builder, final RuleDefinitionEnvironment env) {
     return builder
         .requiresConfigurationFragments(
             CppConfiguration.class, ObjcConfiguration.class, AppleConfiguration.class)
@@ -78,17 +78,17 @@ public class ObjcProtoLibraryRule implements RuleDefinition {
             attr(PORTABLE_PROTO_FILTERS_ATTR, LABEL_LIST)
                 .legacyAllowAnyFileType()
                 .allowedRuleClasses("filegroup")
-                .cfg(HOST))
+                .cfg(HostTransition.createFactory()))
         .add(
             attr(PROTO_COMPILER_ATTR, LABEL)
                 .allowedFileTypes(FileType.of(".py"), FileType.of(".sh"))
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .singleArtifact()
                 .value(env.getToolsLabel("//tools/objc:protobuf_compiler_wrapper")))
         .add(
             attr(PROTO_COMPILER_SUPPORT_ATTR, LABEL)
                 .legacyAllowAnyFileType()
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .value(env.getToolsLabel("//tools/objc:protobuf_compiler_support")))
         .add(
             attr(PROTO_LIB_ATTR, LABEL)
@@ -99,6 +99,7 @@ public class ObjcProtoLibraryRule implements RuleDefinition {
                 PROTOBUF_WELL_KNOWN_TYPES,
                 ImmutableList.of(env.getToolsLabel("//tools/objc:protobuf_well_known_types"))))
         .cfg(AppleCrosstoolTransition.APPLE_CROSSTOOL_TRANSITION)
+        .addRequiredToolchains(CppRuleClasses.ccToolchainTypeAttribute(env))
         .build();
   }
 

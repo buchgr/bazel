@@ -18,8 +18,8 @@ import com.google.devtools.build.lib.packages.CachingPackageLocator;
 import java.io.PrintStream;
 
 /**
- * A PackageManager keeps state about loaded packages around for quick lookup, and provides
- * related functionality: Recursive package finding, loaded package checking, etc.
+ * A PackageManager keeps state about loaded packages around for quick lookup, and provides related
+ * functionality: Recursive package finding, loaded package checking, etc.
  */
 public interface PackageManager extends PackageProvider, CachingPackageLocator {
   PackageManagerStatistics getAndClearStatistics();
@@ -59,7 +59,7 @@ public interface PackageManager extends PackageProvider, CachingPackageLocator {
   /**
    * Retrieve a target pattern parser that works with this package manager.
    */
-  TargetPatternEvaluator newTargetPatternEvaluator();
+  TargetPatternPreloader newTargetPatternPreloader();
 
   /**
    * Construct a new {@link TransitivePackageLoader}.

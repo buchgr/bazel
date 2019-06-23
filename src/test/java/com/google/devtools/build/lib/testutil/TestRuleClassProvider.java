@@ -22,10 +22,10 @@ import static com.google.devtools.build.lib.syntax.Type.STRING_LIST;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.MakeVariableInfo;
 import com.google.devtools.build.lib.analysis.PlatformConfiguration;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
@@ -33,11 +33,12 @@ import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
+import com.google.devtools.build.lib.analysis.TemplateVariableInfo;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
+import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import java.lang.reflect.Method;
@@ -48,6 +49,7 @@ import java.util.Map;
  */
 public class TestRuleClassProvider {
   private static ConfiguredRuleClassProvider ruleProvider = null;
+  private static ConfiguredRuleClassProvider ruleProviderWithClearedSuffix = null;
 
   /**
    * Adds all the rule classes supported internally within the build tool to the given builder.
@@ -66,19 +68,34 @@ public class TestRuleClassProvider {
     }
   }
 
-  /**
-   * Return a rule class provider.
-   */
-  public static ConfiguredRuleClassProvider getRuleClassProvider() {
+  private static ConfiguredRuleClassProvider createRuleClassProvider(boolean clearSuffix) {
+    ConfiguredRuleClassProvider.Builder builder = new ConfiguredRuleClassProvider.Builder();
+    addStandardRules(builder);
+    builder.addRuleDefinition(new TestingDummyRule());
+    builder.addRuleDefinition(new MockToolchainRule());
+    if (clearSuffix) {
+      builder.clearWorkspaceFileSuffixForTesting();
+    }
+    return builder.build();
+  }
+
+  /** Return a rule class provider. */
+  public static ConfiguredRuleClassProvider getRuleClassProvider(boolean clearSuffix) {
+    if (clearSuffix) {
+      if (ruleProviderWithClearedSuffix == null) {
+        ruleProviderWithClearedSuffix = createRuleClassProvider(true);
+      }
+      return ruleProviderWithClearedSuffix;
+    }
     if (ruleProvider == null) {
-      ConfiguredRuleClassProvider.Builder builder =
-          new ConfiguredRuleClassProvider.Builder();
-      addStandardRules(builder);
-      builder.addRuleDefinition(new TestingDummyRule());
-      builder.addRuleDefinition(new MockToolchainRule());
-      ruleProvider = builder.build();
+      ruleProvider = createRuleClassProvider(false);
     }
     return ruleProvider;
+  }
+
+  /** Return a rule class provider. */
+  public static ConfiguredRuleClassProvider getRuleClassProvider() {
+    return getRuleClassProvider(false);
   }
 
   /**
@@ -86,7 +103,7 @@ public class TestRuleClassProvider {
    */
   public static final class TestingDummyRule implements RuleDefinition {
     @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
       return builder
           .setUndocumented()
           .add(attr("srcs", LABEL_LIST).allowedFileTypes(FileTypeSet.ANY_FILE))
@@ -113,12 +130,13 @@ public class TestRuleClassProvider {
 
     @Override
     public ConfiguredTarget create(RuleContext ruleContext)
-        throws InterruptedException, RuleErrorException {
+        throws InterruptedException, RuleErrorException, ActionConflictException {
       Map<String, String> variables = ruleContext.attributes().get("variables", Type.STRING_DICT);
       return new RuleConfiguredTargetBuilder(ruleContext)
           .setFilesToBuild(NestedSetBuilder.emptySet(Order.STABLE_ORDER))
           .addProvider(RunfilesProvider.EMPTY)
-          .addNativeDeclaredProvider(new MakeVariableInfo(ImmutableMap.copyOf(variables)))
+          .addNativeDeclaredProvider(
+              new TemplateVariableInfo(ImmutableMap.copyOf(variables), Location.BUILTIN))
           .build();
     }
   }
@@ -128,9 +146,9 @@ public class TestRuleClassProvider {
    */
   public static final class MakeVariableTesterRule implements RuleDefinition {
     @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment environment) {
+    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment environment) {
       return builder
-          .advertiseProvider(MakeVariableInfo.class)
+          .advertiseProvider(TemplateVariableInfo.class)
           .add(attr("variables", Type.STRING_DICT))
           .build();
     }

@@ -7,6 +7,8 @@ package_group(
     ],
 )
 
+load("//tools/build_defs/pkg:pkg.bzl", "pkg_tar")
+
 cc_library(
     name = "util",
     hdrs = [
@@ -15,13 +17,15 @@ cc_library(
         "file_platform.h",
         "md5.h",
         "numbers.h",
+        "path.h",
+        "path_platform.h",
         "port.h",
     ],
     visibility = ["//visibility:public"],
     deps = [
         ":blaze_exit_code",
         ":errors",
-        ":file",
+        ":filesystem",
         ":md5",
         ":numbers",
         ":port",
@@ -30,50 +34,51 @@ cc_library(
 )
 
 cc_library(
-    name = "file",
-    srcs = ["file.cc"] + select({
-        "//src:windows": [
+    name = "filesystem",
+    srcs = [
+        "file.cc",
+        "path.cc",
+    ] + select({
+        "//src/conditions:windows": [
             "file_windows.cc",
-        ],
-        "//src:windows_msys": [
-            "file_windows.cc",
-        ],
-        "//src:windows_msvc": [
-            "file_windows.cc",
+            "path_windows.cc",
         ],
         "//conditions:default": [
             "file_posix.cc",
+            "path_posix.cc",
         ],
     }),
     hdrs = [
         "file.h",
         "file_platform.h",
+        "path.h",
+        "path_platform.h",
     ],
     visibility = [
         ":ijar",
+        "//src/main/tools:__pkg__",
         "//src/test/cpp/util:__pkg__",
         "//src/tools/launcher:__subpackages__",
         "//src/tools/singlejar:__pkg__",
         "//third_party/def_parser:__pkg__",
+        "//tools/cpp/runfiles:__pkg__",
+        "//tools/test:__pkg__",
     ],
     deps = [
         ":blaze_exit_code",
         ":errors",
+        ":logging",
         ":strings",
     ] + select({
-        "//src:windows": ["//src/main/native/windows:lib-file"],
-        "//src:windows_msys": ["//src/main/native/windows:lib-file"],
-        "//src:windows_msvc": ["//src/main/native/windows:lib-file"],
+        "//src/conditions:windows": ["//src/main/native/windows:lib-file"],
         "//conditions:default": [],
     }),
 )
 
 cc_library(
     name = "errors",
-    srcs = ["errors.cc"] + select({
-        "//src:windows": ["errors_windows.cc"],
-        "//src:windows_msys": ["errors_windows.cc"],
-        "//src:windows_msvc": ["errors_windows.cc"],
+    srcs = select({
+        "//src/conditions:windows": ["errors_windows.cc"],
         "//conditions:default": ["errors_posix.cc"],
     }),
     hdrs = ["errors.h"],
@@ -81,7 +86,11 @@ cc_library(
         ":ijar",
         "//src/main/cpp:__subpackages__",
     ],
-    deps = [":port"],
+    deps = [
+        ":logging",
+        ":port",
+        ":strings",
+    ],
 )
 
 cc_library(
@@ -102,6 +111,10 @@ cc_library(
     srcs = ["logging.cc"],
     hdrs = ["logging.h"],
     visibility = ["//visibility:public"],
+    deps = [
+        ":blaze_exit_code",
+        ":strings",
+    ],
 )
 
 cc_library(
@@ -110,7 +123,8 @@ cc_library(
     hdrs = ["bazel_log_handler.h"],
     visibility = ["//visibility:public"],
     deps = [
-        ":file",
+        ":blaze_exit_code",
+        ":filesystem",
         ":logging",
     ],
 )
@@ -138,6 +152,26 @@ cc_library(
 )
 
 cc_library(
+    name = "profiler",
+    srcs = [
+        "profiler.cc",
+    ] + select({
+        "//src/conditions:windows": ["profiler_windows.cc"],
+        "//conditions:default": ["profiler_posix.cc"],
+    }),
+    hdrs = ["profiler.h"],
+    visibility = [
+        "//src/main/cpp:__pkg__",
+        "//src/test/cpp/util:__pkg__",
+    ],
+    deps = [
+        ":blaze_exit_code",
+        ":errors",
+        ":logging",
+    ],
+)
+
+cc_library(
     name = "blaze_exit_code",
     hdrs = ["exit_code.h"],
     visibility = ["//visibility:public"],
@@ -153,4 +187,35 @@ filegroup(
     name = "embedded_tools",
     srcs = glob(["*.cc"]) + glob(["*.h"]) + ["BUILD"],
     visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "embedded_java_tools",
+    srcs = glob(["*.cc"]) + glob(["*.h"]) + ["//src/main/native/windows:embedded_java_tools"],
+    visibility = ["//visibility:public"],
+)
+
+# A zip containing source files used by ijar.
+genrule(
+    name = "cpp_util_with_deps_zip",
+    srcs = [
+        ":cpp_util_zip",
+        "//src/main/native/windows:native_windows_zip",
+    ],
+    outs = ["cpp_util_with_deps.zip"],
+    cmd = "$(location //src:merge_zip_files) - $@ $(SRCS)",
+    tools = ["//src:merge_zip_files"],
+    visibility = [
+        "//src/tools/singlejar:__pkg__",
+        "//third_party/ijar:__pkg__",
+    ],
+)
+
+genrule(
+    name = "cpp_util_zip",
+    srcs = glob(["*.cc"]) + glob(["*.h"]),
+    outs = ["cpp_util.zip"],
+    cmd = "$(location //src:zip_files) src/main/cpp/util $@ $(SRCS)",
+    tools = ["//src:zip_files"],
+    visibility = ["//visibility:private"],
 )

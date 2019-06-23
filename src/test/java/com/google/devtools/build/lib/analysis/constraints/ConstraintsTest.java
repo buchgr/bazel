@@ -24,7 +24,6 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.testutil.UnknownRuleConfiguredTarget;
 import com.google.devtools.build.lib.util.FileTypeSet;
@@ -56,11 +55,11 @@ public class ConstraintsTest extends AbstractConstraintsTest {
    */
   private static final class RuleClassDefaultRule implements RuleDefinition {
     @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
       return builder
           .setUndocumented()
-          .compatibleWith(env.getLabel("//buildenv/rule_class_compat:b"))
-          .restrictedTo(env.getLabel("//buildenv/rule_class_restrict:d"))
+          .compatibleWith(Label.parseAbsoluteUnchecked("//buildenv/rule_class_compat:b"))
+          .restrictedTo(Label.parseAbsoluteUnchecked("//buildenv/rule_class_restrict:d"))
           .build();
     }
 
@@ -78,30 +77,39 @@ public class ConstraintsTest extends AbstractConstraintsTest {
    * Dummy rule class for testing rule class defaults. This class applies invalid defaults. Note
    * that the specified environments must be independently created.
    */
-  private static final MockRule BAD_RULE_CLASS_DEFAULT_RULE = () -> MockRule.define(
-      "bad_rule_class_default",
-      (builder, env) ->
-          builder
-              .setUndocumented()
-              // These defaults are invalid since compatibleWith and restrictedTo can't mix
-              // environments from the same group.
-              .compatibleWith(env.getLabel("//buildenv/rule_class_compat:a"))
-              .restrictedTo(env.getLabel("//buildenv/rule_class_compat:b")));
+  private static final MockRule BAD_RULE_CLASS_DEFAULT_RULE =
+      () ->
+          MockRule.define(
+              "bad_rule_class_default",
+              (builder, env) ->
+                  builder
+                      .setUndocumented()
+                      // These defaults are invalid since compatibleWith and restrictedTo can't mix
+                      // environments from the same group.
+                      .compatibleWith(
+                          Label.parseAbsoluteUnchecked("//buildenv/rule_class_compat:a"))
+                      .restrictedTo(
+                          Label.parseAbsoluteUnchecked("//buildenv/rule_class_compat:b")));
 
-  private static final MockRule RULE_WITH_IMPLICIT_AND_LATEBOUND_DEFAULTS = () -> MockRule.define(
-      "rule_with_implicit_and_latebound_deps",
-      (builder, env) ->
-          builder
-              .setUndocumented()
-              .add(Attribute.attr("$implicit", BuildType.LABEL)
-                  .value(Label.parseAbsoluteUnchecked("//helpers:implicit")))
-              .add(Attribute.attr(":latebound", BuildType.LABEL)
-                  .value(
-                      Attribute.LateBoundDefault.fromConstant(
-                          Label.parseAbsoluteUnchecked("//helpers:latebound"))))
-              .add(Attribute.attr("normal", BuildType.LABEL)
-                  .allowedFileTypes(FileTypeSet.NO_FILE)
-                  .value(Label.parseAbsoluteUnchecked("//helpers:default"))));
+  private static final MockRule RULE_WITH_IMPLICIT_AND_LATEBOUND_DEFAULTS =
+      () ->
+          MockRule.define(
+              "rule_with_implicit_and_latebound_deps",
+              (builder, env) ->
+                  builder
+                      .setUndocumented()
+                      .add(
+                          Attribute.attr("$implicit", BuildType.LABEL)
+                              .value(Label.parseAbsoluteUnchecked("//helpers:implicit")))
+                      .add(
+                          Attribute.attr(":latebound", BuildType.LABEL)
+                              .value(
+                                  Attribute.LateBoundDefault.fromConstantForTesting(
+                                      Label.parseAbsoluteUnchecked("//helpers:latebound"))))
+                      .add(
+                          Attribute.attr("normal", BuildType.LABEL)
+                              .allowedFileTypes(FileTypeSet.NO_FILE)
+                              .value(Label.parseAbsoluteUnchecked("//helpers:default"))));
 
   private static final MockRule RULE_WITH_ENFORCED_IMPLICIT_ATTRIBUTE = () -> MockRule.define(
       "rule_with_enforced_implicit_deps",
@@ -155,6 +163,27 @@ public class ConstraintsTest extends AbstractConstraintsTest {
         .setDefaults("a").make();
     new EnvironmentGroupMaker("buildenv/rule_class_restrict").setEnvironments("c", "d")
         .setDefaults("c").make();
+  }
+
+  @Test
+  public void packageErrorOnEnvironmentGroupWithMissingEnvironments() throws Exception {
+    scratch.file("buildenv/envs/BUILD",
+        "environment(name = 'env1')",
+        "environment(name = 'env2')",
+        "environment_group(",
+        "    name = 'envs',",
+        "    environments = [':env1', ':en2'],",
+        "    defaults = [':env1'])");
+    reporter.removeHandler(failFastHandler);
+    assertThat(scratchConfiguredTarget("foo", "g",
+        "genrule("
+            + "    name = 'g',"
+            + "    srcs = [],"
+            + "    outs = ['g.out'],"
+            + "    cmd = '',"
+            + "    restricted_to = ['//buildenv/envs:env1'])"))
+        .isNull();
+    assertContainsEvent("environment //buildenv/envs:en2 does not exist");
   }
 
   /**
@@ -937,6 +966,27 @@ public class ConstraintsTest extends AbstractConstraintsTest {
   }
 
   @Test
+  public void selectableAliasDepsTreatedLikeOtherDeps() throws Exception {
+    new EnvironmentGroupMaker("buildenv/foo").setEnvironments("a", "b").setDefaults().make();
+    writeDepsForSelectTests();
+    scratch.file(
+        "hello/BUILD",
+        "alias(",
+        "    name = 'deps_a_alias',",
+        "    actual = '//deps:dep_a')",
+        "cc_library(",
+        "    name = 'lib',",
+        "    srcs = [],",
+        "    deps = select({",
+        "        '//config:a': [':deps_a_alias'],",
+        "        '//config:b': ['//deps:dep_b'],",
+        "    }),",
+        "    compatible_with = ['//buildenv/foo:a', '//buildenv/foo:b'])");
+    useConfiguration("--define", "mode=a");
+    assertThat(getConfiguredTarget("//hello:lib")).isNotNull();
+  }
+
+  @Test
   public void staticCheckingOnSelectsTemporarilyDisabled() throws Exception {
     // TODO(bazel-team): update this test once static checking on selects is implemented. When
     // that happens, the union of all deps in the select must support the environments in the
@@ -1031,9 +1081,14 @@ public class ConstraintsTest extends AbstractConstraintsTest {
     reporter.removeHandler(failFastHandler);
     // Invalid because "--define mode=a" refines :lib to "compatible_with = []" (empty).
     assertThat(getConfiguredTarget("//hello:lib")).isNull();
-    assertContainsEvent("//hello:lib: the current command-line flags disqualify all supported "
-        + "environments because of incompatible select() paths:\n"
-        + " environment: //buildenv/foo:b removed by: //hello:lib (/workspace/hello/BUILD:1:1)");
+    assertContainsEvent(""
+        + "//hello:lib: the current command line flags disqualify all supported environments "
+        + "because of incompatible select() paths:\n"
+        + " \n"
+        + "  environment: //buildenv/foo:b\n"
+        + "    removed by: //hello:lib (/workspace/hello/BUILD:1:1)\n"
+        + "    which has a select() that chooses dep: //deps:dep_a\n"
+        + "    which lacks: //buildenv/foo:b");
   }
 
   @Test
@@ -1081,9 +1136,14 @@ public class ConstraintsTest extends AbstractConstraintsTest {
     reporter.removeHandler(failFastHandler);
     // Invalid because "--define mode=a" refines :lib to "compatible_with = ['//buildenv/foo:a']".
     assertThat(getConfiguredTarget("//hello:depender")).isNull();
-    assertContainsEvent("//hello:depender: the current command-line flags disqualify all supported "
-        + "environments because of incompatible select() paths:\n"
-        + " environment: //buildenv/foo:b removed by: //hello:lib (/workspace/hello/BUILD:1:1)");
+    assertContainsEvent(""
+        + "//hello:depender: the current command line flags disqualify all supported environments "
+        + "because of incompatible select() paths:\n"
+        + " \n"
+        + "  environment: //buildenv/foo:b\n"
+        + "    removed by: //hello:lib (/workspace/hello/BUILD:1:1)\n"
+        + "    which has a select() that chooses dep: //deps:dep_a\n"
+        + "    which lacks: //buildenv/foo:b");
   }
 
   @Test
@@ -1116,9 +1176,14 @@ public class ConstraintsTest extends AbstractConstraintsTest {
     reporter.removeHandler(failFastHandler);
     // Invalid because "--define mode=a" refines :lib to "compatible_with = ['//buildenv/foo:a']".
     assertThat(getConfiguredTarget("//hello:depender")).isNull();
-    assertContainsEvent("//hello:depender: the current command-line flags disqualify all supported "
-        + "environments because of incompatible select() paths:\n"
-        + " environment: //buildenv/foo:b removed by: //hello:lib2 (/workspace/hello/BUILD:1:1)");
+    assertContainsEvent(""
+        + "//hello:depender: the current command line flags disqualify all supported environments "
+        + "because of incompatible select() paths:\n"
+        + " \n"
+        + "  environment: //buildenv/foo:b\n"
+        + "    removed by: //hello:lib2 (/workspace/hello/BUILD:1:1)\n"
+        + "    which has a select() that chooses dep: //deps:dep_a\n"
+        + "    which lacks: //buildenv/foo:b");
   }
 
   @Test
@@ -1138,9 +1203,14 @@ public class ConstraintsTest extends AbstractConstraintsTest {
     // Invalid because :lib has an implicit default of ['//buildenv/foo:b'] and "--define mode=a"
     // refines it to "compatible_with = []" (empty).
     assertThat(getConfiguredTarget("//hello:lib")).isNull();
-    assertContainsEvent("//hello:lib: the current command-line flags disqualify all supported "
-        + "environments because of incompatible select() paths:\n"
-        + " environment: //buildenv/foo:b removed by: //hello:lib (/workspace/hello/BUILD:1:1)");
+    assertContainsEvent(""
+        + "//hello:lib: the current command line flags disqualify all supported environments "
+        + "because of incompatible select() paths:\n"
+        + " \n"
+        + "  environment: //buildenv/foo:b\n"
+        + "    removed by: //hello:lib (/workspace/hello/BUILD:1:1)\n"
+        + "    which has a select() that chooses dep: //deps:dep_a\n"
+        + "    which lacks: //buildenv/foo:b");
   }
 
   @Test
@@ -1170,9 +1240,14 @@ public class ConstraintsTest extends AbstractConstraintsTest {
     // Invalid because while the //buildenv/foo refinement successfully refines :lib to
     // ['//buildenv/foo:a'], the bar refinement refines it to [].
     assertThat(getConfiguredTarget("//hello:lib")).isNull();
-    assertContainsEvent("//hello:lib: the current command-line flags disqualify all supported "
-        + "environments because of incompatible select() paths:\n"
-        + " environment: //buildenv/bar:c removed by: //hello:lib (/workspace/hello/BUILD:1:1)");
+    assertContainsEvent(""
+        + "//hello:lib: the current command line flags disqualify all supported environments "
+        + "because of incompatible select() paths:\n"
+        + " \n"
+        + "  environment: //buildenv/bar:c\n"
+        + "    removed by: //hello:lib (/workspace/hello/BUILD:1:1)\n"
+        + "    which has a select() that chooses dep: //deps:dep_a\n"
+        + "    which lacks: //buildenv/bar:c");
   }
 
   /**
@@ -1203,12 +1278,23 @@ public class ConstraintsTest extends AbstractConstraintsTest {
     useConfiguration("--define", "mode=a");
     reporter.removeHandler(failFastHandler);
     assertThat(getConfiguredTarget("//hello:lib")).isNull();
-    assertContainsEvent("//hello:lib: the current command-line flags disqualify all supported "
-        + "environments because of incompatible select() paths:\n"
-        + "\nenvironment group: //buildenv/foo:foo:\n"
-        + " environment: //buildenv/foo:a removed by: //hello:lib (/workspace/hello/BUILD:9:1)\n"
-        + "\nenvironment group: //buildenv/bar:bar:\n"
-        + " environment: //buildenv/bar:c removed by: //hello:lib (/workspace/hello/BUILD:9:1)");
+    assertContainsEvent(""
+        + "//hello:lib: the current command line flags disqualify all supported environments "
+        + "because of incompatible select() paths:\n"
+        + " \n"
+        + "environment group: //buildenv/foo:foo:\n"
+        + " \n"
+        + "  environment: //buildenv/foo:a\n"
+        + "    removed by: //hello:lib (/workspace/hello/BUILD:9:1)\n"
+        + "    which has a select() that chooses dep: //hello:all_groups_gone\n"
+        + "    which lacks: //buildenv/foo:a\n"
+        + " \n"
+        + "environment group: //buildenv/bar:bar:\n"
+        + " \n"
+        + "  environment: //buildenv/bar:c\n"
+        + "    removed by: //hello:lib (/workspace/hello/BUILD:9:1)\n"
+        + "    which has a select() that chooses dep: //hello:all_groups_gone\n"
+        + "    which lacks: //buildenv/bar:c");
   }
 
   private void writeRulesForRefiningSubsetTests(String topLevelRestrictedTo) throws Exception {
@@ -1252,7 +1338,7 @@ public class ConstraintsTest extends AbstractConstraintsTest {
     writeRulesForRefiningSubsetTests("b");
     reporter.removeHandler(failFastHandler);
     assertThat(getConfiguredTarget("//hello:lib")).isNull();
-    assertContainsEvent("//hello:lib: the current command-line flags disqualify all supported "
+    assertContainsEvent("//hello:lib: the current command line flags disqualify all supported "
         + "environments because of incompatible select() paths");
   }
 }

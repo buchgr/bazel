@@ -14,25 +14,30 @@
 package com.google.devtools.build.lib.runtime;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.MoreObjects;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.ComparisonChain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.MultimapBuilder;
-import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.AliasProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.FilesToRunProvider;
-import com.google.devtools.build.lib.buildeventstream.BuildEvent;
-import com.google.devtools.build.lib.buildeventstream.BuildEventConverters;
+import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.buildeventstream.BuildEvent.LocalFile.LocalFileType;
+import com.google.devtools.build.lib.buildeventstream.BuildEventContext;
 import com.google.devtools.build.lib.buildeventstream.BuildEventId;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
+import com.google.devtools.build.lib.buildeventstream.BuildEventWithOrderConstraint;
 import com.google.devtools.build.lib.buildeventstream.GenericBuildEvent;
 import com.google.devtools.build.lib.buildeventstream.PathConverter;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.util.io.AnsiTerminalPrinter.Mode;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.FailedTestCasesStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.TestCase;
+import com.google.devtools.build.lib.view.test.TestStatus.TestCase.Type;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -48,7 +53,7 @@ import java.util.TreeMap;
  * TestSummary methods (except the constructor) may mutate the object.
  */
 @VisibleForTesting // Ideally package-scoped.
-public class TestSummary implements Comparable<TestSummary>, BuildEvent {
+public class TestSummary implements Comparable<TestSummary>, BuildEventWithOrderConstraint {
   /**
    * Builder class responsible for creating and altering TestSummary objects.
    */
@@ -66,10 +71,12 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
       summary.shardRunStatuses =
           MultimapBuilder.hashKeys().arrayListValues().build(existingSummary.shardRunStatuses);
       setTarget(existingSummary.target);
+      setConfiguration(existingSummary.configuration);
       setStatus(existingSummary.status);
       addCoverageFiles(existingSummary.coverageFiles);
       addPassedLogs(existingSummary.passedLogs);
       addFailedLogs(existingSummary.failedLogs);
+      addTotalTestCases(existingSummary.totalTestCases);
 
       if (existingSummary.failedTestCasesStatus != null) {
         addFailedTestCases(existingSummary.getFailedTestCases(),
@@ -109,6 +116,12 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
       return this;
     }
 
+    public Builder setConfiguration(BuildConfiguration configuration) {
+      checkMutation(configuration);
+      summary.configuration = Preconditions.checkNotNull(configuration, summary);
+      return this;
+    }
+
     public Builder setStatus(BlazeTestStatus status) {
       checkMutation(status);
       summary.status = status;
@@ -127,9 +140,27 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
       return this;
     }
 
+    public Builder addPassedLog(Path passedLog) {
+      checkMutation(passedLog);
+      summary.passedLogs.add(passedLog);
+      return this;
+    }
+
     public Builder addFailedLogs(List<Path> failedLogs) {
       checkMutation(failedLogs);
       summary.failedLogs.addAll(failedLogs);
+      return this;
+    }
+
+    public Builder addFailedLog(Path failedLog) {
+      checkMutation(failedLog);
+      summary.failedLogs.add(failedLog);
+      return this;
+    }
+
+    public Builder addTotalTestCases(int totalTestCases) {
+      checkMutation(totalTestCases);
+      summary.totalTestCases += totalTestCases;
       return this;
     }
 
@@ -157,18 +188,29 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
           return this;
         }
 
-        String name = testCase.getName();
-        String className = testCase.getClassName();
-        if (name == null || className == null) {
-          // A test case detail is not really interesting if we cannot tell which
-          // one it is.
-          this.summary.failedTestCasesStatus = FailedTestCasesStatus.PARTIAL;
-          return this;
-        }
-
         this.summary.failedTestCases.add(testCase);
       }
       return this;
+    }
+
+    public Builder countTotalTestCases(TestCase testCase) {
+      if (testCase != null) {
+        summary.totalTestCases = traverseCountTotalTestCases(testCase);
+      }
+      return this;
+    }
+
+    private int traverseCountTotalTestCases(TestCase testCase) {
+      if (testCase.getChildCount() > 0) {
+        // don't count container of test cases as test
+        int res = 0;
+        for (TestCase child : testCase.getChildList()) {
+          res += traverseCountTotalTestCases(child);
+        }
+        return res;
+      } else {
+        return testCase.getType() == Type.TEST_CASE ? 1 : 0;
+      }
     }
 
     public Builder addFailedTestCases(List<TestCase> testCases, FailedTestCasesStatus status) {
@@ -298,6 +340,7 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
   }
 
   private ConfiguredTarget target;
+  private BuildConfiguration configuration;
   private BlazeTestStatus status;
   // Currently only populated if --runs_per_test_detects_flakes is enabled.
   private Multimap<Integer, BlazeTestStatus> shardRunStatuses = ArrayListMultimap.create();
@@ -313,6 +356,7 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
   private List<Path> coverageFiles = new ArrayList<>();
   private List<Long> testTimes = new ArrayList<>();
   private FailedTestCasesStatus failedTestCasesStatus = null;
+  private int totalTestCases;
 
   // Don't allow public instantiation; go through the Builder.
   private TestSummary() {
@@ -325,17 +369,16 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
     return new Builder();
   }
 
-  /**
-   * Creates a new Builder initialized with a copy of the existing object's values.
-   */
-  public static Builder newBuilderFromExisting(TestSummary existing) {
-    Builder builder = new Builder();
-    builder.mergeFrom(existing);
-    return builder;
+  public Label getLabel() {
+    return AliasProvider.getDependencyLabel(target);
   }
 
   public ConfiguredTarget getTarget() {
     return target;
+  }
+
+  public BuildConfiguration getConfiguration() {
+    return configuration;
   }
 
   public BlazeTestStatus getStatus() {
@@ -392,6 +435,10 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
     return failedTestCases;
   }
 
+  public int getTotalTestCases() {
+    return totalTestCases;
+  }
+
   public List<Path> getCoverageFiles() {
     return coverageFiles;
   }
@@ -421,17 +468,28 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
 
   @Override
   public int compareTo(TestSummary that) {
-    if (this.isCached() != that.isCached()) {
-      return this.isCached() ? -1 : 1;
-    } else if ((this.isCached() && that.isCached()) && (this.numUncached() != that.numUncached())) {
-      return this.numUncached() - that.numUncached();
-    } else if (this.status != that.status) {
-      return getSortKey(this.status) - getSortKey(that.status);
-    } else {
-      Artifact thisExecutable = this.target.getProvider(FilesToRunProvider.class).getExecutable();
-      Artifact thatExecutable = that.target.getProvider(FilesToRunProvider.class).getExecutable();
-      return thisExecutable.getPath().compareTo(thatExecutable.getPath());
-    }
+    return ComparisonChain.start()
+        .compareTrueFirst(this.isCached(), that.isCached())
+        .compare(this.numUncached(), that.numUncached())
+        .compare(getSortKey(this.status), getSortKey(that.status))
+        .compare(this.getLabel(), that.getLabel())
+        .compare(
+            this.getTarget().getConfigurationChecksum(),
+            that.getTarget().getConfigurationChecksum())
+        .compare(this.getTotalTestCases(), that.getTotalTestCases())
+        .result();
+  }
+
+  @Override
+  public String toString() {
+    return MoreObjects.toStringHelper(this)
+        .add("target", this.getTarget())
+        .add("status", status)
+        .add("numCached", numCached)
+        .add("numLocalActionCached", numLocalActionCached)
+        .add("actionRan", actionRan)
+        .add("ranRemotely", ranRemotely)
+        .toString();
   }
 
   public List<Long> getTestTimes() {
@@ -456,7 +514,8 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
   @Override
   public BuildEventId getEventId() {
     return BuildEventId.testSummary(
-        target.getTarget().getLabel(), target.getConfiguration().getEventId());
+        AliasProvider.getDependencyLabel(target),
+        BuildEventId.configurationId(target.getConfigurationChecksum()));
   }
 
   @Override
@@ -465,7 +524,27 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
   }
 
   @Override
-  public BuildEventStreamProtos.BuildEvent asStreamProto(BuildEventConverters converters) {
+  public Collection<BuildEventId> postedAfter() {
+    return ImmutableList.of(
+        BuildEventId.targetCompleted(
+            AliasProvider.getDependencyLabel(target),
+            BuildEventId.configurationId(target.getConfigurationChecksum())));
+  }
+
+  @Override
+  public ImmutableList<LocalFile> referencedLocalFiles() {
+    ImmutableList.Builder<LocalFile> localFiles = ImmutableList.builder();
+    for (Path path : getFailedLogs()) {
+      localFiles.add(new LocalFile(path, LocalFileType.FAILED_TEST_OUTPUT));
+    }
+    for (Path path : getPassedLogs()) {
+      localFiles.add(new LocalFile(path, LocalFileType.SUCCESSFUL_TEST_OUTPUT));
+    }
+    return localFiles.build();
+  }
+
+  @Override
+  public BuildEventStreamProtos.BuildEvent asStreamProto(BuildEventContext converters) {
     PathConverter pathConverter = converters.pathConverter();
     BuildEventStreamProtos.TestSummary.Builder summaryBuilder =
         BuildEventStreamProtos.TestSummary.newBuilder()
@@ -473,12 +552,16 @@ public class TestSummary implements Comparable<TestSummary>, BuildEvent {
             .setTotalNumCached(getNumCached())
             .setTotalRunCount(totalRuns());
     for (Path path : getFailedLogs()) {
-      summaryBuilder.addFailed(
-          BuildEventStreamProtos.File.newBuilder().setUri(pathConverter.apply(path)).build());
+      String uri = pathConverter.apply(path);
+      if (uri != null) {
+        summaryBuilder.addFailed(BuildEventStreamProtos.File.newBuilder().setUri(uri).build());
+      }
     }
     for (Path path : getPassedLogs()) {
-      summaryBuilder.addPassed(
-          BuildEventStreamProtos.File.newBuilder().setUri(pathConverter.apply(path)).build());
+      String uri = pathConverter.apply(path);
+      if (uri != null) {
+        summaryBuilder.addPassed(BuildEventStreamProtos.File.newBuilder().setUri(uri).build());
+      }
     }
     return GenericBuildEvent.protoChaining(this).setTestSummary(summaryBuilder.build()).build();
   }

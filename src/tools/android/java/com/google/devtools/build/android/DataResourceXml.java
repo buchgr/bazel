@@ -17,10 +17,12 @@ import static com.android.resources.ResourceType.DECLARE_STYLEABLE;
 import static com.android.resources.ResourceType.ID;
 import static com.android.resources.ResourceType.PUBLIC;
 
+import com.android.aapt.Resources.Value;
 import com.android.resources.ResourceType;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.android.AndroidCompiledDataDeserializer.ReferenceResolver;
 import com.google.devtools.build.android.FullyQualifiedName.Factory;
 import com.google.devtools.build.android.FullyQualifiedName.VirtualType;
 import com.google.devtools.build.android.ParsedAndroidData.KeyValueConsumer;
@@ -55,9 +57,8 @@ import javax.xml.stream.events.StartElement;
 /**
  * Represents an Android Resource defined in the xml and value folder.
  *
- * <p>
- * Basically, if the resource is defined inside a &lt;resources&gt; tag, this class will handle it.
- * Layouts are treated separately as they don't declare anything besides ids.
+ * <p>Basically, if the resource is defined inside a &lt;resources&gt; tag, this class will handle
+ * it. Layouts are treated separately as they don't declare anything besides ids.
  */
 public class DataResourceXml implements DataResource {
 
@@ -85,8 +86,7 @@ public class DataResourceXml implements DataResource {
       throws XMLStreamException, FactoryConfigurationError, IOException {
     XMLEventReader eventReader =
         xmlInputFactory.createXMLEventReader(
-            new BufferedInputStream(Files.newInputStream(path)),
-              StandardCharsets.UTF_8.toString());
+            new BufferedInputStream(Files.newInputStream(path)), StandardCharsets.UTF_8.toString());
     try {
       // TODO(corysmith): Make the xml parsing more readable.
       for (StartElement resources = XmlResourceValues.moveToResources(eventReader);
@@ -101,19 +101,16 @@ public class DataResourceXml implements DataResource {
               attribute.getName().getNamespaceURI().isEmpty()
                   ? attribute.getName().getLocalPart()
                   : attribute.getName().getPrefix() + ":" + attribute.getName().getLocalPart();
-          FullyQualifiedName fqn = fqnFactory.create(
-                VirtualType.RESOURCES_ATTRIBUTE,
-                attribute.getName().toString());
+          FullyQualifiedName fqn =
+              fqnFactory.create(VirtualType.RESOURCES_ATTRIBUTE, attribute.getName().toString());
           ResourcesAttribute resourceAttribute =
               ResourcesAttribute.of(fqn, attributeName, attribute.getValue());
-          DataResourceXml resource = DataResourceXml.createWithNamespaces(
-                path,
-                resourceAttribute,
-                namespaces);
+          DataResourceXml resource =
+              DataResourceXml.createWithNamespaces(path, resourceAttribute, namespaces);
           if (resourceAttribute.isCombining()) {
-            combiningConsumer.consume(fqn, resource);
+            combiningConsumer.accept(fqn, resource);
           } else {
-            overwritingConsumer.consume(fqn, resource);
+            overwritingConsumer.accept(fqn, resource);
           }
         }
         // Process resource declarations.
@@ -149,7 +146,7 @@ public class DataResourceXml implements DataResource {
             FullyQualifiedName key = fqnFactory.create(resourceType, elementName);
             XmlResourceValue xmlResourceValue =
                 parseXmlElements(resourceType, eventReader, start, namespacesCollector);
-            consumer.consume(
+            consumer.accept(
                 key,
                 DataResourceXml.createWithNamespaces(
                     path, xmlResourceValue, namespacesCollector.toNamespaces()));
@@ -169,9 +166,19 @@ public class DataResourceXml implements DataResource {
       throws InvalidProtocolBufferException {
     DataValueXml xmlValue = protoValue.getXmlValue();
     return createWithNamespaces(
-        source,
-        valueFromProto(xmlValue),
-        Namespaces.from(xmlValue.getNamespace()));
+        source, valueFromProto(xmlValue), Namespaces.from(xmlValue.getNamespace()));
+  }
+
+  public static DataResourceXml from(
+      Value protoValue,
+      DataSource source,
+      ResourceType resourceType,
+      ReferenceResolver packageResolver)
+      throws InvalidProtocolBufferException {
+    DataResourceXml dataResourceXml =
+        createWithNamespaces(
+            source, valueFromProto(protoValue, resourceType, packageResolver), Namespaces.empty());
+    return dataResourceXml;
   }
 
   private static XmlResourceValue valueFromProto(SerializeFormat.DataValueXml proto)
@@ -199,6 +206,54 @@ public class DataResourceXml implements DataResource {
       default:
         throw new IllegalArgumentException();
     }
+  }
+
+  private static XmlResourceValue valueFromProto(
+      Value proto, ResourceType resourceType, ReferenceResolver packageResolver)
+      throws InvalidProtocolBufferException {
+    switch (resourceType) {
+      case STYLE:
+        return StyleXmlResourceValue.from(proto);
+      case ARRAY:
+        return ArrayXmlResourceValue.from(proto);
+      case PLURALS:
+        return PluralXmlResourceValue.from(proto);
+      case ATTR:
+        return AttrXmlResourceValue.from(proto);
+      case STYLEABLE:
+        return StyleableXmlResourceValue.from(proto, packageResolver);
+      case ID:
+        return IdXmlResourceValue.of();
+      case DIMEN:
+      case LAYOUT:
+      case STRING:
+      case BOOL:
+      case COLOR:
+      case FRACTION:
+      case INTEGER:
+      case DRAWABLE:
+      case ANIM:
+      case ANIMATOR:
+      case DECLARE_STYLEABLE:
+      case INTERPOLATOR:
+      case MENU:
+      case MIPMAP:
+      case NAVIGATION:
+      case RAW:
+      case TRANSITION:
+      case FONT:
+      case XML:
+        return SimpleXmlResourceValue.from(proto, resourceType);
+      default:
+        throw new IllegalArgumentException("Unhandled type " + resourceType + " from " + proto);
+    }
+  }
+
+  public static DataResourceXml fromPublic(DataSource source, ResourceType resourceType, int id) {
+    DataResourceXml dataResourceXml =
+        createWithNamespaces(
+            source, PublicXmlResourceValue.from(resourceType, id), Namespaces.empty());
+    return dataResourceXml;
   }
 
   private static XmlResourceValue parseXmlElements(
@@ -272,15 +327,14 @@ public class DataResourceXml implements DataResource {
     return createWithNamespaces(sourcePath, xml, ImmutableMap.<String, String>of());
   }
 
-  public static DataResourceXml createWithNamespaces(
-      Path sourcePath, XmlResourceValue xml, ImmutableMap<String, String> prefixToUri) {
-    return createWithNamespaces(sourcePath, xml, Namespaces.from(prefixToUri));
-  }
-  
   public static DataResourceXml createWithNoNamespace(DataSource source, XmlResourceValue xml) {
     return new DataResourceXml(source, xml, Namespaces.empty());
   }
 
+  public static DataResourceXml createWithNamespaces(
+      Path sourcePath, XmlResourceValue xml, ImmutableMap<String, String> prefixToUri) {
+    return createWithNamespaces(sourcePath, xml, Namespaces.from(prefixToUri));
+  }
 
   public static DataResourceXml createWithNamespaces(
       DataSource source, XmlResourceValue xml, Namespaces namespaces) {
@@ -334,7 +388,7 @@ public class DataResourceXml implements DataResource {
   }
 
   @Override
-  public int serializeTo(DataKey key, DataSourceTable sourceTable, OutputStream outStream)
+  public int serializeTo(DataSourceTable sourceTable, OutputStream outStream)
       throws IOException {
     return xml.serializeTo(sourceTable.getSourceId(source), namespaces, outStream);
   }
@@ -359,7 +413,7 @@ public class DataResourceXml implements DataResource {
     }
     return createWithNamespaces(source.overwrite(resource.source()), xml, namespaces);
   }
-  
+
   @Override
   public DataValue update(DataSource source) {
     return createWithNamespaces(source, xml, namespaces);
@@ -367,7 +421,7 @@ public class DataResourceXml implements DataResource {
 
   @Override
   public String asConflictString() {
-    return source.asConflictString();
+    return xml.asConflictStringWith(source);
   }
 
   @Override
@@ -377,5 +431,16 @@ public class DataResourceXml implements DataResource {
     }
     DataResourceXml other = (DataResourceXml) value;
     return Objects.equals(xml, other.xml);
+  }
+
+  @Override
+  public int compareMergePriorityTo(DataValue value) {
+    Preconditions.checkNotNull(value);
+    if (!(value instanceof DataResourceXml)) {
+      // This is an ambiguous conflict; return 0 meaning neither has priority.
+      return 0;
+    }
+    DataResourceXml other = (DataResourceXml) value;
+    return xml.compareMergePriorityTo(other.xml);
   }
 }

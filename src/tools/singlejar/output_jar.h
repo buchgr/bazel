@@ -18,10 +18,15 @@
 #include <stdio.h>
 
 #include <cinttypes>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+// Must be included before <io.h> (on Windows) and <fcntl.h>.
+#include "src/tools/singlejar/port.h"
+// Need newline so clang-format won't alpha-sort with other headers.
 
 #include "src/tools/singlejar/combiners.h"
 #include "src/tools/singlejar/options.h"
@@ -41,9 +46,14 @@ class OutputJar {
   // own the instance of the combiner and will delete it on self destruction.
   void ExtraCombiner(const std::string& entry_name, Combiner *combiner);
   // Additional file handler to be redefined by a subclass.
-  virtual void ExtraHandler(const CDH *entry);
+  virtual void ExtraHandler(const std::string &input_jar_path, const CDH *entry,
+                            const std::string *input_jar_aux_label);
   // Return jar path.
   const char *path() const { return options_->output_jar.c_str(); }
+  // True if an entry with given name have not been added to this archive.
+  bool NewEntry(const std::string& entry_name) {
+    return known_members_.count(entry_name) == 0;
+  }
 
  protected:
   // The purpose  of these two tiny utility methods is to avoid creating a
@@ -58,10 +68,6 @@ class OutputJar {
     const size_t n_tail = strlen(tail);
     return n >= n_tail && !strncmp(str + n - n_tail, tail, n_tail);
   }
-  // True if an entry with given name have not been added to this archive.
-  bool NewEntry(const std::string& entry_name) {
-    return known_members_.count(entry_name) == 0;
-  }
 
  private:
   // Open output jar.
@@ -69,7 +75,7 @@ class OutputJar {
   // Add the contents of the given input jar.
   bool AddJar(int jar_path_index);
   // Returns the current output position.
-  off_t Position();
+  off64_t Position();
   // Write Jar entry.
   void WriteEntry(void *local_header_and_payload);
   // Write META_INF/ entry (the first entry on output).
@@ -79,7 +85,7 @@ class OutputJar {
                      const uint16_t n_extra_fields);
   // Create output Central Directory Header for the given input entry and
   // append it to CEN (Central Directory) buffer.
-  void AppendToDirectoryBuffer(const CDH *cdh, off_t local_header_offset,
+  void AppendToDirectoryBuffer(const CDH *cdh, off64_t lh_pos,
                                uint16_t normalized_time, bool fix_timestamp);
   // Reserve space in CEN buffer.
   uint8_t *ReserveCdr(size_t chunk_size);
@@ -91,7 +97,7 @@ class OutputJar {
   void ClasspathResource(const std::string& resource_name,
                          const std::string& resource_path);
   // Copy 'count' bytes starting at 'offset' from the given file.
-  ssize_t AppendFile(int in_fd, off_t offset, size_t count);
+  ssize_t AppendFile(int in_fd, off64_t offset, size_t count);
   // Write bytes to the output file, return true on success.
   bool WriteBytes(const void *buffer, size_t count);
 
@@ -106,7 +112,7 @@ class OutputJar {
 
   std::unordered_map<std::string, struct EntryInfo> known_members_;
   FILE *file_;
-  off_t outpos_;
+  off64_t outpos_;
   std::unique_ptr<char[]> buffer_;
   int entries_;
   int duplicate_entries_;

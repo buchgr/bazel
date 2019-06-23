@@ -15,14 +15,16 @@ package com.google.devtools.build.lib.actions.util;
 
 import static com.google.devtools.build.lib.actions.util.ActionsTestUtil.NULL_ACTION_OWNER;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.AbstractAction;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.util.Fingerprint;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -38,7 +40,12 @@ import java.util.concurrent.Executors;
  */
 public class TestAction extends AbstractAction {
 
-  public static final Runnable NO_EFFECT = new Runnable() { @Override public void run() {} };
+  @AutoCodec
+  public static final Runnable NO_EFFECT =
+      new Runnable() {
+        @Override
+        public void run() {}
+      };
 
   protected final Callable<Void> effect;
 
@@ -110,8 +117,8 @@ public class TestAction extends AbstractAction {
     } catch (RuntimeException | Error e) {
       throw e;
     } catch (Exception e) {
-      throw new ActionExecutionException("TestAction failed due to exception",
-                                         e, this, false);
+      throw new ActionExecutionException(
+          "TestAction failed due to exception: " + e.getMessage(), e, this, false);
     }
 
     try {
@@ -126,11 +133,9 @@ public class TestAction extends AbstractAction {
   }
 
   @Override
-  protected String computeKey() {
-    Fingerprint f = new Fingerprint();
-    f.addPaths(Artifact.asSortedPathFragments(getOutputs()));
-    f.addPaths(Artifact.asSortedPathFragments(getMandatoryInputs()));
-    return f.hexDigestAndReset();
+  protected void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp) {
+    fp.addPaths(Artifact.asSortedPathFragments(getOutputs()));
+    fp.addPaths(Artifact.asSortedPathFragments(getMandatoryInputs()));
   }
 
   @Override
@@ -139,11 +144,13 @@ public class TestAction extends AbstractAction {
   }
 
   /** No-op action that has exactly one output, and can be a middleman action. */
+  @AutoCodec
   public static class DummyAction extends TestAction {
     private final MiddlemanType type;
 
-    public DummyAction(Collection<Artifact> inputs, Artifact output, MiddlemanType type) {
-      super(NO_EFFECT, inputs, ImmutableList.of(output));
+    @AutoCodec.Instantiator
+    public DummyAction(Collection<Artifact> inputs, Artifact primaryOutput, MiddlemanType type) {
+      super(NO_EFFECT, inputs, ImmutableList.of(primaryOutput));
       this.type = type;
     }
 

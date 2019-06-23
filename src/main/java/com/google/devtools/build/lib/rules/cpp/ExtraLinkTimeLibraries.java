@@ -15,19 +15,25 @@
 package com.google.devtools.build.lib.rules.cpp;
 
 import com.google.common.collect.Lists;
+import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
+import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
+import com.google.devtools.build.lib.rules.cpp.ExtraLinkTimeLibrary.BuildLibraryOutput;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * A list of extra libraries to include in a link.  These are non-C++
- * libraries that are built from inputs gathered from all the dependencies.
- * The dependencies have no way to coordinate, so each one will add an
- * ExtraLinkTimeLibrary to its CcLinkParams.  ExtraLinkTimeLibrary is an
- * interface, and all ExtraLinkTimeLibrary objects of the same class will
- * be gathered together.
+ * A list of extra libraries to include in a link. These are non-C++ libraries that are built from
+ * inputs gathered from all the dependencies. The dependencies have no way to coordinate, so each
+ * one will add an ExtraLinkTimeLibrary to its CcLinkParams. ExtraLinkTimeLibrary is an interface,
+ * and all ExtraLinkTimeLibrary objects of the same class will be gathered together.
  */
+@AutoCodec
 public final class ExtraLinkTimeLibraries {
   /**
    * We can have multiple different kinds of lists of libraries to include
@@ -35,7 +41,9 @@ public final class ExtraLinkTimeLibraries {
    */
   private final Collection<ExtraLinkTimeLibrary> extraLibraries;
 
-  private ExtraLinkTimeLibraries(Collection<ExtraLinkTimeLibrary> extraLibraries) {
+  @AutoCodec.Instantiator
+  @VisibleForSerialization
+  ExtraLinkTimeLibraries(Collection<ExtraLinkTimeLibrary> extraLibraries) {
     this.extraLibraries = extraLibraries;
   }
 
@@ -93,5 +101,19 @@ public final class ExtraLinkTimeLibraries {
       libraries.get(c).addTransitive(b);
       return this;
     }
+  }
+
+  public BuildLibraryOutput buildLibraries(
+      RuleContext ruleContext, boolean staticMode, boolean forDynamicLibrary)
+      throws InterruptedException, RuleErrorException {
+    NestedSetBuilder<LibraryToLink> librariesToLink = NestedSetBuilder.linkOrder();
+    NestedSetBuilder<Artifact> runtimeLibraries = NestedSetBuilder.linkOrder();
+    for (ExtraLinkTimeLibrary extraLibrary : getExtraLibraries()) {
+      BuildLibraryOutput buildLibraryOutput =
+          extraLibrary.buildLibraries(ruleContext, staticMode, forDynamicLibrary);
+      librariesToLink.addTransitive(buildLibraryOutput.getLibrariesToLink());
+      runtimeLibraries.addTransitive(buildLibraryOutput.getRuntimeLibraries());
+    }
+    return new BuildLibraryOutput(librariesToLink.build(), runtimeLibraries.build());
   }
 }

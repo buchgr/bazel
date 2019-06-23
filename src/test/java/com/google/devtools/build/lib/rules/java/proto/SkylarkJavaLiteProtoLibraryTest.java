@@ -16,15 +16,13 @@ package com.google.devtools.build.lib.rules.java.proto;
 
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.devtools.build.lib.actions.Artifact.ROOT_RELATIVE_PATH_STRING;
 import static com.google.devtools.build.lib.actions.util.ActionsTestUtil.prettyArtifactNames;
-import static com.google.devtools.build.lib.actions.util.ActionsTestUtil.prettyJarNames;
+import static com.google.devtools.build.lib.rules.java.JavaCompileActionTestHelper.getDirectJars;
+import static com.google.devtools.build.lib.rules.java.JavaCompileActionTestHelper.getJavacArguments;
 
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableListMultimap;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Multimaps;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
@@ -32,8 +30,11 @@ import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.ExtraActionArtifactsProvider;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
-import com.google.devtools.build.lib.rules.java.JavaCompilationArgs;
+import com.google.devtools.build.lib.packages.Provider;
+import com.google.devtools.build.lib.packages.SkylarkProvider;
+import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.rules.java.JavaCompilationArgsProvider;
 import com.google.devtools.build.lib.rules.java.JavaCompileAction;
 import com.google.devtools.build.lib.rules.java.JavaInfo;
@@ -52,9 +53,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Tests for the Skylark version of java_lite_proto_library rule.
- */
+/** Tests for the Skylark version of java_lite_proto_library rule. */
 @RunWith(JUnit4.class)
 public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
   private static final String RULE_DIRECTORY = "tools/build_rules/java_lite_proto_library";
@@ -75,6 +74,14 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
 
     scratch.file("net/proto2/compiler/public/BUILD", "exports_files(['protocol_compiler'])");
 
+    // TODO(b/77901188): remove once j_p_l migration is complete
+    scratch.file(
+        "third_party/java/jsr250_annotations/BUILD",
+        "package(default_visibility=['//visibility:public'])",
+        "licenses(['notice'])",
+        "java_import(name = 'jsr250_source_annotations',",
+        "            jars = [ 'jsr250_source_annotations.jar' ])");
+
     mockToolchains();
 
     actionsTestUtil = actionsTestUtil();
@@ -82,6 +89,8 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
 
   @Before
   public final void setupSkylarkRule() throws Exception {
+    setSkylarkSemanticsOptions("--incompatible_new_actions_api=false");
+
     File[] files = Runfiles.location(RULE_DIRECTORY).listFiles();
     for (File file : files) {
       scratch.file(RULE_DIRECTORY + "/" + file.getName(), Files.readAllBytes(file.toPath()));
@@ -158,7 +167,7 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
             .getRemainingArguments();
 
     assertThat(args)
-        .containsAllOf(
+        .containsAtLeast(
             "--java_out=lite,immutable,no_enforce_api_compatibility:"
                 + genfilesDir
                 + "/x/protolib-lite-src.jar",
@@ -199,7 +208,8 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
             getGeneratingAction(
                 getConfiguredTarget("//java/lib:lite_pb2"), "java/lib/libproto-lite.jar");
 
-    List<String> commandLine = ImmutableList.copyOf(javacAction.buildCommandLine());
+    List<String> commandLine =
+        ImmutableList.copyOf((Iterable<String>) getJavacArguments(javacAction));
     MoreAsserts.assertContainsSublist(commandLine, "--target_label", "//java/lib:proto");
   }
 
@@ -216,7 +226,7 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
     JavaCompilationArgsProvider compilationArgsProvider =
         getProvider(JavaCompilationArgsProvider.class, target);
     assertThat(compilationArgsProvider).isNotNull();
-    assertThat(compilationArgsProvider.getJavaCompilationArgs()).isNotNull();
+    assertThat(compilationArgsProvider.getDirectCompileTimeJars()).isNotNull();
     JavaSourceJarsProvider sourceJarsProvider = getProvider(JavaSourceJarsProvider.class, target);
     assertThat(sourceJarsProvider).isNotNull();
     assertThat(sourceJarsProvider.getSourceJars()).isNotNull();
@@ -239,7 +249,7 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
     List<String> args =
         getGeneratingSpawnAction(litepb2, "cross/bravo-lite-src.jar").getRemainingArguments();
     assertThat(args)
-        .containsAllOf(
+        .containsAtLeast(
             "--java_out=lite,immutable,no_enforce_api_compatibility:"
                 + genfilesDir
                 + "/cross/bravo-lite-src.jar",
@@ -248,9 +258,8 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
         .inOrder();
 
     List<String> directJars =
-        prettyJarNames(
-            getProvider(JavaCompilationArgsProvider.class, litepb2)
-                .getJavaCompilationArgs().getRuntimeJars());
+        prettyArtifactNames(
+            getProvider(JavaCompilationArgsProvider.class, litepb2).getRuntimeJars());
     assertThat(directJars)
         .containsExactly("cross/libbravo-lite.jar", "protobuf/libjavalite_runtime.jar");
   }
@@ -275,43 +284,11 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
         "proto_library(name = 'bar')");
     NestedSet<Artifact> providedSpecs =
         getConfiguredTarget("//x:lite_pb2")
-            .getProvider(ProguardSpecProvider.class)
+            .get(ProguardSpecProvider.PROVIDER)
             .getTransitiveProguardSpecs();
 
     assertThat(ActionsTestUtil.baseArtifactNames(providedSpecs))
         .containsExactly("javalite_runtime.pro_valid");
-  }
-
-
-  /** Protobufs should always be compiled with the default and proto javacopts. */
-  @Test
-  public void testJavacOpts() throws Exception {
-    ConfiguredTarget rule =
-        scratchConfiguredTarget(
-            "x",
-            "lite_pb2",
-            "load('//tools/build_rules/java_lite_proto_library:java_lite_proto_library.bzl',",
-            "      'java_lite_proto_library')",
-            "java_lite_proto_library(name = 'lite_pb2', deps = [':proto_lib'])",
-            "proto_library(name = 'proto_lib',",
-            "              srcs = ['input1.proto', 'input2.proto'])");
-    JavaCompilationArgs compilationArgs =
-        getProvider(JavaCompilationArgsProvider.class, rule).getJavaCompilationArgs();
-    assertThat(compilationArgs.getInstrumentationMetadata()).isEmpty();
-
-    JavaSourceJarsProvider sourceJarsProvider = getProvider(JavaSourceJarsProvider.class, rule);
-    assertThat(sourceJarsProvider).isNotNull();
-    assertThat(prettyJarNames(sourceJarsProvider.getSourceJars()))
-        .containsExactly("x/proto_lib-lite-src.jar");
-
-    ImmutableListMultimap<String, Artifact> runtimeJars =
-        Multimaps.index(compilationArgs.getRuntimeJars(), ROOT_RELATIVE_PATH_STRING);
-
-    Artifact jar = Iterables.getOnlyElement(runtimeJars.get("x/libproto_lib-lite.jar"));
-    JavaCompileAction action = (JavaCompileAction) getGeneratingAction(jar);
-
-    List<String> commandLine = ImmutableList.copyOf(action.buildCommandLine());
-    assertThat(commandLine).contains("-protoMarkerForTest");
   }
 
   @Test
@@ -335,7 +312,7 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
 
     useConfiguration("--experimental_action_listener=//xa:al");
     ConfiguredTarget ct = getConfiguredTarget("//x:lite_pb2");
-    Iterable<Artifact> artifacts =
+    Iterable<Artifact.DerivedArtifact> artifacts =
         ct.getProvider(ExtraActionArtifactsProvider.class).getTransitiveExtraActionArtifacts();
 
     Iterable<String> extraActionOwnerLabels =
@@ -370,7 +347,7 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
         ")");
     scratch.file(
         "proto/BUILD",
-        "load('/proto/extensions', 'custom_rule')",
+        "load('//proto:extensions.bzl', 'custom_rule')",
         "load('//tools/build_rules/java_lite_proto_library:java_lite_proto_library.bzl',",
         "      'java_lite_proto_library')",
         "proto_library(",
@@ -381,9 +358,9 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
         "custom_rule(name = 'custom', dep = ':lite_pb2')");
     update(
         ImmutableList.of("//proto:custom"),
-        false /* keepGoing */,
-        1 /* loadingPhaseThreads */,
-        true /* doAnalysis */,
+        /* keepGoing= */ false,
+        /* loadingPhaseThreads= */ 1,
+        /* doAnalysis= */ true,
         new EventBus());
     // Implicitly check that `update()` above didn't throw an exception. This implicitly checks that
     // ctx.attr.dep.java.{transitive_deps, outputs}, above, is defined.
@@ -398,14 +375,13 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
         "proto_library(",
         "    name = 'proto',",
         "    srcs = [ 'file.proto' ],",
-        "    java_api_version = 2,",
         ")",
         "java_lite_proto_library(name = 'lite_pb2', deps = [':proto'])");
     update(
         ImmutableList.of("//proto:lite_pb2"),
-        false /* keepGoing */,
-        1 /* loadingPhaseThreads */,
-        true /* doAnalysis */,
+        /* keepGoing= */ false,
+        /* loadingPhaseThreads= */ 1,
+        /* doAnalysis= */ true,
         new EventBus());
   }
 
@@ -444,15 +420,15 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
           getProvider(JavaCompilationArgsProvider.class, getConfiguredTarget("//x:foo_lite_pb2"));
 
       Iterable<String> directJars =
-          prettyJarNames(compilationArgsProvider.getJavaCompilationArgs().getCompileTimeJars());
+          prettyArtifactNames(compilationArgsProvider.getDirectCompileTimeJars());
 
       assertThat(directJars).containsExactly("x/libfoo-lite-hjar.jar");
 
       JavaSourceJarsProvider sourceJarsProvider =
           getProvider(JavaSourceJarsProvider.class, getConfiguredTarget("//x:foo_lite_pb2"));
       assertThat(sourceJarsProvider).isNotNull();
-      assertThat(prettyJarNames(sourceJarsProvider.getSourceJars()))
-          .containsExactly("x/foo-lite-src.jar");
+      assertThat(prettyArtifactNames(sourceJarsProvider.getSourceJars()))
+          .containsExactly("x/libfoo-lite-src.jar");
     }
 
     {
@@ -460,15 +436,15 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
           getProvider(JavaCompilationArgsProvider.class, getConfiguredTarget("//x:bar_lite_pb2"));
 
       Iterable<String> directJars =
-          prettyJarNames(compilationArgsProvider.getJavaCompilationArgs().getCompileTimeJars());
+          prettyArtifactNames(compilationArgsProvider.getDirectCompileTimeJars());
 
       assertThat(directJars).containsExactly("x/libbar-lite-hjar.jar");
 
       JavaSourceJarsProvider sourceJarsProvider =
           getProvider(JavaSourceJarsProvider.class, getConfiguredTarget("//x:bar_lite_pb2"));
       assertThat(sourceJarsProvider).isNotNull();
-      assertThat(prettyJarNames(sourceJarsProvider.getSourceJars()))
-          .containsExactly("x/bar-lite-src.jar");
+      assertThat(prettyArtifactNames(sourceJarsProvider.getSourceJars()))
+          .containsExactly("x/libbar-lite-src.jar");
     }
   }
 
@@ -498,11 +474,12 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
         "    srcs = [ 'bar.proto' ],",
         ")");
 
-    JavaCompilationArgsProvider compilationArgsProvider = getProvider(
-        JavaCompilationArgsProvider.class, getConfiguredTarget("//x:foo_java_proto_lite"));
+    JavaCompilationArgsProvider compilationArgsProvider =
+        getProvider(
+            JavaCompilationArgsProvider.class, getConfiguredTarget("//x:foo_java_proto_lite"));
 
     Iterable<String> directJars =
-        prettyJarNames(compilationArgsProvider.getJavaCompilationArgs().getCompileTimeJars());
+        prettyArtifactNames(compilationArgsProvider.getDirectCompileTimeJars());
 
     assertThat(directJars).containsExactly("x/libbar_proto-lite-hjar.jar");
   }
@@ -540,14 +517,14 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
       JavaCompileAction action =
           (JavaCompileAction)
               getGeneratingAction(getConfiguredTarget("//x:foo_lite_pb"), "x/libfoo-lite.jar");
-      assertThat(prettyArtifactNames(action.getDirectJars())).isEmpty();
+      assertThat(prettyArtifactNames(getInputs(action, getDirectJars(action)))).isEmpty();
     }
 
     {
       JavaCompileAction action =
           (JavaCompileAction)
               getGeneratingAction(getConfiguredTarget("//x:bar_lite_pb"), "x/libbar-lite.jar");
-      assertThat(prettyArtifactNames(action.getDirectJars())).isEmpty();
+      assertThat(prettyArtifactNames(getInputs(action, getDirectJars(action)))).isEmpty();
     }
   }
 
@@ -559,15 +536,16 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
   public void testJavaLiteProtoLibraryAspectProviders() throws Exception {
     scratch.file(
         "x/aspect.bzl",
+        "MyInfo = provider()",
         "def _foo_aspect_impl(target,ctx):",
         "  proto_found = hasattr(target, 'proto_java')",
         "  if hasattr(ctx.rule.attr, 'deps'):",
         "    for dep in ctx.rule.attr.deps:",
         "      proto_found = proto_found or dep.proto_found",
-        "  return struct(proto_found = proto_found)",
+        "  return MyInfo(proto_found = proto_found)",
         "foo_aspect = aspect(_foo_aspect_impl, attr_aspects = ['deps'])",
         "def _foo_rule_impl(ctx):",
-        "  return struct(result = ctx.attr.dep.proto_found)",
+        "  return MyInfo(result = ctx.attr.dep.proto_found)",
         "foo_rule = rule(_foo_rule_impl, attrs = { 'dep' : attr.label(aspects = [foo_aspect])})");
     scratch.file(
         "x/BUILD",
@@ -578,7 +556,11 @@ public class SkylarkJavaLiteProtoLibraryTest extends BuildViewTestCase {
         "proto_library(name = 'foo_proto', srcs = ['foo.proto'], java_lib = ':lib')",
         "foo_rule(name = 'foo_rule', dep = 'foo_java_proto')");
     ConfiguredTarget target = getConfiguredTarget("//x:foo_rule");
-    Boolean result = (Boolean) target.get("result");
+    Provider.Key key =
+        new SkylarkProvider.SkylarkKey(
+            Label.parseAbsolute("//x:aspect.bzl", ImmutableMap.of()), "MyInfo");
+    StructImpl myInfo = (StructImpl) target.get(key);
+    Boolean result = (Boolean) myInfo.getValue("result");
 
     // "yes" means that "proto_java" was found on the proto_library + java_proto_library aspect.
     assertThat(result).isTrue();

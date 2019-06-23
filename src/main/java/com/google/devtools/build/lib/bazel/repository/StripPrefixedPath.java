@@ -15,8 +15,9 @@
 package com.google.devtools.build.lib.bazel.repository;
 
 import com.google.common.base.Optional;
+import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.concurrent.ThreadSafety;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
 /**
@@ -64,10 +65,9 @@ public final class StripPrefixedPath {
    * Normalize the path and, if it is absolute, make it relative (e.g., /foo/bar becomes foo/bar).
    */
   private static PathFragment relativize(String path) {
-    PathFragment entryPath = PathFragment.create(path).normalize();
+    PathFragment entryPath = PathFragment.create(path);
     if (entryPath.isAbsolute()) {
-      entryPath = PathFragment.create(entryPath.getSafePathString().substring(
-          entryPath.windowsVolume().length() + 1));
+      entryPath = entryPath.toRelative();
     }
     return entryPath;
   }
@@ -76,6 +76,19 @@ public final class StripPrefixedPath {
     this.pathFragment = pathFragment;
     this.found = found;
     this.skip = skip;
+  }
+
+  public static PathFragment maybeDeprefixSymlink(
+      PathFragment linkPathFragment, Optional<String> prefix, Path root) {
+    boolean wasAbsolute = linkPathFragment.isAbsolute();
+    // Strip the prefix from the link path if set.
+    linkPathFragment = maybeDeprefix(linkPathFragment.getPathString(), prefix).getPathFragment();
+    if (wasAbsolute) {
+      // Recover the path to an absolute path as maybeDeprefix() relativize the path
+      // even if the prefix is not set
+      return root.getRelative(linkPathFragment).asFragment();
+    }
+    return linkPathFragment;
   }
 
   public PathFragment getPathFragment() {

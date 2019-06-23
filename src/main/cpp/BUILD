@@ -18,25 +18,19 @@ cc_library(
         "global_variables.h",
         "startup_options.h",
     ] + select({
-        "//src:darwin": [
+        "//src/conditions:darwin": [
             "blaze_util_darwin.cc",
             "blaze_util_posix.cc",
         ],
-        "//src:darwin_x86_64": [
+        "//src/conditions:darwin_x86_64": [
             "blaze_util_darwin.cc",
             "blaze_util_posix.cc",
         ],
-        "//src:freebsd": [
+        "//src/conditions:freebsd": [
             "blaze_util_freebsd.cc",
             "blaze_util_posix.cc",
         ],
-        "//src:windows": [
-            "blaze_util_windows.cc",
-        ],
-        "//src:windows_msys": [
-            "blaze_util_windows.cc",
-        ],
-        "//src:windows_msvc": [
+        "//src/conditions:windows": [
             "blaze_util_windows.cc",
         ],
         "//conditions:default": [
@@ -49,16 +43,15 @@ cc_library(
         "blaze_util_platform.h",
     ],
     linkopts = select({
-        "//src:darwin": [
+        "//src/conditions:darwin": [
             "-framework CoreFoundation",
         ],
-        "//src:darwin_x86_64": [
+        "//src/conditions:darwin_x86_64": [
             "-framework CoreFoundation",
         ],
-        "//src:freebsd": [
+        "//src/conditions:freebsd": [
         ],
-        "//src:windows": WIN_LINK_OPTS,
-        "//src:windows_msvc": WIN_LINK_OPTS,
+        "//src/conditions:windows": WIN_LINK_OPTS,
         "//conditions:default": [
             "-lrt",
         ],
@@ -66,12 +59,32 @@ cc_library(
     deps = [
         "//src/main/cpp/util",
         "//src/main/cpp/util:blaze_exit_code",
+        "//src/main/cpp/util:logging",
     ] + select({
-        "//src:windows": ["//src/main/native/windows:lib-file"],
-        "//src:windows_msys": ["//src/main/native/windows:lib-file"],
-        "//src:windows_msvc": ["//src/main/native/windows:lib-file"],
+        "//src/conditions:windows": [
+            "//src/main/native/windows:lib-file",
+            "//src/main/native/windows:lib-process",
+        ],
         "//conditions:default": [],
     }),
+)
+
+cc_library(
+    name = "archive_utils",
+    srcs = [
+        "archive_utils.cc",
+    ],
+    hdrs = [
+        "archive_utils.h",
+    ],
+    deps = [
+        ":blaze_util",
+        "//src/main/cpp/util",
+        "//src/main/cpp/util:blaze_exit_code",
+        "//src/main/cpp/util:errors",
+        "//src/main/cpp/util:logging",
+        "//third_party/ijar:zip",
+    ],
 )
 
 cc_binary(
@@ -83,25 +96,23 @@ cc_binary(
         "global_variables.h",
         "main.cc",
     ] + select({
-        "//src:windows": ["//src/main/native/windows:resources.o"],
-        "//src:windows_msvc": ["//src/main/native/windows:resources.o"],
+        "//src/conditions:windows": ["resources.o"],
         "//conditions:default": [],
     }),
     copts = select({
-        "//src:windows": ["/wd4018"],
-        "//src:windows_msvc": ["/wd4018"],
+        "//src/conditions:windows": ["/wd4018"],
         "//conditions:default": ["-Wno-sign-compare"],
     }),
     linkopts = select({
-        "//src:darwin": [
+        "//src/conditions:darwin": [
         ],
-        "//src:darwin_x86_64": [
+        "//src/conditions:darwin_x86_64": [
         ],
-        "//src:freebsd": [
+        "//src/conditions:freebsd": [
             "-lprocstat",
             "-lm",
         ],
-        "//src:windows_msvc": [
+        "//src/conditions:windows": [
         ],
         "//conditions:default": [
             "-lrt",
@@ -110,11 +121,14 @@ cc_binary(
     }),
     visibility = ["//src:__pkg__"],
     deps = [
+        ":archive_utils",
+        ":bazel_startup_options",
         ":blaze_util",
         ":option_processor",
         ":startup_options",
         ":workspace_layout",
         "//src/main/cpp/util",
+        "//src/main/cpp/util:bazel_log_handler",
         "//src/main/cpp/util:errors",
         "//src/main/cpp/util:logging",
         "//src/main/cpp/util:strings",
@@ -130,12 +144,32 @@ cc_library(
         "option_processor.h",
         "option_processor-internal.h",
     ],
+    # The system bazelrc can be voided by setting BAZEL_SYSTEM_BAZELRC_PATH to
+    # /dev/null.
+    copts = select({
+        # For windows platforms, this can include environment
+        # variables in the form %ProgramData%. We need to escape for
+        # multiple levels, here, this becomes
+        # /DBAZEL_SYSTEM_BAZELRC_PATH="%%ProgramData%%/bazel.bazelrc"',
+        # and the double % get reduced down to 1 by the compiler. A
+        # forward slash is used because \b is a special character,
+        # backspace.
+        "//src/conditions:windows": [
+            "/DBAZEL_SYSTEM_BAZELRC_PATH#\\\"%%ProgramData%%/bazel.bazelrc\\\"",
+        ],
+        # For posix platforms, this can include environment variables in the
+        # form ${var_name}. Braces are required.
+        "//conditions:default": [
+            "-DBAZEL_SYSTEM_BAZELRC_PATH=\\\"/etc/bazel.bazelrc\\\"",
+        ],
+    }),
     visibility = [
         "//src:__pkg__",
         "//src/test/cpp:__pkg__",
     ],
     deps = [
         ":blaze_util",
+        ":rc_file",
         ":startup_options",
         ":workspace_layout",
         "//src/main/cpp/util",
@@ -162,6 +196,22 @@ cc_library(
 )
 
 cc_library(
+    name = "bazel_startup_options",
+    srcs = ["bazel_startup_options.cc"],
+    hdrs = ["bazel_startup_options.h"],
+    visibility = [
+        "//src:__pkg__",
+        "//src/test/cpp:__pkg__",
+    ],
+    deps = [
+        ":blaze_util",
+        ":startup_options",
+        ":workspace_layout",
+        "//src/main/cpp/util:blaze_exit_code",
+    ],
+)
+
+cc_library(
     name = "workspace_layout",
     srcs = ["workspace_layout.cc"],
     hdrs = ["workspace_layout.h"],
@@ -172,6 +222,22 @@ cc_library(
     deps = [
         ":blaze_util",
         "//src/main/cpp/util",
+    ],
+)
+
+cc_library(
+    name = "rc_file",
+    srcs = ["rc_file.cc"],
+    hdrs = ["rc_file.h"],
+    visibility = [
+        "//src:__pkg__",
+        "//src/test/cpp:__pkg__",
+    ],
+    deps = [
+        ":blaze_util",
+        ":workspace_layout",
+        "//src/main/cpp/util",
+        "//src/main/cpp/util:logging",
     ],
 )
 

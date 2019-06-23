@@ -13,9 +13,11 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis.extra;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.CommandLineExpansionException;
@@ -24,44 +26,47 @@ import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.analysis.actions.AbstractFileWriteAction;
 import com.google.devtools.build.lib.analysis.actions.ProtoDeterministicWriter;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.util.Fingerprint;
-import com.google.devtools.build.lib.util.Preconditions;
-import java.io.IOException;
 
 /**
  * Requests extra action info from shadowed action and writes it, in protocol buffer format, to an
  * .xa file for use by an extra action. This can only be done at execution time because actions may
  * store information only known at execution time into the protocol buffer.
  */
+@AutoCodec
 @Immutable // if shadowedAction is immutable
 public final class ExtraActionInfoFileWriteAction extends AbstractFileWriteAction {
   private static final String UUID = "1759f81d-e72e-477d-b182-c4532bdbaeeb";
 
   private final Action shadowedAction;
 
-  ExtraActionInfoFileWriteAction(ActionOwner owner, Artifact extraActionInfoFile,
-      Action shadowedAction) {
-    super(owner, ImmutableList.<Artifact>of(), extraActionInfoFile, false);
+  ExtraActionInfoFileWriteAction(ActionOwner owner, Artifact primaryOutput, Action shadowedAction) {
+    super(
+        owner,
+        shadowedAction.discoversInputs() ? shadowedAction.getOutputs() : ImmutableList.of(),
+        primaryOutput,
+        /*makeExecutable=*/ false);
 
-    this.shadowedAction = Preconditions.checkNotNull(shadowedAction, extraActionInfoFile);
+    this.shadowedAction = Preconditions.checkNotNull(shadowedAction, primaryOutput);
   }
 
   @Override
   public DeterministicWriter newDeterministicWriter(ActionExecutionContext ctx)
-      throws IOException, InterruptedException, ExecException {
+      throws ExecException {
     try {
-      return new ProtoDeterministicWriter(shadowedAction.getExtraActionInfo().build());
+      return new ProtoDeterministicWriter(
+          shadowedAction.getExtraActionInfo(ctx.getActionKeyContext()).build());
     } catch (CommandLineExpansionException e) {
       throw new UserExecException(e);
     }
   }
 
   @Override
-  protected String computeKey() throws CommandLineExpansionException {
-    Fingerprint f = new Fingerprint();
-    f.addString(UUID);
-    f.addString(shadowedAction.getKey());
-    f.addBytes(shadowedAction.getExtraActionInfo().build().toByteArray());
-    return f.hexDigestAndReset();
+  protected void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp)
+      throws CommandLineExpansionException {
+    fp.addString(UUID);
+    fp.addString(shadowedAction.getKey(actionKeyContext));
+    fp.addBytes(shadowedAction.getExtraActionInfo(actionKeyContext).build().toByteArray());
   }
 }

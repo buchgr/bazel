@@ -29,7 +29,7 @@ import java.util.Comparator;
  * the {@link Field} that is annotated, and should contain all logic about default settings and
  * behavior.
  */
-public class OptionDefinition {
+public class OptionDefinition implements Comparable<OptionDefinition> {
 
   // TODO(b/65049598) make ConstructionException checked, which will make this checked as well.
   static class NotAnOptionException extends ConstructionException {
@@ -137,7 +137,7 @@ public class OptionDefinition {
   }
 
   /** {@link Option#expansionFunction()} ()} */
-  Class<? extends ExpansionFunction> getExpansionFunction() {
+  public Class<? extends ExpansionFunction> getExpansionFunction() {
     return optionAnnotation.expansionFunction();
   }
 
@@ -154,11 +154,6 @@ public class OptionDefinition {
   /** {@link Option#oldName()} ()} ()} */
   public String getOldOptionName() {
     return optionAnnotation.oldName();
-  }
-
-  /** {@link Option#wrapperOption()} ()} ()} */
-  public boolean isWrapperOption() {
-    return optionAnnotation.wrapperOption();
   }
 
   /** Returns whether an option --foo has a negative equivalent --nofoo. */
@@ -301,6 +296,11 @@ public class OptionDefinition {
   @Override
   public int hashCode() {
     return field.hashCode();
+  }
+
+  @Override
+  public int compareTo(OptionDefinition o) {
+    return getOptionName().compareTo(o.getOptionName());
   }
 
   @Override

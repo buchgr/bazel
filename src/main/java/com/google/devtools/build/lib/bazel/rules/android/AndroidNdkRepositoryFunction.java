@@ -15,8 +15,11 @@ package com.google.devtools.build.lib.bazel.rules.android;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
+import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.bazel.rules.android.ndkcrosstools.AndroidNdkCrosstools;
@@ -27,22 +30,24 @@ import com.google.devtools.build.lib.bazel.rules.android.ndkcrosstools.NdkPaths;
 import com.google.devtools.build.lib.bazel.rules.android.ndkcrosstools.NdkRelease;
 import com.google.devtools.build.lib.bazel.rules.android.ndkcrosstools.StlImpl;
 import com.google.devtools.build.lib.bazel.rules.android.ndkcrosstools.StlImpls;
+import com.google.devtools.build.lib.bazel.rules.android.ndkcrosstools.StlImpls.GnuLibStdCppStlImpl;
+import com.google.devtools.build.lib.bazel.rules.android.ndkcrosstools.StlImpls.LibCppStlImpl;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
 import com.google.devtools.build.lib.rules.repository.WorkspaceAttributeMapper;
 import com.google.devtools.build.lib.skyframe.DirectoryListingValue;
-import com.google.devtools.build.lib.skyframe.FileSymlinkException;
-import com.google.devtools.build.lib.skyframe.FileValue;
-import com.google.devtools.build.lib.skyframe.InconsistentFilesystemException;
 import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.ResourceFileLoader;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.CToolchain;
+import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.CompilationMode;
+import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.CompilationModeFlags;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.CrosstoolRelease;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.ToolPath;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
@@ -63,14 +68,152 @@ public class AndroidNdkRepositoryFunction extends AndroidRepositoryFunction {
 
   private static final ImmutableList<String> PATH_ENV_VAR_AS_LIST = ImmutableList.of(PATH_ENV_VAR);
 
-  private static final class CrosstoolStlPair {
+  private static String getDefaultCrosstool(Integer majorRevision) {
+    // From NDK 17, libc++ replaces gnu-libstdc++ as the default STL.
+    return majorRevision <= 16 ? GnuLibStdCppStlImpl.NAME : LibCppStlImpl.NAME;
+  }
 
-    private final CrosstoolRelease crosstoolRelease;
-    private final StlImpl stlImpl;
+  private static PathFragment getAndroidNdkHomeEnvironmentVar(
+      Path workspace, Map<String, String> env) {
+    return workspace.getRelative(PathFragment.create(env.get(PATH_ENV_VAR))).asFragment();
+  }
 
-    private CrosstoolStlPair(CrosstoolRelease crosstoolRelease, StlImpl stlImpl) {
-      this.crosstoolRelease = crosstoolRelease;
-      this.stlImpl = stlImpl;
+  private static String createBuildFile(
+      String ruleName, String defaultCrosstool, List<CrosstoolStlPair> crosstools) {
+
+    String buildFileTemplate = getTemplate("android_ndk_build_file_template.txt");
+    String ccToolchainSuiteTemplate = getTemplate("android_ndk_cc_toolchain_suite_template.txt");
+    String ccToolchainTemplate = getTemplate("android_ndk_cc_toolchain_template.txt");
+    String stlFilegroupTemplate = getTemplate("android_ndk_stl_filegroup_template.txt");
+    String miscLibrariesTemplate = getTemplate("android_ndk_misc_libraries_template.txt");
+
+    StringBuilder ccToolchainSuites = new StringBuilder();
+    StringBuilder ccToolchainRules = new StringBuilder();
+    StringBuilder stlFilegroups = new StringBuilder();
+    for (CrosstoolStlPair crosstoolStlPair : crosstools) {
+
+      // Create the cc_toolchain_suite rule
+      CrosstoolRelease crosstool = crosstoolStlPair.crosstoolRelease;
+
+      StringBuilder toolchainMap = new StringBuilder();
+      for (CToolchain toolchain : crosstool.getToolchainList()) {
+        toolchainMap.append(
+            String.format(
+                "      '%s': ':%s',\n      '%s|%s': ':%s',\n",
+                toolchain.getTargetCpu(),
+                toolchain.getToolchainIdentifier(),
+                toolchain.getTargetCpu(),
+                toolchain.getCompiler(),
+                toolchain.getToolchainIdentifier()));
+      }
+
+      String toolchainName = createToolchainName(crosstoolStlPair.stlImpl.getName());
+
+      ccToolchainSuites.append(
+          ccToolchainSuiteTemplate
+              .replace("%toolchainName%", toolchainName)
+              .replace("%toolchainMap%", toolchainMap.toString().trim())
+              .replace("%crosstoolReleaseProto%", crosstool.toString()));
+
+      // Create the cc_toolchain rules
+      for (CToolchain toolchain : crosstool.getToolchainList()) {
+        ccToolchainRules.append(
+            createCcToolchainRule(
+                ccToolchainTemplate, crosstoolStlPair.stlImpl.getName(), toolchain));
+      }
+
+      // Create the STL file group rules
+      for (Map.Entry<String, String> entry :
+          crosstoolStlPair.stlImpl.getFilegroupNamesAndFilegroupFileGlobPatterns().entrySet()) {
+
+        stlFilegroups.append(
+            stlFilegroupTemplate
+                .replace("%name%", entry.getKey())
+                .replace("%fileGlobPattern%", entry.getValue()));
+      }
+    }
+
+    return buildFileTemplate
+        .replace("%ruleName%", ruleName)
+        .replace("%defaultCrosstool%", "//:toolchain-" + defaultCrosstool)
+        .replace("%ccToolchainSuites%", ccToolchainSuites)
+        .replace("%ccToolchainRules%", ccToolchainRules)
+        .replace("%stlFilegroups%", stlFilegroups)
+        .replace("%miscLibraries%", miscLibrariesTemplate);
+  }
+
+  static String createToolchainName(String stlName) {
+    return TOOLCHAIN_NAME_PREFIX + stlName;
+  }
+
+  private static String createCcToolchainRule(
+      String ccToolchainTemplate, String version, CToolchain toolchain) {
+
+    // TODO(bazel-team): It's unfortunate to have to extract data from a CToolchain proto like this.
+    // It would be better to have a higher-level construction (like an AndroidToolchain class)
+    // from which the CToolchain proto and rule information needed here can be created.
+    // Alternatively it would be nicer to just be able to glob the entire NDK and add that one glob
+    // to each cc_toolchain rule, and then the complexities in the method and the templates can
+    // go away, but globbing the entire NDK takes ~60 seconds, mostly because of MD5ing all the
+    // binary files in the NDK (eg the .so / .a / .o files).
+
+    // This also includes the files captured with cxx_builtin_include_directory.
+    // Use gcc specifically because clang toolchains will have both gcc and llvm toolchain paths,
+    // but the gcc tool will actually be clang.
+    ToolPath gcc = null;
+    for (ToolPath toolPath : toolchain.getToolPathList()) {
+      if ("gcc".equals(toolPath.getName())) {
+        gcc = toolPath;
+      }
+    }
+    checkNotNull(gcc, "gcc not found in crosstool toolpaths");
+    String toolchainDirectory = NdkPaths.getToolchainDirectoryFromToolPath(gcc.getPath());
+
+    // Create file glob patterns for the various files that the toolchain references.
+
+    String androidPlatformIncludes =
+        NdkPaths.stripRepositoryPrefix(toolchain.getBuiltinSysroot()) + "/**/*";
+
+    List<String> toolchainFileGlobPatterns = new ArrayList<>();
+    toolchainFileGlobPatterns.add(androidPlatformIncludes);
+
+    for (String cxxFlag : toolchain.getUnfilteredCxxFlagList()) {
+      if (!cxxFlag.startsWith("-")) { // Skip flag names
+        toolchainFileGlobPatterns.add(NdkPaths.stripRepositoryPrefix(cxxFlag) + "/**/*");
+      }
+    }
+
+    // For NDK 15 and up. Unfortunately, the toolchain does not encode the NDK revision number.
+    toolchainFileGlobPatterns.add("ndk/sysroot/**/*");
+
+    // If this is a clang toolchain, also add the corresponding gcc toolchain to the globs.
+    int gccToolchainIndex = toolchain.getCompilerFlagList().indexOf("-gcc-toolchain");
+    if (gccToolchainIndex > -1) {
+      String gccToolchain = toolchain.getCompilerFlagList().get(gccToolchainIndex + 1);
+      toolchainFileGlobPatterns.add(NdkPaths.stripRepositoryPrefix(gccToolchain) + "/**/*");
+    }
+
+    StringBuilder toolchainFileGlobs = new StringBuilder();
+    for (String toolchainFileGlobPattern : toolchainFileGlobPatterns) {
+      toolchainFileGlobs.append(String.format("        \"%s\",\n", toolchainFileGlobPattern));
+    }
+
+    return ccToolchainTemplate
+        .replace("%toolchainName%", toolchain.getToolchainIdentifier())
+        .replace("%cpu%", toolchain.getTargetCpu())
+        .replace("%compiler%", toolchain.getCompiler())
+        .replace("%version%", version)
+        .replace("%dynamicRuntimeLibs%", toolchain.getDynamicRuntimesFilegroup())
+        .replace("%staticRuntimeLibs%", toolchain.getStaticRuntimesFilegroup())
+        .replace("%toolchainDirectory%", toolchainDirectory)
+        .replace("%toolchainFileGlobs%", toolchainFileGlobs.toString().trim());
+  }
+
+  private static String getTemplate(String templateFile) {
+    try {
+      return ResourceFileLoader.loadResource(AndroidNdkRepositoryFunction.class, templateFile);
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
     }
   }
 
@@ -95,7 +238,8 @@ public class AndroidNdkRepositoryFunction extends AndroidRepositoryFunction {
       Path outputDirectory,
       BlazeDirectories directories,
       Environment env,
-      Map<String, String> markerData)
+      Map<String, String> markerData,
+      SkyKey key)
       throws InterruptedException, RepositoryFunctionException {
     Map<String, String> environ =
         declareEnvironmentDependencies(markerData, env, PATH_ENV_VAR_AS_LIST);
@@ -176,17 +320,21 @@ public class AndroidNdkRepositoryFunction extends AndroidRepositoryFunction {
       String warningMessage =
           String.format(
               "The revision of the Android NDK referenced by android_ndk_repository rule '%s' "
-                  + "could not be determined (the revision string found is '%s'). Defaulting to "
-                  + "revision %s.",
-              ruleName, ndkRelease.rawRelease, AndroidNdkCrosstools.LATEST_KNOWN_REVISION.getKey());
+                  + "could not be determined (the revision string found is '%s'). "
+                  + "Bazel will attempt to treat the NDK as if it was r%s. This may cause "
+                  + "compilation and linkage problems. Please download a supported NDK version.\n",
+              ruleName,
+              ndkRelease.rawRelease,
+              AndroidNdkCrosstools.LATEST_KNOWN_REVISION.getKey());
       env.getListener().handle(Event.warn(warningMessage));
       ndkMajorRevision = AndroidNdkCrosstools.LATEST_KNOWN_REVISION.getValue();
     } else if (!AndroidNdkCrosstools.isKnownNDKRevision(ndkRelease)) {
       String warningMessage =
           String.format(
               "The major revision of the Android NDK referenced by android_ndk_repository rule "
-                  + "'%s' is %s. The major revisions supported by Bazel are %s. Defaulting to "
-                  + "revision %s.",
+                  + "'%s' is %s. The major revisions supported by Bazel are %s. Bazel will attempt "
+                  + "to treat the NDK as if it was r%s. This may cause compilation and linkage "
+                  + "problems. Please download a supported NDK version.\n",
               ruleName,
               ndkRelease.majorRevision,
               AndroidNdkCrosstools.KNOWN_NDK_MAJOR_REVISIONS.keySet(),
@@ -204,9 +352,9 @@ public class AndroidNdkRepositoryFunction extends AndroidRepositoryFunction {
     try {
 
       String hostPlatform = AndroidNdkCrosstools.getHostPlatform(ndkRelease);
-      NdkPaths ndkPaths = new NdkPaths(ruleName, hostPlatform, apiLevel);
+      NdkPaths ndkPaths = new NdkPaths(ruleName, hostPlatform, apiLevel, ndkRelease.majorRevision);
 
-      for (StlImpl stlImpl : StlImpls.get(ndkPaths)) {
+      for (StlImpl stlImpl : StlImpls.get(ndkPaths, ndkRelease.majorRevision)) {
         CrosstoolRelease crosstoolRelease =
             ndkMajorRevision.crosstoolRelease(ndkPaths, stlImpl, hostPlatform);
         crosstoolsAndStls.add(new CrosstoolStlPair(crosstoolRelease, stlImpl));
@@ -216,138 +364,124 @@ public class AndroidNdkRepositoryFunction extends AndroidRepositoryFunction {
       throw new RepositoryFunctionException(new IOException(e), Transience.PERSISTENT);
     }
 
-    String buildFile = createBuildFile(ruleName, crosstoolsAndStls.build());
+    String defaultCrosstool = getDefaultCrosstool(ndkRelease.majorRevision);
+
+    ImmutableList<CrosstoolStlPair> crosstoolStlPairs = crosstoolsAndStls.build();
+    String buildFile = createBuildFile(ruleName, defaultCrosstool, crosstoolStlPairs);
     writeBuildFile(outputDirectory, buildFile);
+    ImmutableList.Builder<String> bigConditional = ImmutableList.builder();
+    for (CrosstoolStlPair pair : crosstoolStlPairs) {
+      for (CToolchain toolchain : pair.crosstoolRelease.getToolchainList()) {
+        bigConditional.addAll(generateBzlConfigFor(pair.stlImpl.getName(), toolchain));
+      }
+    }
+    writeFile(
+        outputDirectory,
+        "cc_toolchain_config.bzl",
+        getTemplate("android_ndk_cc_toolchain_config_template.txt")
+            .replaceAll(
+                "%big_conditional_populating_variables%",
+                Joiner.on("\n" + "    ").join(bigConditional.build())));
     return RepositoryDirectoryValue.builder().setPath(outputDirectory);
+  }
+
+  private ImmutableList<String> generateBzlConfigFor(String version, CToolchain toolchain) {
+    ImmutableList.Builder<String> bigConditional = ImmutableList.builder();
+    String cpu = toolchain.getTargetCpu();
+    String compiler = toolchain.getCompiler();
+
+    Preconditions.checkArgument(
+        toolchain.getLinkingModeFlagsCount() == 0, "linking_mode_flags not supported.");
+    Preconditions.checkArgument(
+        toolchain.getActionConfigCount() == 0, "action_configs not supported.");
+    Preconditions.checkArgument(toolchain.getFeatureCount() == 0, "features not supported.");
+    Preconditions.checkArgument(toolchain.getArFlagCount() == 0, "ar_flags not supported.");
+    Preconditions.checkArgument(
+        toolchain.getArtifactNamePatternCount() == 0, "artifact_name_patterns not supported.");
+    Preconditions.checkArgument(toolchain.getCxxFlagCount() == 0, "cxx_flags not supported.");
+    Preconditions.checkArgument(
+        toolchain.getDynamicLibraryLinkerFlagCount() == 0,
+        "dynamic_library_linker_flags not supported.");
+    Preconditions.checkArgument(
+        toolchain.getLdEmbedFlagCount() == 0, "ld_embed_flags not supported.");
+    Preconditions.checkArgument(
+        toolchain.getObjcopyEmbedFlagCount() == 0, "objcopy_embed_flags not supported.");
+    Preconditions.checkArgument(
+        toolchain.getMakeVariableCount() == 0, "make_variables not supported.");
+    Preconditions.checkArgument(
+        toolchain.getTestOnlyLinkerFlagCount() == 0, "test_only_linker_flags not supported.");
+
+    CompilationModeFlags fastbuild = null;
+    CompilationModeFlags dbg = null;
+    CompilationModeFlags opt = null;
+    for (CompilationModeFlags flags : toolchain.getCompilationModeFlagsList()) {
+      Preconditions.checkArgument(
+          flags.getCxxFlagCount() == 0, "compilation_mode_flags.cxx_flags not supported.");
+      Preconditions.checkArgument(
+          flags.getLinkerFlagCount() == 0, "compilation_mode_flags.linker_flags not supported.");
+      if (flags.getMode().equals(CompilationMode.FASTBUILD)) {
+        fastbuild = flags;
+      } else if (flags.getMode().equals(CompilationMode.DBG)) {
+        dbg = flags;
+      } else if (flags.getMode().equals(CompilationMode.OPT)) {
+        opt = flags;
+      }
+    }
+
+    bigConditional.add(
+        String.format(
+            "if cpu == '%s' and compiler == '%s' and version == '%s':", cpu, compiler, version),
+        String.format(
+            "  default_compile_flags = [%s]",
+            toSequenceOfStarlarkStrings(toolchain.getCompilerFlagList())),
+        String.format(
+            "  unfiltered_compile_flags = [%s]",
+            toSequenceOfStarlarkStrings(toolchain.getUnfilteredCxxFlagList())),
+        String.format(
+            "  default_link_flags = [%s]",
+            toSequenceOfStarlarkStrings(toolchain.getLinkerFlagList())),
+        String.format(
+            "  default_fastbuild_flags = [%s]",
+            toSequenceOfStarlarkStrings(
+                fastbuild != null ? fastbuild.getCompilerFlagList() : ImmutableList.of())),
+        String.format(
+            "  default_dbg_flags = [%s]",
+            toSequenceOfStarlarkStrings(
+                dbg != null ? dbg.getCompilerFlagList() : ImmutableList.of())),
+        String.format(
+            "  default_opt_flags = [%s]",
+            toSequenceOfStarlarkStrings(
+                opt != null ? opt.getCompilerFlagList() : ImmutableList.of())),
+        String.format(
+            "  cxx_builtin_include_directories = [%s]",
+            toSequenceOfStarlarkStrings(toolchain.getCxxBuiltinIncludeDirectoryList())),
+        String.format("  target_cpu = '%s'", toolchain.getTargetCpu()),
+        String.format("  toolchain_identifier = '%s'", toolchain.getToolchainIdentifier()),
+        String.format("  host_system_name = '%s'", toolchain.getHostSystemName()),
+        String.format("  target_system_name = '%s'", toolchain.getTargetSystemName()),
+        String.format("  target_libc = '%s'", toolchain.getTargetLibc()),
+        String.format("  target_compiler = '%s'", toolchain.getCompiler()),
+        String.format("  abi_version = '%s'", toolchain.getAbiVersion()),
+        String.format("  abi_libc_version = '%s'", toolchain.getAbiLibcVersion()),
+        String.format("  builtin_sysroot = '%s'", toolchain.getBuiltinSysroot()));
+    bigConditional.addAll(
+        toolchain.getToolPathList().stream()
+            .map(
+                tp ->
+                    String.format(
+                        "  %s_path = '%s'",
+                        tp.getName().toLowerCase().replaceAll("-", "_"), tp.getPath()))
+            .collect(ImmutableList.toImmutableList()));
+    return bigConditional.add("").build();
+  }
+
+  private String toSequenceOfStarlarkStrings(Iterable<String> flags) {
+    return "'" + Joiner.on("', '").join(flags) + "'";
   }
 
   @Override
   public Class<? extends RuleDefinition> getRuleDefinition() {
     return AndroidNdkRepositoryRule.class;
-  }
-
-  private static PathFragment getAndroidNdkHomeEnvironmentVar(
-      Path workspace, Map<String, String> env) {
-    return workspace.getRelative(PathFragment.create(env.get(PATH_ENV_VAR))).asFragment();
-  }
-
-  private static String createBuildFile(String ruleName, List<CrosstoolStlPair> crosstools) {
-
-    String buildFileTemplate = getTemplate("android_ndk_build_file_template.txt");
-    String ccToolchainSuiteTemplate = getTemplate("android_ndk_cc_toolchain_suite_template.txt");
-    String ccToolchainTemplate = getTemplate("android_ndk_cc_toolchain_template.txt");
-    String stlFilegroupTemplate = getTemplate("android_ndk_stl_filegroup_template.txt");
-    String miscLibrariesTemplate = getTemplate("android_ndk_misc_libraries_template.txt");
-
-    StringBuilder ccToolchainSuites = new StringBuilder();
-    StringBuilder ccToolchainRules = new StringBuilder();
-    StringBuilder stlFilegroups = new StringBuilder();
-    for (CrosstoolStlPair crosstoolStlPair : crosstools) {
-
-      // Create the cc_toolchain_suite rule
-      CrosstoolRelease crosstool = crosstoolStlPair.crosstoolRelease;
-
-      StringBuilder toolchainMap = new StringBuilder();
-      for (CToolchain toolchain : crosstool.getToolchainList()) {
-        toolchainMap.append(
-            String.format(
-                "      \"%s|%s\": \":%s\",\n",
-                toolchain.getTargetCpu(),
-                toolchain.getCompiler(),
-                toolchain.getToolchainIdentifier()));
-      }
-
-      String toolchainName = createToolchainName(crosstoolStlPair.stlImpl.getName());
-
-      ccToolchainSuites.append(
-          ccToolchainSuiteTemplate
-              .replace("%toolchainName%", toolchainName)
-              .replace("%toolchainMap%", toolchainMap.toString().trim())
-              .replace("%crosstoolReleaseProto%", crosstool.toString()));
-
-      // Create the cc_toolchain rules
-      for (CToolchain toolchain : crosstool.getToolchainList()) {
-        ccToolchainRules.append(createCcToolchainRule(ccToolchainTemplate, toolchain));
-      }
-
-      // Create the STL file group rules
-      for (Map.Entry<String, String> entry :
-          crosstoolStlPair.stlImpl.getFilegroupNamesAndFilegroupFileGlobPatterns().entrySet()) {
-
-        stlFilegroups.append(
-            stlFilegroupTemplate
-                .replace("%name%", entry.getKey())
-                .replace("%fileGlobPattern%", entry.getValue()));
-      }
-    }
-
-    return buildFileTemplate
-        .replace("%ruleName%", ruleName)
-        .replace("%ccToolchainSuites%", ccToolchainSuites)
-        .replace("%ccToolchainRules%", ccToolchainRules)
-        .replace("%stlFilegroups%", stlFilegroups)
-        .replace("%miscLibraries%", miscLibrariesTemplate);
-  }
-
-  static String createToolchainName(String stlName) {
-    return TOOLCHAIN_NAME_PREFIX + stlName;
-  }
-
-  private static String createCcToolchainRule(String ccToolchainTemplate, CToolchain toolchain) {
-
-    // TODO(bazel-team): It's unfortunate to have to extract data from a CToolchain proto like this.
-    // It would be better to have a higher-level construction (like an AndroidToolchain class)
-    // from which the CToolchain proto and rule information needed here can be created.
-    // Alternatively it would be nicer to just be able to glob the entire NDK and add that one glob
-    // to each cc_toolchain rule, and then the complexities in the method and the templates can
-    // go away, but globbing the entire NDK takes ~60 seconds, mostly because of MD5ing all the
-    // binary files in the NDK (eg the .so / .a / .o files).
-
-    // This also includes the files captured with cxx_builtin_include_directory.
-    // Use gcc specifically because clang toolchains will have both gcc and llvm toolchain paths,
-    // but the gcc tool will actually be clang.
-    ToolPath gcc = null;
-    for (ToolPath toolPath : toolchain.getToolPathList()) {
-      if ("gcc".equals(toolPath.getName())) {
-        gcc = toolPath;
-      }
-    }
-    checkNotNull(gcc, "gcc not found in crosstool toolpaths");
-    String toolchainDirectory = NdkPaths.getToolchainDirectoryFromToolPath(gcc.getPath());
-
-    // Create file glob patterns for the various files that the toolchain references.
-
-    String androidPlatformIncludes =
-        NdkPaths.stripRepositoryPrefix(toolchain.getBuiltinSysroot()) + "/**/*";
-
-    List<String> toolchainFileGlobPatterns = new ArrayList<>();
-    toolchainFileGlobPatterns.add(androidPlatformIncludes);
-
-    for (String cxxFlag : toolchain.getUnfilteredCxxFlagList()) {
-      if (!cxxFlag.startsWith("-")) { // Skip flag names
-        toolchainFileGlobPatterns.add(NdkPaths.stripRepositoryPrefix(cxxFlag) + "/**/*");
-      }
-    }
-
-    // If this is a clang toolchain, also add the corresponding gcc toolchain to the globs.
-    int gccToolchainIndex = toolchain.getCompilerFlagList().indexOf("-gcc-toolchain");
-    if (gccToolchainIndex > -1) {
-      String gccToolchain = toolchain.getCompilerFlagList().get(gccToolchainIndex + 1);
-      toolchainFileGlobPatterns.add(NdkPaths.stripRepositoryPrefix(gccToolchain) + "/**/*");
-    }
-
-    StringBuilder toolchainFileGlobs = new StringBuilder();
-    for (String toolchainFileGlobPattern : toolchainFileGlobPatterns) {
-      toolchainFileGlobs.append(String.format("        \"%s\",\n", toolchainFileGlobPattern));
-    }
-
-    return ccToolchainTemplate
-        .replace("%toolchainName%", toolchain.getToolchainIdentifier())
-        .replace("%cpu%", toolchain.getTargetCpu())
-        .replace("%dynamicRuntimeLibs%", toolchain.getDynamicRuntimesFilegroup())
-        .replace("%staticRuntimeLibs%", toolchain.getStaticRuntimesFilegroup())
-        .replace("%toolchainDirectory%", toolchainDirectory)
-        .replace("%toolchainFileGlobs%", toolchainFileGlobs.toString().trim());
   }
 
   private NdkRelease getNdkRelease(Path directory, Environment env)
@@ -360,19 +494,16 @@ public class AndroidNdkRepositoryFunction extends AndroidRepositoryFunction {
       releaseFilePath = directory.getRelative("RELEASE.TXT");
     }
 
-    SkyKey releaseFileKey = FileValue.key(RootedPath.toRootedPath(directory, releaseFilePath));
+    SkyKey releaseFileKey =
+        FileValue.key(RootedPath.toRootedPath(Root.fromPath(directory), releaseFilePath));
 
     String releaseFileContent = "";
     try {
-      env.getValueOrThrow(
-          releaseFileKey,
-          IOException.class,
-          FileSymlinkException.class,
-          InconsistentFilesystemException.class);
+      env.getValueOrThrow(releaseFileKey, IOException.class);
 
       releaseFileContent =
           new String(FileSystemUtils.readContent(releaseFilePath), StandardCharsets.UTF_8);
-    } catch (IOException | FileSymlinkException | InconsistentFilesystemException e) {
+    } catch (IOException e) {
       throwInvalidPathException(
           directory,
           new IOException(
@@ -383,14 +514,6 @@ public class AndroidNdkRepositoryFunction extends AndroidRepositoryFunction {
     }
 
     return NdkRelease.create(releaseFileContent.trim());
-  }
-
-  private static String getTemplate(String templateFile) {
-    try {
-      return ResourceFileLoader.loadResource(AndroidNdkRepositoryFunction.class, templateFile);
-    } catch (IOException e) {
-      throw new IllegalStateException(e);
-    }
   }
 
   @Override
@@ -405,5 +528,16 @@ public class AndroidNdkRepositoryFunction extends AndroidRepositoryFunction {
                 e.getMessage(), path, PATH_ENV_VAR),
             e),
         Transience.PERSISTENT);
+  }
+
+  private static final class CrosstoolStlPair {
+
+    private final CrosstoolRelease crosstoolRelease;
+    private final StlImpl stlImpl;
+
+    private CrosstoolStlPair(CrosstoolRelease crosstoolRelease, StlImpl stlImpl) {
+      this.crosstoolRelease = crosstoolRelease;
+      this.stlImpl = stlImpl;
+    }
   }
 }

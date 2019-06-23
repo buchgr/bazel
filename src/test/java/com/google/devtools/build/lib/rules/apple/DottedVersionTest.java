@@ -14,7 +14,7 @@
 package com.google.devtools.build.lib.rules.apple;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.testing.EqualsTester;
 import org.junit.Test;
@@ -42,6 +42,10 @@ public class DottedVersionTest {
         .addEqualityGroup(DottedVersion.fromString("1.2beta12.1"))
         .addEqualityGroup(DottedVersion.fromString("1.2.0"), DottedVersion.fromString("1.2"))
         .addEqualityGroup(DottedVersion.fromString("1.20"))
+        .addEqualityGroup(DottedVersion.fromString("10"), DottedVersion.fromString("10.0"))
+        .addEqualityGroup(DottedVersion.fromString("10.0.0.10A255"))
+        .addEqualityGroup(DottedVersion.fromString("10.2"))
+        .addEqualityGroup(DottedVersion.fromString("10.2.0.10P99q"))
         .testCompare();
   }
 
@@ -53,10 +57,39 @@ public class DottedVersionTest {
         .addEqualityGroup(DottedVersion.fromString("0.2"), DottedVersion.fromString("0.2.0"))
         .addEqualityGroup(DottedVersion.fromString("1.2xy2"), DottedVersion.fromString("1.2xy2"))
         .addEqualityGroup(
+            DottedVersion.fromString("10.2.0.10P99q"), DottedVersion.fromString("10.2.0.10P99q0"))
+        .addEqualityGroup(
             DottedVersion.fromString("1.2x"),
             DottedVersion.fromString("1.2x0"),
             DottedVersion.fromString("1.2x0.0"))
         .testEquals();
+  }
+
+  @Test
+  public void testToStringWithComponents() throws Exception {
+    DottedVersion dottedVersion = DottedVersion.fromString("42.8");
+    assertThat(dottedVersion.toStringWithComponents(1)).isEqualTo("42");
+    assertThat(dottedVersion.toStringWithComponents(2)).isEqualTo("42.8");
+    assertThat(dottedVersion.toStringWithComponents(3)).isEqualTo("42.8.0");
+    assertThat(dottedVersion.toStringWithComponents(4)).isEqualTo("42.8.0.0");
+  }
+
+  @Test
+  public void testToStringWithComponents_trailingZero() throws Exception {
+    DottedVersion dottedVersion = DottedVersion.fromString("4.3alpha3.0");
+    assertThat(dottedVersion.toStringWithComponents(1)).isEqualTo("4");
+    assertThat(dottedVersion.toStringWithComponents(2)).isEqualTo("4.3alpha3");
+    assertThat(dottedVersion.toStringWithComponents(3)).isEqualTo("4.3alpha3.0");
+    assertThat(dottedVersion.toStringWithComponents(4)).isEqualTo("4.3alpha3.0.0");
+    assertThat(dottedVersion.toStringWithComponents(5)).isEqualTo("4.3alpha3.0.0.0");
+  }
+
+  @Test
+  public void testToStringWithComponents_zeroComponent() throws Exception {
+    DottedVersion zeroComponent = DottedVersion.fromString("0");
+    assertThat(zeroComponent.toStringWithComponents(1)).isEqualTo("0");
+    assertThat(zeroComponent.toStringWithComponents(2)).isEqualTo("0.0");
+    assertThat(zeroComponent.toStringWithComponents(3)).isEqualTo("0.0.0");
   }
 
   @Test
@@ -91,43 +124,33 @@ public class DottedVersionTest {
 
   @Test
   public void testIllegalVersion_noLeadingInteger() throws Exception {
-    try {
-      DottedVersion.fromString("a");
-      fail("Expected IllegalArgumentException");
-    } catch (IllegalArgumentException expected) {
-      assertThat(expected).hasMessageThat().contains("a");
-    }
+    Throwable expected =
+        assertThrows(
+            DottedVersion.InvalidDottedVersionException.class, () -> DottedVersion.fromString("a"));
+    assertThat(expected).hasMessageThat().contains("a");
   }
 
   @Test
   public void testIllegalVersion_empty() throws Exception {
-    try {
-      DottedVersion.fromString("");
-      fail("Expected IllegalArgumentException");
-    } catch (IllegalArgumentException expected) {}
+    assertThrows(
+        DottedVersion.InvalidDottedVersionException.class, () -> DottedVersion.fromString(""));
   }
 
   @Test
   public void testIllegalVersion_punctuation() throws Exception {
-    try {
-      DottedVersion.fromString("2:3");
-      fail("Expected IllegalArgumentException");
-    } catch (IllegalArgumentException expected) {}
+    assertThrows(
+        DottedVersion.InvalidDottedVersionException.class, () -> DottedVersion.fromString("2:3"));
   }
 
   @Test
   public void testIllegalVersion_emptyComponent() throws Exception {
-    try {
-      DottedVersion.fromString("1..3");
-      fail("Expected IllegalArgumentException");
-    } catch (IllegalArgumentException expected) {}
+    assertThrows(
+        DottedVersion.InvalidDottedVersionException.class, () -> DottedVersion.fromString("1..3"));
   }
 
   @Test
   public void testIllegalVersion_negativeComponent() throws Exception {
-    try {
-      DottedVersion.fromString("1.-1");
-      fail("Expected IllegalArgumentException");
-    } catch (IllegalArgumentException expected) {}
+    assertThrows(
+        DottedVersion.InvalidDottedVersionException.class, () -> DottedVersion.fromString("1.-1"));
   }
 }

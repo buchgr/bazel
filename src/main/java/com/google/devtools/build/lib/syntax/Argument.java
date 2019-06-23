@@ -13,7 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.lib.syntax;
 
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.common.base.Preconditions;
+import com.google.devtools.build.lib.events.Location;
 import java.io.IOException;
 import java.util.List;
 import javax.annotation.Nullable;
@@ -58,8 +59,15 @@ public abstract class Argument extends ASTNode {
       return false;
     }
 
+    /** @deprecated Prefer {@link #getIdentifier()} instead. */
+    @Deprecated
     @Nullable
     public String getName() { // only for keyword arguments
+      return null;
+    }
+
+    @Nullable
+    public Identifier getIdentifier() {
       return null;
     }
 
@@ -94,16 +102,21 @@ public abstract class Argument extends ASTNode {
   /** keyword argument: K = Expression */
   public static final class Keyword extends Passed {
 
-    final String name;
+    final Identifier identifier;
 
-    public Keyword(String name, Expression value) {
+    public Keyword(Identifier identifier, Expression value) {
       super(value);
-      this.name = name;
+      this.identifier = identifier;
     }
 
     @Override
     public String getName() {
-      return name;
+      return identifier.getName();
+    }
+
+    @Override
+    public Identifier getIdentifier() {
+      return identifier;
     }
 
     @Override
@@ -113,7 +126,7 @@ public abstract class Argument extends ASTNode {
 
     @Override
     public void prettyPrint(Appendable buffer) throws IOException {
-      buffer.append(name);
+      buffer.append(identifier.getName());
       buffer.append(" = ");
       value.prettyPrint(buffer);
     }
@@ -158,43 +171,68 @@ public abstract class Argument extends ASTNode {
   }
 
   /** Some arguments failed to satisfy python call convention strictures */
-  protected static class ArgumentException extends Exception {
+  static class ArgumentException extends Exception {
+    Location location;
+
     /** construct an ArgumentException from a message only */
-    public ArgumentException(String message) {
+    ArgumentException(Location location, String message) {
       super(message);
+      this.location = location;
+    }
+
+    Location getLocation() {
+      return location;
     }
   }
 
   /**
    * Validate that the list of Argument's, whether gathered by the Parser or from annotations,
-   * satisfies the requirements of the Python calling conventions: all Positional's first,
-   * at most one Star, at most one StarStar, at the end only.
+   * satisfies the requirements: first Positional arguments, then Keyword arguments, then an
+   * optional *arg argument, finally an optional **kwarg argument.
    */
-  public static void validateFuncallArguments(List<Passed> arguments)
-      throws ArgumentException {
-    boolean hasNamed = false;
-    boolean hasStar = false;
-    boolean hasKwArg = false;
-    for (Passed arg : arguments) {
-      if (hasKwArg) {
-        throw new ArgumentException("argument after **kwargs");
-      }
-      if (arg.isPositional()) {
-        if (hasNamed) {
-          throw new ArgumentException("non-keyword arg after keyword arg");
-        } else if (arg.isStar()) {
-          throw new ArgumentException("only named arguments may follow *expression");
-        }
-      } else if (arg.isKeyword()) {
-        hasNamed = true;
-      } else if (arg.isStar()) {
-        if (hasStar) {
-          throw new ArgumentException("more than one *stararg");
-        }
-        hasStar = true;
-      } else {
-        hasKwArg = true;
-      }
+  public static void validateFuncallArguments(List<Passed> arguments) throws ArgumentException {
+    int i = 0;
+    int len = arguments.size();
+
+    while (i < len && arguments.get(i).isPositional()) {
+      i++;
+    }
+
+    while (i < len && arguments.get(i).isKeyword()) {
+      i++;
+    }
+
+    if (i < len && arguments.get(i).isStar()) {
+      i++;
+    }
+
+    if (i < len && arguments.get(i).isStarStar()) {
+      i++;
+    }
+
+    // If there's no argument left, everything is correct.
+    if (i == len) {
+      return;
+    }
+
+    Location loc = arguments.get(i).getLocation();
+    if (arguments.get(i).isPositional()) {
+      throw new ArgumentException(
+          loc, "positional argument is misplaced (positional arguments come first)");
+    }
+
+    if (arguments.get(i).isKeyword()) {
+      throw new ArgumentException(
+          loc,
+          "keyword argument is misplaced (keyword arguments must be before any *arg or **kwarg)");
+    }
+
+    if (i < len && arguments.get(i).isStar()) {
+      throw new ArgumentException(loc, "*arg argument is misplaced");
+    }
+
+    if (i < len && arguments.get(i).isStarStar()) {
+      throw new ArgumentException(loc, "**kwarg argument is misplaced (there can be only one)");
     }
   }
 

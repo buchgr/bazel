@@ -30,7 +30,6 @@ public class LoadingOptions extends OptionsBase {
   @Option(
     name = "build_tests_only",
     defaultValue = "false",
-    category = "what",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
@@ -43,7 +42,6 @@ public class LoadingOptions extends OptionsBase {
   @Option(
     name = "compile_one_dependency",
     defaultValue = "false",
-    category = "what",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
@@ -60,7 +58,6 @@ public class LoadingOptions extends OptionsBase {
     name = "build_tag_filters",
     converter = CommaSeparatedOptionListConverter.class,
     defaultValue = "",
-    category = "what",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
@@ -76,7 +73,6 @@ public class LoadingOptions extends OptionsBase {
     name = "test_tag_filters",
     converter = CommaSeparatedOptionListConverter.class,
     defaultValue = "",
-    category = "what",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
@@ -91,7 +87,6 @@ public class LoadingOptions extends OptionsBase {
     name = "test_size_filters",
     converter = TestSize.TestSizeFilterConverter.class,
     defaultValue = "",
-    category = "what",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
@@ -106,7 +101,6 @@ public class LoadingOptions extends OptionsBase {
     name = "test_timeout_filters",
     converter = TestTimeout.TestTimeoutFilterConverter.class,
     defaultValue = "",
-    category = "what",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
@@ -122,7 +116,6 @@ public class LoadingOptions extends OptionsBase {
     name = "test_lang_filters",
     converter = CommaSeparatedOptionListConverter.class,
     defaultValue = "",
-    category = "what",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
@@ -130,7 +123,7 @@ public class LoadingOptions extends OptionsBase {
             + "optionally preceded with '-' to specify excluded languages. Only those "
             + "test targets will be found that are written in the specified languages. "
             + "The name used for each language should be the same as the language prefix in the "
-            + "*_test rule, e.g. one of 'cc', 'java', 'py', etc."
+            + "*_test rule, e.g. one of 'cc', 'java', 'py', etc. "
             + "This option affects --build_tests_only behavior and the test command."
   )
   public List<String> testLangFilterList;
@@ -138,7 +131,6 @@ public class LoadingOptions extends OptionsBase {
   @Option(
     name = "build_manual_tests",
     defaultValue = "false",
-    category = "what",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
@@ -147,11 +139,7 @@ public class LoadingOptions extends OptionsBase {
   )
   public boolean buildManualTests;
 
-  // If this option is set, the value of experimental_interleave_loading_and_analysis is completely
-  // ignored. This enables a different LoadingPhaseRunner implementation which doesn't implement
-  // the loading phase at all, and therefore can't currently support the other flag. If we roll this
-  // out soonish, then we're never going to implement the legacy code path in the new
-  // implementation, making it a moot point.
+  @Deprecated
   @Option(
     name = "experimental_skyframe_target_pattern_evaluator",
     defaultValue = "true",
@@ -162,4 +150,17 @@ public class LoadingOptions extends OptionsBase {
             + "--experimental_interleave_loading_and_analysis."
   )
   public boolean useSkyframeTargetPatternEvaluator;
+
+  @Option(
+    name = "expand_test_suites",
+    defaultValue = "true",
+    documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+    effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+    help = "Expand test_suite targets into their constituent tests before analysis. "
+        + "When this flag is turned on (the default), negative target patterns will apply "
+        + "to the tests belonging to the test suite, otherwise they will not. "
+        + "Turning off this flag is useful when top-level aspects are applied at command line: "
+        + "then they can analyze test_suite targets."
+  )
+  public boolean expandTestSuites;
 }

@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.java;
 
-import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
@@ -28,17 +27,26 @@ import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
+import com.google.devtools.build.lib.analysis.config.HostTransition;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import java.util.List;
 
-/**
- * Rule definition for {@code java_toolchain}
- */
-public final class JavaToolchainRule implements RuleDefinition {
+/** Rule definition for {@code java_toolchain} */
+public final class JavaToolchainRule<C extends JavaToolchain> implements RuleDefinition {
+
+  private final Class<C> ruleClass;
+
+  public static <C extends JavaToolchain> JavaToolchainRule create(Class<C> ruleClass) {
+    return new JavaToolchainRule(ruleClass);
+  }
+
+  private JavaToolchainRule(Class<C> ruleClass) {
+    this.ruleClass = ruleClass;
+  }
+
   @Override
-  public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+  public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
     return builder
         .requiresConfigurationFragments(JavaConfiguration.class)
         /* <!-- #BLAZE_RULE(java_plugin).ATTRIBUTE(output_licenses) -->
@@ -50,47 +58,49 @@ public final class JavaToolchainRule implements RuleDefinition {
         The Java source version (e.g., '6' or '7'). It specifies which set of code structures
         are allowed in the Java source code.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
-        .add(attr("source_version", STRING).mandatory()) // javac -source flag value.
+        .add(attr("source_version", STRING)) // javac -source flag value.
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(target_version) -->
         The Java target version (e.g., '6' or '7'). It specifies for which Java runtime the class
         should be build.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
-        .add(attr("target_version", STRING).mandatory()) // javac -target flag value.
+        .add(attr("target_version", STRING)) // javac -target flag value.
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(bootclasspath) -->
-        The Java target exdir entries. Corresponds to javac's -bootclasspath flag.
+        The Java target bootclasspath entries. Corresponds to javac's -bootclasspath flag.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("bootclasspath", LABEL_LIST)
-                .mandatory()
-                .cfg(HOST)
+                .value(ImmutableList.of())
                 .allowedFileTypes(FileTypeSet.ANY_FILE))
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(extclasspath) -->
-        The Java target exdir entries. Corresponds to javac's -extdir flag.
+        The Java target extdir entries. Corresponds to javac's -extdir flag.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("extclasspath", LABEL_LIST)
-                .mandatory()
-                .cfg(HOST)
+                .value(ImmutableList.of())
                 .allowedFileTypes(FileTypeSet.ANY_FILE))
-        /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(encoding) -->
-        The encoding of the java files (e.g., 'UTF-8').
-        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
-        .add(attr("encoding", STRING).mandatory()) // javac -encoding flag value.
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(xlint) -->
         The list of warning to add or removes from default list. Precedes it with a dash to
         removes it. Please see the Javac documentation on the -Xlint options for more information.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(attr("xlint", STRING_LIST).value(ImmutableList.<String>of()))
-        /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(misc) -->
+        .add(
+            attr("misc", STRING_LIST)
+                .undocumented("use javacopts instead")
+                .value(ImmutableList.<String>of()))
+        /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(javacopts) -->
         The list of extra arguments for the Java compiler. Please refer to the Java compiler
         documentation for the extensive list of possible Java compiler flags.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
-        .add(attr("misc", STRING_LIST).value(ImmutableList.<String>of()))
+        .add(attr("javacopts", STRING_LIST).value(ImmutableList.<String>of()))
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(jvm_opts) -->
         The list of arguments for the JVM when invoking the Java compiler. Please refer to the Java
         virtual machine documentation for the extensive list of possible flags for this option.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(attr("jvm_opts", STRING_LIST).value(ImmutableList.<String>of()))
+        /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(javabuilder_jvm_opts) -->
+        The list of arguments for the JVM when invoking JavaBuilder.
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(attr("javabuilder_jvm_opts", STRING_LIST).value(ImmutableList.<String>of()))
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(javac_supports_workers) -->
         True if JavaBuilder supports running as a persistent worker, false if it doesn't.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
@@ -100,22 +110,23 @@ public final class JavaToolchainRule implements RuleDefinition {
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("javac", LABEL_LIST)
-                .mandatory()
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .singleArtifact()
                 .allowedFileTypes(FileTypeSet.ANY_FILE))
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(tools) -->
         Labels of tools available for label-expansion in jvm_opts.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
-        .add(attr("tools", LABEL_LIST).cfg(HOST).allowedFileTypes(FileTypeSet.ANY_FILE))
+        .add(
+            attr("tools", LABEL_LIST)
+                .cfg(HostTransition.createFactory())
+                .allowedFileTypes(FileTypeSet.ANY_FILE))
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(javabuilder) -->
         Label of the JavaBuilder deploy jar.
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("javabuilder", LABEL_LIST)
                 .mandatory()
-                .cfg(HOST)
-                .singleArtifact()
+                .cfg(HostTransition.createFactory())
                 .allowedFileTypes(FileTypeSet.ANY_FILE)
                 .exec())
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(singlejar) -->
@@ -124,7 +135,7 @@ public final class JavaToolchainRule implements RuleDefinition {
         .add(
             attr("singlejar", LABEL_LIST)
                 .mandatory()
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .singleArtifact()
                 .allowedFileTypes(FileTypeSet.ANY_FILE)
                 .exec())
@@ -135,7 +146,7 @@ public final class JavaToolchainRule implements RuleDefinition {
             attr("genclass", LABEL_LIST)
                 .mandatory()
                 .singleArtifact()
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .allowedFileTypes(FileTypeSet.ANY_FILE)
                 .exec())
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(resourcejar) -->
@@ -143,7 +154,7 @@ public final class JavaToolchainRule implements RuleDefinition {
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("resourcejar", LABEL_LIST)
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .singleArtifact()
                 .allowedFileTypes(FileTypeSet.ANY_FILE)
                 .exec())
@@ -153,7 +164,7 @@ public final class JavaToolchainRule implements RuleDefinition {
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("timezone_data", LABEL)
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .singleArtifact()
                 .allowedFileTypes(FileTypeSet.ANY_FILE)
                 .exec())
@@ -163,7 +174,7 @@ public final class JavaToolchainRule implements RuleDefinition {
         .add(
             attr("ijar", LABEL_LIST)
                 .mandatory()
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .allowedFileTypes(FileTypeSet.ANY_FILE)
                 .exec())
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(header_compiler) -->
@@ -171,8 +182,19 @@ public final class JavaToolchainRule implements RuleDefinition {
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("header_compiler", LABEL_LIST)
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .singleArtifact()
+                .allowedFileTypes(FileTypeSet.ANY_FILE)
+                .exec())
+        /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(header_compiler_direct) -->
+        Optional label of the header compiler to use for direct classpath actions that do not
+        include any API-generating annotation processors.
+
+        <p>This tool does not support annotation processing.
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(
+            attr("header_compiler_direct", LABEL_LIST)
+                .cfg(HostTransition.createFactory())
                 .allowedFileTypes(FileTypeSet.ANY_FILE)
                 .exec())
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(oneversion) -->
@@ -180,7 +202,7 @@ public final class JavaToolchainRule implements RuleDefinition {
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("oneversion", LABEL)
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .singleArtifact()
                 .allowedFileTypes(FileTypeSet.ANY_FILE)
                 .exec())
@@ -189,7 +211,7 @@ public final class JavaToolchainRule implements RuleDefinition {
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(
             attr("oneversion_whitelist", LABEL)
-                .cfg(HOST)
+                .cfg(HostTransition.createFactory())
                 .singleArtifact()
                 .allowedFileTypes(FileTypeSet.ANY_FILE)
                 .exec())
@@ -202,6 +224,22 @@ public final class JavaToolchainRule implements RuleDefinition {
             attr("compatible_javacopts", STRING_LIST_DICT)
                 .undocumented("internal")
                 .value(ImmutableMap.<String, List<String>>of()))
+        /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(package_configuration) -->
+        Configuration that should be applied to the specified package groups.
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(
+            attr("package_configuration", LABEL_LIST)
+                .cfg(HostTransition.createFactory())
+                .allowedFileTypes()
+                .mandatoryNativeProviders(ImmutableList.of(JavaPackageConfigurationProvider.class)))
+        /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(jacocorunner) -->
+        Label of the JacocoCoverageRunner deploy jar.
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(
+            attr("jacocorunner", LABEL)
+                .cfg(HostTransition.createFactory())
+                .allowedFileTypes(FileTypeSet.ANY_FILE)
+                .exec())
         .build();
   }
 
@@ -210,7 +248,7 @@ public final class JavaToolchainRule implements RuleDefinition {
     return RuleDefinition.Metadata.builder()
         .name("java_toolchain")
         .ancestors(BaseRuleClasses.BaseRule.class)
-        .factoryClass(JavaToolchain.class)
+        .factoryClass(ruleClass)
         .build();
   }
 }
@@ -233,9 +271,8 @@ java_toolchain(
     source_version = "7",
     target_version = "7",
     bootclasspath = ["//tools/jdk:bootclasspath"],
-    encoding = "UTF-8",
     xlint = [ "classfile", "divzero", "empty", "options", "path" ],
-    misc = [ "-g" ],
+    javacopts = [ "-g" ],
     javabuilder = ":JavaBuilder_deploy.jar",
 )
 </pre>

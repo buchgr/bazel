@@ -15,12 +15,10 @@
 package com.google.devtools.build.lib.analysis.platform;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.devtools.build.lib.testutil.MoreAsserts.expectThrows;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
 import com.google.common.testing.EqualsTester;
-import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
-import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -29,14 +27,156 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class PlatformInfoTest extends BuildViewTestCase {
 
-  @Before
-  public void createPlatform() throws Exception {
-    scratch.file(
-        "constraint/BUILD",
-        "constraint_setting(name = 'basic')",
-        "constraint_value(name = 'foo',",
-        "    constraint_setting = ':basic',",
-        "    )");
+  @Test
+  public void platformInfo() throws Exception {
+    ConstraintSettingInfo setting1 = ConstraintSettingInfo.create(makeLabel("//constraint:s1"));
+    ConstraintSettingInfo setting2 = ConstraintSettingInfo.create(makeLabel("//constraint:s2"));
+
+    PlatformInfo.Builder builder = PlatformInfo.builder();
+    builder.addConstraint(ConstraintValueInfo.create(setting1, makeLabel("//constraint:v1")));
+    builder.addConstraint(ConstraintValueInfo.create(setting2, makeLabel("//constraint:v2")));
+    PlatformInfo platformInfo = builder.build();
+
+    assertThat(platformInfo).isNotNull();
+    assertThat(platformInfo.constraints().has(setting1)).isTrue();
+    assertThat(platformInfo.constraints().get(setting1).label())
+        .isEqualTo(makeLabel("//constraint:v1"));
+    assertThat(platformInfo.constraints().has(setting2)).isTrue();
+    assertThat(platformInfo.constraints().get(setting2).label())
+        .isEqualTo(makeLabel("//constraint:v2"));
+  }
+
+  @Test
+  public void platformInfo_remoteExecutionProperties() throws Exception {
+    PlatformInfo.Builder builder = PlatformInfo.builder();
+    builder.setRemoteExecutionProperties("properties");
+    PlatformInfo platformInfo = builder.build();
+
+    assertThat(platformInfo).isNotNull();
+    assertThat(platformInfo.remoteExecutionProperties()).isEqualTo("properties");
+  }
+
+  @Test
+  public void platformInfo_parentPlatform_noOverlaps() throws Exception {
+    ConstraintSettingInfo setting1 = ConstraintSettingInfo.create(makeLabel("//constraint:s1"));
+    ConstraintSettingInfo setting2 = ConstraintSettingInfo.create(makeLabel("//constraint:s2"));
+    ConstraintSettingInfo setting3 = ConstraintSettingInfo.create(makeLabel("//constraint:s3"));
+
+    PlatformInfo parent =
+        PlatformInfo.builder()
+            .addConstraint(ConstraintValueInfo.create(setting1, makeLabel("//constraint:v1")))
+            .build();
+
+    PlatformInfo.Builder builder = PlatformInfo.builder();
+    builder.setParent(parent);
+    builder.addConstraint(ConstraintValueInfo.create(setting2, makeLabel("//constraint:v2")));
+    builder.addConstraint(ConstraintValueInfo.create(setting3, makeLabel("//constraint:v3")));
+    PlatformInfo platformInfo = builder.build();
+
+    assertThat(platformInfo).isNotNull();
+    assertThat(platformInfo.constraints().has(setting1)).isTrue();
+    assertThat(platformInfo.constraints().get(setting1).label())
+        .isEqualTo(makeLabel("//constraint:v1"));
+    assertThat(platformInfo.constraints().has(setting2)).isTrue();
+    assertThat(platformInfo.constraints().get(setting2).label())
+        .isEqualTo(makeLabel("//constraint:v2"));
+    assertThat(platformInfo.constraints().has(setting3)).isTrue();
+    assertThat(platformInfo.constraints().get(setting3).label())
+        .isEqualTo(makeLabel("//constraint:v3"));
+  }
+
+  @Test
+  public void platformInfo_parentPlatform_overlaps() throws Exception {
+    ConstraintSettingInfo setting1 = ConstraintSettingInfo.create(makeLabel("//constraint:s1"));
+    ConstraintSettingInfo setting2 = ConstraintSettingInfo.create(makeLabel("//constraint:s2"));
+    ConstraintSettingInfo setting3 = ConstraintSettingInfo.create(makeLabel("//constraint:s3"));
+
+    PlatformInfo parent =
+        PlatformInfo.builder()
+            .addConstraint(ConstraintValueInfo.create(setting1, makeLabel("//constraint:v1")))
+            .build();
+
+    PlatformInfo.Builder builder = PlatformInfo.builder();
+    builder.setParent(parent);
+    builder.addConstraint(ConstraintValueInfo.create(setting1, makeLabel("//constraint:v1a")));
+    builder.addConstraint(ConstraintValueInfo.create(setting2, makeLabel("//constraint:v2")));
+    builder.addConstraint(ConstraintValueInfo.create(setting3, makeLabel("//constraint:v3")));
+    PlatformInfo platformInfo = builder.build();
+
+    assertThat(platformInfo).isNotNull();
+    assertThat(platformInfo.constraints().get(setting1).label())
+        .isEqualTo(makeLabel("//constraint:v1a"));
+    assertThat(platformInfo.constraints().get(setting2).label())
+        .isEqualTo(makeLabel("//constraint:v2"));
+    assertThat(platformInfo.constraints().get(setting3).label())
+        .isEqualTo(makeLabel("//constraint:v3"));
+  }
+
+  @Test
+  public void platformInfo_parentPlatform_keepRemoteExecutionProperties() throws Exception {
+    PlatformInfo parent =
+        PlatformInfo.builder().setRemoteExecutionProperties("parent properties").build();
+
+    PlatformInfo.Builder builder = PlatformInfo.builder();
+    builder.setParent(parent);
+    PlatformInfo platformInfo = builder.build();
+
+    assertThat(platformInfo).isNotNull();
+    assertThat(platformInfo.remoteExecutionProperties()).isEqualTo("parent properties");
+  }
+
+  @Test
+  public void platformInfo_parentPlatform_overrideRemoteExecutionProperties() throws Exception {
+    PlatformInfo parent =
+        PlatformInfo.builder().setRemoteExecutionProperties("parent properties").build();
+
+    PlatformInfo.Builder builder = PlatformInfo.builder();
+    builder.setParent(parent);
+    builder.setRemoteExecutionProperties("child properties");
+    PlatformInfo platformInfo = builder.build();
+
+    assertThat(platformInfo).isNotNull();
+    assertThat(platformInfo.remoteExecutionProperties()).isEqualTo("child properties");
+  }
+
+  @Test
+  public void platformInfo_parentPlatform_mergeRemoteExecutionProperties() throws Exception {
+    PlatformInfo parent =
+        PlatformInfo.builder().setRemoteExecutionProperties("parent properties").build();
+
+    PlatformInfo.Builder builder = PlatformInfo.builder();
+    builder.setParent(parent);
+    builder.setRemoteExecutionProperties("child {PARENT_REMOTE_EXECUTION_PROPERTIES} properties");
+    PlatformInfo platformInfo = builder.build();
+
+    assertThat(platformInfo).isNotNull();
+    assertThat(platformInfo.remoteExecutionProperties())
+        .isEqualTo("child parent properties properties");
+  }
+
+  @Test
+  public void platformInfo_parentPlatform_mergeRemoteExecutionProperties_noParent()
+      throws Exception {
+    PlatformInfo.Builder builder = PlatformInfo.builder();
+    builder.setRemoteExecutionProperties("child {PARENT_REMOTE_EXECUTION_PROPERTIES} properties");
+    PlatformInfo platformInfo = builder.build();
+
+    assertThat(platformInfo).isNotNull();
+    assertThat(platformInfo.remoteExecutionProperties()).isEqualTo("child  properties");
+  }
+
+  @Test
+  public void platformInfo_parentPlatform_mergeRemoteExecutionProperties_parentNotSet()
+      throws Exception {
+    PlatformInfo parent = PlatformInfo.builder().build();
+
+    PlatformInfo.Builder builder = PlatformInfo.builder();
+    builder.setParent(parent);
+    builder.setRemoteExecutionProperties("child {PARENT_REMOTE_EXECUTION_PROPERTIES} properties");
+    PlatformInfo platformInfo = builder.build();
+
+    assertThat(platformInfo).isNotNull();
+    assertThat(platformInfo.remoteExecutionProperties()).isEqualTo("child  properties");
   }
 
   @Test
@@ -57,12 +197,13 @@ public class PlatformInfoTest extends BuildViewTestCase {
 
     builder.addConstraint(ConstraintValueInfo.create(setting3, makeLabel("//constraint:value6")));
 
-    PlatformInfo.DuplicateConstraintException exception =
-        expectThrows(PlatformInfo.DuplicateConstraintException.class, () -> builder.build());
+    ConstraintCollection.DuplicateConstraintException exception =
+        assertThrows(
+            ConstraintCollection.DuplicateConstraintException.class, () -> builder.build());
     assertThat(exception)
         .hasMessageThat()
         .contains(
-            "Duplicate constraint_values detected: "
+            "Duplicate constraint values detected: "
                 + "constraint_setting //constraint:basic has "
                 + "[//constraint:value1, //constraint:value2], "
                 + "constraint_setting //constraint:complex has "
@@ -93,12 +234,6 @@ public class PlatformInfoTest extends BuildViewTestCase {
                 .setLabel(makeLabel("//platform/plat1"))
                 .addConstraint(value1)
                 .addConstraint(value2)
-                .build(),
-            PlatformInfo.builder()
-                .setLabel(makeLabel("//platform/plat1"))
-                .addConstraint(value1)
-                .addConstraint(value2)
-                .addRemoteExecutionProperty("key", "val") // execution properties are ignored.
                 .build())
         .addEqualityGroup(
             // Different label.
@@ -120,70 +255,14 @@ public class PlatformInfoTest extends BuildViewTestCase {
                 .setLabel(makeLabel("//platform/plat1"))
                 .addConstraint(value1)
                 .build())
+        .addEqualityGroup(
+            // Different remote exec properties.
+            PlatformInfo.builder()
+                .setLabel(makeLabel("//platform/plat1"))
+                .addConstraint(value1)
+                .addConstraint(value2)
+                .setRemoteExecutionProperties("foo")
+                .build())
         .testEquals();
-  }
-
-  @Test
-  public void platformInfoConstructor() throws Exception {
-    scratch.file(
-        "test/platform/my_platform.bzl",
-        "def _impl(ctx):",
-        "  constraints = [val[platform_common.ConstraintValueInfo] "
-            + "for val in ctx.attr.constraints]",
-        "  platform = platform_common.PlatformInfo(",
-        "      label = ctx.label, constraint_values = constraints)",
-        "  return [platform]",
-        "my_platform = rule(",
-        "  implementation = _impl,",
-        "  attrs = {",
-        "    'constraints': attr.label_list(providers = [platform_common.ConstraintValueInfo])",
-        "  }",
-        ")");
-    scratch.file(
-        "test/platform/BUILD",
-        "load('//test/platform:my_platform.bzl', 'my_platform')",
-        "my_platform(name = 'custom',",
-        "    constraints = [",
-        "       '//constraint:foo',",
-        "    ])");
-
-    ConfiguredTarget platform = getConfiguredTarget("//test/platform:custom");
-    assertThat(platform).isNotNull();
-
-    PlatformInfo provider = PlatformProviderUtils.platform(platform);
-    assertThat(provider).isNotNull();
-    assertThat(provider.label()).isEqualTo(makeLabel("//test/platform:custom"));
-    assertThat(provider.constraints()).hasSize(1);
-    ConstraintSettingInfo constraintSetting =
-        ConstraintSettingInfo.create(makeLabel("//constraint:basic"));
-    ConstraintValueInfo constraintValue =
-        ConstraintValueInfo.create(constraintSetting, makeLabel("//constraint:foo"));
-    assertThat(provider.constraints()).containsExactly(constraintValue);
-    assertThat(provider.remoteExecutionProperties()).isEmpty();
-  }
-
-  @Test
-  public void platformInfoConstructor_error_duplicateConstraints() throws Exception {
-    scratch.file(
-        "test/platform/my_platform.bzl",
-        "def _impl(ctx):",
-        "  platform = platform_common.PlatformInfo()",
-        "  return [platform]",
-        "my_platform = rule(",
-        "  implementation = _impl,",
-        "  attrs = {",
-        "    'constraints': attr.label_list(providers = [platform_common.ConstraintValueInfo])",
-        "  }",
-        ")");
-    checkError(
-        "test/platform",
-        "custom",
-        "Label '//constraint:foo' is duplicated in the 'constraints' attribute of rule 'custom'",
-        "load('//test/platform:my_platform.bzl', 'my_platform')",
-        "my_platform(name = 'custom',",
-        "    constraints = [",
-        "       '//constraint:foo',",
-        "       '//constraint:foo',",
-        "    ])");
   }
 }

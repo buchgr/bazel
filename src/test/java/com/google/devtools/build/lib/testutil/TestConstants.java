@@ -14,15 +14,17 @@
 
 package com.google.devtools.build.lib.testutil;
 
+import static com.google.devtools.build.lib.rules.cpp.CppRuleClasses.CROSSTOOL_LABEL;
+
 import com.google.common.collect.ImmutableList;
-import com.google.devtools.build.lib.packages.PackageFactory.BuilderFactoryForTesting;
-import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.InvocationPolicy;
+import com.google.devtools.build.lib.packages.BuilderFactoryForTesting;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 
 /**
  * Various constants required by the tests.
  */
 public class TestConstants {
+
   private TestConstants() {
   }
 
@@ -59,20 +61,35 @@ public class TestConstants {
    */
   public static final String JAVATESTS_ROOT = "io_bazel/src/test/java/";
 
+  /** Location of the bazel repo relative to the workspace root */
+  public static final String BAZEL_REPO_PATH = "";
+
+  /** Relative path to the {@code process-wrapper} tool. */
+  public static final String PROCESS_WRAPPER_PATH =
+      "io_bazel/src/main/tools/process-wrapper";
+
+  /** Relative path to the {@code linux-sandbox} tool. */
+  public static final String LINUX_SANDBOX_PATH =
+      "io_bazel/src/main/tools/linux-sandbox";
+
+  /** Relative path to the {@code spend_cpu_time} testing tool. */
+  public static final String CPU_TIME_SPENDER_PATH =
+      "io_bazel/src/test/shell/integration/spend_cpu_time";
+
   public static final String TEST_RULE_CLASS_PROVIDER =
       "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider";
   public static final String TEST_RULE_MODULE =
-        "com.google.devtools.build.lib.bazel.rules.BazelRulesModule";
+      "com.google.devtools.build.lib.bazel.rules.BazelRulesModule";
   public static final String TEST_REAL_UNIX_FILE_SYSTEM =
       "com.google.devtools.build.lib.unix.UnixFileSystem";
+  public static final String TEST_WORKSPACE_STATUS_MODULE =
+      "com.google.devtools.build.lib.bazel.BazelWorkspaceStatusModule";
 
   public static void processSkyframeExecutorForTesting(SkyframeExecutor skyframeExecutor) {}
 
   public static final ImmutableList<String> IGNORED_MESSAGE_PREFIXES = ImmutableList.<String>of();
 
   public static final String WORKSPACE_CONTENT = "";
-
-  public static final String GCC_INCLUDE_PATH = "external/bazel_tools/tools/cpp/gcc3";
 
   /** The path in which the mock cc crosstool resides. */
   public static final String MOCK_CC_CROSSTOOL_PATH = "tools/cpp";
@@ -97,11 +114,31 @@ public class TestConstants {
   public static final ImmutableList<String> OSX_CROSSTOOL_FLAGS =
       ImmutableList.of();
 
-  public static final InvocationPolicy TEST_INVOCATION_POLICY =
-      InvocationPolicy.getDefaultInstance();
+  /**
+   * Flags that must be set for Bazel to work properly, if the default values are unusable for
+   * some reason.
+   */
+  public static final ImmutableList<String> PRODUCT_SPECIFIC_FLAGS =
+      ImmutableList.of(
+          // TODO(#7903): Remove once our own tests are migrated.
+          "--incompatible_py3_is_default=false",
+          "--incompatible_py2_outputs_are_suffixed=false",
+          // TODO(#7899): Remove once we flip the flag default.
+          "--incompatible_use_python_toolchains=true",
+          // TODO(#7849): Remove after flag flip.
+          "--incompatible_use_toolchain_resolution_for_java_rules");
 
   public static final BuilderFactoryForTesting PACKAGE_FACTORY_BUILDER_FACTORY_FOR_TESTING =
       PackageFactoryBuilderFactoryForBazelUnitTests.INSTANCE;
+
+  /** Partial query to filter out implicit dependencies of C/C++ rules. */
+  public static final String CC_DEPENDENCY_CORRECTION =
+      " - deps(" + TOOLS_REPOSITORY + CROSSTOOL_LABEL + ")";
+
+  public static final String PLATFORM_BASE = "@bazel_tools//platforms";
+
+  public static final String PLATFORM_LABEL =
+      PLATFORM_BASE + ":host_platform + " + PLATFORM_BASE + ":target_platform";
 
   /** A choice of test execution mode, only varies internally. */
   public enum InternalTestExecutionMode {

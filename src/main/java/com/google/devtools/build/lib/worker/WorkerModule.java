@@ -13,34 +13,44 @@
 // limitations under the License.
 package com.google.devtools.build.lib.worker;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableMultimap;
 import com.google.common.eventbus.Subscribe;
+import com.google.devtools.build.lib.actions.ResourceManager;
+import com.google.devtools.build.lib.actions.SpawnActionContext;
 import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.buildtool.buildevent.BuildCompleteEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.BuildInterruptedEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.BuildStartingEvent;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.exec.ExecutorBuilder;
+import com.google.devtools.build.lib.exec.SpawnRunner;
+import com.google.devtools.build.lib.exec.local.LocalEnvProvider;
+import com.google.devtools.build.lib.exec.local.LocalExecutionOptions;
+import com.google.devtools.build.lib.exec.local.LocalSpawnRunner;
 import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.Command;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.commands.CleanCommand.CleanStartingEvent;
-import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.sandbox.SandboxOptions;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.worker.WorkerOptions.MultiResourceConverter;
 import com.google.devtools.common.options.OptionsBase;
 import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
-/**
- * A module that adds the WorkerActionContextProvider to the available action context providers.
- */
+/** A module that adds the WorkerActionContextProvider to the available action context providers. */
 public class WorkerModule extends BlazeModule {
   private CommandEnvironment env;
 
   private WorkerFactory workerFactory;
   private WorkerPool workerPool;
-  private WorkerPoolConfig workerPoolConfig;
   private WorkerOptions options;
-
+  private ImmutableMap<String, Integer> workerPoolConfig;
+  
   @Override
   public Iterable<Class<? extends OptionsBase>> getCommandOptions(Command command) {
     return "build".equals(command.name())
@@ -96,61 +106,75 @@ public class WorkerModule extends BlazeModule {
     workerFactory.setReporter(env.getReporter());
     workerFactory.setOptions(options);
 
-    WorkerPoolConfig newConfig = createWorkerPoolConfig(options);
+    // Use a LinkedHashMap instead of an ImmutableMap.Builder to allow duplicates; the last value
+    // passed wins.
+    LinkedHashMap<String, Integer> newConfigBuilder = new LinkedHashMap<>();
+    for (Map.Entry<String, Integer> entry : options.workerMaxInstances) {
+      newConfigBuilder.put(entry.getKey(), entry.getValue());
+    }
+
+    if (!newConfigBuilder.containsKey("")) {
+      // Empty string gives the number of workers for any type of worker not explicitly specified.
+      // If no value is given, use the default, 4.
+      // TODO(steinman): Calculate a reasonable default value instead of arbitrarily defaulting to
+      // 4.
+      newConfigBuilder.put("", MultiResourceConverter.DEFAULT_VALUE);
+    }
+
+    ImmutableMap<String, Integer> newConfig = ImmutableMap.copyOf(newConfigBuilder);
 
     // If the config changed compared to the last run, we have to create a new pool.
     if (workerPoolConfig != null && !workerPoolConfig.equals(newConfig)) {
-      shutdownPool("Worker configuration has changed, restarting worker pool...");
+      shutdownPool(
+          "Worker configuration has changed, restarting worker pool...",
+          /* alwaysLog= */ true);
     }
 
     if (workerPool == null) {
       workerPoolConfig = newConfig;
-      workerPool = new WorkerPool(workerFactory, workerPoolConfig);
+      workerPool = new WorkerPool(workerFactory, workerPoolConfig, options.highPriorityWorkers);
     }
-  }
-
-  private WorkerPoolConfig createWorkerPoolConfig(WorkerOptions options) {
-    WorkerPoolConfig config = new WorkerPoolConfig();
-
-    // It's better to re-use a worker as often as possible and keep it hot, in order to profit
-    // from JIT optimizations as much as possible.
-    config.setLifo(true);
-
-    // Keep a fixed number of workers running per key.
-    config.setMaxIdlePerKey(options.workerMaxInstances);
-    config.setMaxTotalPerKey(options.workerMaxInstances);
-    config.setMinIdlePerKey(options.workerMaxInstances);
-
-    // Don't limit the total number of worker processes, as otherwise the pool might be full of
-    // e.g. Java workers and could never accommodate another request for a different kind of
-    // worker.
-    config.setMaxTotal(-1);
-
-    // Wait for a worker to become ready when a thread needs one.
-    config.setBlockWhenExhausted(true);
-
-    // Always test the liveliness of worker processes.
-    config.setTestOnBorrow(true);
-    config.setTestOnCreate(true);
-    config.setTestOnReturn(true);
-
-    // No eviction of idle workers.
-    config.setTimeBetweenEvictionRunsMillis(-1);
-
-    return config;
   }
 
   @Override
   public void executorInit(CommandEnvironment env, BuildRequest request, ExecutorBuilder builder) {
     Preconditions.checkNotNull(workerPool);
-    builder.addActionContextProvider(new WorkerActionContextProvider(env, workerPool));
-    builder.addActionContextConsumer(new WorkerActionContextConsumer());
+    ImmutableMultimap<String, String> extraFlags =
+        ImmutableMultimap.copyOf(env.getOptions().getOptions(WorkerOptions.class).workerExtraFlags);
+    LocalEnvProvider localEnvProvider = LocalEnvProvider.forCurrentOs(env.getClientEnv());
+    WorkerSpawnRunner spawnRunner =
+        new WorkerSpawnRunner(
+            env.getExecRoot(),
+            workerPool,
+            extraFlags,
+            env.getReporter(),
+            createFallbackRunner(env, localEnvProvider),
+            localEnvProvider,
+            env.getOptions()
+                .getOptions(SandboxOptions.class)
+                .symlinkedSandboxExpandsTreeArtifactsInRunfilesTree,
+            env.getBlazeWorkspace().getBinTools());
+    builder.addActionContext(new WorkerSpawnStrategy(env.getExecRoot(), spawnRunner));
+
+    builder.addStrategyByContext(SpawnActionContext.class, "standalone");
+    builder.addStrategyByContext(SpawnActionContext.class, "worker");
+  }
+
+  private static SpawnRunner createFallbackRunner(
+      CommandEnvironment env, LocalEnvProvider localEnvProvider) {
+    LocalExecutionOptions localExecutionOptions =
+        env.getOptions().getOptions(LocalExecutionOptions.class);
+    return new LocalSpawnRunner(
+        env.getExecRoot(),
+        localExecutionOptions,
+        ResourceManager.instance(),
+        localEnvProvider,
+        env.getBlazeWorkspace().getBinTools());
   }
 
   @Subscribe
   public void buildComplete(BuildCompleteEvent event) {
-    if (options != null
-        && options.workerQuitAfterBuild) {
+    if (options != null && options.workerQuitAfterBuild) {
       shutdownPool("Build completed, shutting down worker pool...");
     }
   }
@@ -163,14 +187,17 @@ public class WorkerModule extends BlazeModule {
     shutdownPool("Build interrupted, shutting down worker pool...");
   }
 
-  /**
-   * Shuts down the worker pool and sets {#code workerPool} to null.
-   */
+  /** Shuts down the worker pool and sets {#code workerPool} to null. */
   private void shutdownPool(String reason) {
+    shutdownPool(reason, /* alwaysLog= */ false);
+  }
+
+  /** Shuts down the worker pool and sets {#code workerPool} to null. */
+  private void shutdownPool(String reason, boolean alwaysLog) {
     Preconditions.checkArgument(!reason.isEmpty());
 
     if (workerPool != null) {
-      if (options != null && options.workerVerbose) {
+      if ((options != null && options.workerVerbose) || alwaysLog) {
         env.getReporter().handle(Event.info(reason));
       }
       workerPool.close();

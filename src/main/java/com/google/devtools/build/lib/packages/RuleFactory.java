@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.packages;
 
 import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
@@ -28,7 +29,6 @@ import com.google.devtools.build.lib.syntax.Environment;
 import com.google.devtools.build.lib.syntax.FuncallExpression;
 import com.google.devtools.build.lib.syntax.UserDefinedFunction;
 import com.google.devtools.build.lib.util.Pair;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
@@ -128,6 +128,14 @@ public class RuleFactory {
     AttributesAndLocation generator =
         generatorAttributesForMacros(attributeValues, env, location, label);
     try {
+      // Examines --incompatible_disable_third_party_license_checking to see if we should check
+      // third party targets for license existence.
+      //
+      // This flag is overridable by RuleClass.ThirdPartyLicenseEnforcementPolicy (which is checked
+      // in RuleClass). This lets Bazel and Blaze migrate away from license logic on independent
+      // timelines. See --incompatible_disable_third_party_license_checking comments for details.
+      boolean checkThirdPartyLicenses =
+          env != null && !env.getSemantics().incompatibleDisableThirdPartyLicenseChecking();
       return ruleClass.createRule(
           pkgBuilder,
           label,
@@ -135,7 +143,8 @@ public class RuleFactory {
           eventHandler,
           ast,
           generator.location,
-          attributeContainer);
+          attributeContainer,
+          checkThirdPartyLicenses);
     } catch (LabelSyntaxException | CannotPrecomputeDefaultsException e) {
       throw new RuleFactory.InvalidRuleException(ruleClass + " " + e.getMessage());
     }

@@ -13,13 +13,14 @@
 // limitations under the License.
 package com.google.devtools.build.skyframe;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.collect.compacthashset.CompactHashSet;
-import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.skyframe.KeyToConsolidate.Op;
 import com.google.devtools.build.skyframe.KeyToConsolidate.OpToStoreBare;
 import java.util.ArrayList;
@@ -45,15 +46,15 @@ import java.util.Set;
  * may never have their data forcibly consolidated, since their reverse deps will only be retrieved
  * as a whole if they are marked dirty. Thus, we consolidate periodically.
  *
- * <p>{@link InMemoryNodeEntry} manages pending reverse dep operations on a marked-dirty or initally
- * evaluating node itself, using similar logic tuned to those cases, and calls into {@link
+ * <p>{@link InMemoryNodeEntry} manages pending reverse dep operations on a marked-dirty or
+ * initially evaluating node itself, using similar logic tuned to those cases, and calls into {@link
  * #consolidateDataAndReturnNewElements(InMemoryNodeEntry, OpToStoreBare)} when transitioning to
  * done.
  */
 abstract class ReverseDepsUtility {
   private ReverseDepsUtility() {}
 
-  static final int MAYBE_CHECK_THRESHOLD = 10;
+  @VisibleForTesting static final int MAYBE_CHECK_THRESHOLD = 10;
 
   /**
    * We can store one type of operation bare in order to save memory. For done nodes, most
@@ -212,72 +213,64 @@ abstract class ReverseDepsUtility {
         case CHECK:
           Preconditions.checkState(
               reverseDepsAsSet.contains(key),
-              "Reverse dep not present: %s %s %s %s %s",
+              "Reverse dep not present: %s %s %s %s",
               keyToConsolidate,
               reverseDepsAsSet,
-              newData,
               dataToConsolidate,
               entry);
           Preconditions.checkState(
               newData.add(key),
-              "Duplicate new reverse dep: %s %s %s %s %s",
+              "Duplicate new reverse dep: %s %s %s %s",
               keyToConsolidate,
               reverseDepsAsSet,
-              newData,
               dataToConsolidate,
               entry);
           break;
         case REMOVE:
           Preconditions.checkState(
               reverseDepsAsSet.remove(key),
-              "Reverse dep to be removed not present: %s %s %s %s %s",
+              "Reverse dep to be removed not present: %s %s %s %s",
               keyToConsolidate,
               reverseDepsAsSet,
-              newData,
               dataToConsolidate,
               entry);
           Preconditions.checkState(
               newData.remove(key),
-              "Reverse dep to be removed not present: %s %s %s %s %s",
+              "Reverse dep to be removed not present: %s %s %s %s",
               keyToConsolidate,
               reverseDepsAsSet,
-              newData,
               dataToConsolidate,
               entry);
           break;
         case REMOVE_OLD:
           Preconditions.checkState(
               reverseDepsAsSet.remove(key),
-              "Reverse dep to be removed not present: %s %s %s %s %s",
+              "Reverse dep to be removed not present: %s %s %s %s",
               keyToConsolidate,
               reverseDepsAsSet,
-              newData,
               dataToConsolidate,
               entry);
           Preconditions.checkState(
               !newData.contains(key),
-              "Reverse dep shouldn't have been added to new: %s %s %s %s %s",
+              "Reverse dep shouldn't have been added to new: %s %s %s %s",
               keyToConsolidate,
               reverseDepsAsSet,
-              newData,
               dataToConsolidate,
               entry);
           break;
         case ADD:
           Preconditions.checkState(
               reverseDepsAsSet.add(key),
-              "Duplicate reverse deps: %s %s %s %s %s",
+              "Duplicate reverse deps: %s %s %s %s",
               keyToConsolidate,
               reverseDeps,
-              newData,
               dataToConsolidate,
               entry);
           Preconditions.checkState(
               newData.add(key),
-              "Duplicate new reverse deps: %s %s %s %s %s",
+              "Duplicate new reverse deps: %s %s %s %s",
               keyToConsolidate,
               reverseDeps,
-              newData,
               dataToConsolidate,
               entry);
           break;

@@ -14,12 +14,14 @@
 
 package com.google.devtools.build.buildjar;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Locale.ENGLISH;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableList.Builder;
 import com.google.common.collect.Iterables;
+import com.google.common.io.MoreFiles;
+import com.google.common.io.RecursiveDeleteOption;
 import com.google.devtools.build.buildjar.jarhelper.JarCreator;
 import com.google.devtools.build.buildjar.javac.JavacOptions;
 import com.google.devtools.build.buildjar.proto.JavaCompilation.Manifest;
@@ -50,7 +52,6 @@ import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
 import javax.tools.JavaCompiler.CompilationTask;
 import javax.tools.JavaFileObject;
-import javax.tools.JavaFileObject.Kind;
 import javax.tools.SimpleJavaFileObject;
 import javax.tools.StandardJavaFileManager;
 import javax.tools.StandardLocation;
@@ -151,27 +152,32 @@ public class VanillaJavaBuilder implements Closeable {
     DiagnosticCollector<JavaFileObject> diagnosticCollector = new DiagnosticCollector<>();
     StringWriter output = new StringWriter();
     JavaCompiler javaCompiler = ToolProvider.getSystemJavaCompiler();
-    StandardJavaFileManager fileManager =
-        javaCompiler.getStandardFileManager(diagnosticCollector, ENGLISH, UTF_8);
-    setLocations(optionsParser, fileManager);
-    ImmutableList<JavaFileObject> sources = getSources(optionsParser, fileManager);
+    Path tempDir = Paths.get(firstNonNull(optionsParser.getTempDir(), "_tmp"));
+    Path nativeHeaderDir = tempDir.resolve("native_headers");
+    Files.createDirectories(nativeHeaderDir);
     boolean ok;
-    if (sources.isEmpty()) {
-      ok = true;
-    } else {
-      CompilationTask task =
-          javaCompiler.getTask(
-              new PrintWriter(output, true),
-              fileManager,
-              diagnosticCollector,
-              JavacOptions.removeBazelSpecificFlags(optionsParser.getJavacOpts()),
-              ImmutableList.<String>of() /*classes*/,
-              sources);
-      setProcessors(optionsParser, fileManager, task);
-      ok = task.call();
+    try (StandardJavaFileManager fileManager =
+        javaCompiler.getStandardFileManager(diagnosticCollector, ENGLISH, UTF_8)) {
+      setLocations(optionsParser, fileManager, nativeHeaderDir);
+      ImmutableList<JavaFileObject> sources = getSources(optionsParser, fileManager);
+      if (sources.isEmpty()) {
+        ok = true;
+      } else {
+        CompilationTask task =
+            javaCompiler.getTask(
+                new PrintWriter(output, true),
+                fileManager,
+                diagnosticCollector,
+                JavacOptions.removeBazelSpecificFlags(optionsParser.getJavacOpts()),
+                ImmutableList.<String>of() /*classes*/,
+                sources);
+        setProcessors(optionsParser, fileManager, task);
+        ok = task.call();
+      }
     }
     if (ok) {
       writeOutput(optionsParser);
+      writeNativeHeaderOutput(optionsParser, nativeHeaderDir);
     }
     writeGeneratedSourceOutput(optionsParser);
     // the jdeps output doesn't include any information about dependencies, but Bazel still expects
@@ -241,24 +247,35 @@ public class VanillaJavaBuilder implements Closeable {
   }
 
   /** Sets the compilation search paths and output directories. */
-  private static void setLocations(OptionsParser optionsParser, StandardJavaFileManager fileManager)
+  private static void setLocations(
+      OptionsParser optionsParser, StandardJavaFileManager fileManager, Path nativeHeaderDir)
       throws IOException {
     fileManager.setLocation(StandardLocation.CLASS_PATH, toFiles(optionsParser.getClassPath()));
-    fileManager.setLocation(
-        StandardLocation.PLATFORM_CLASS_PATH,
+    Iterable<File> bootClassPath =
         Iterables.concat(
-            toFiles(optionsParser.getBootClassPath()), toFiles(optionsParser.getExtClassPath())));
+            toFiles(optionsParser.getBootClassPath()), toFiles(optionsParser.getExtClassPath()));
+    // The bootclasspath may legitimately be empty if --release is being used.
+    if (!Iterables.isEmpty(bootClassPath)) {
+      fileManager.setLocation(StandardLocation.PLATFORM_CLASS_PATH, bootClassPath);
+    }
     fileManager.setLocation(
         StandardLocation.ANNOTATION_PROCESSOR_PATH, toFiles(optionsParser.getProcessorPath()));
     if (optionsParser.getSourceGenDir() != null) {
-      Path sourceGenDir = Paths.get(optionsParser.getSourceGenDir());
-      createOutputDirectory(sourceGenDir);
-      fileManager.setLocation(
-          StandardLocation.SOURCE_OUTPUT, ImmutableList.of(sourceGenDir.toFile()));
+      setOutputLocation(
+          fileManager, StandardLocation.SOURCE_OUTPUT, Paths.get(optionsParser.getSourceGenDir()));
     }
-    Path classDir = Paths.get(optionsParser.getClassDir());
-    createOutputDirectory(classDir);
-    fileManager.setLocation(StandardLocation.CLASS_OUTPUT, ImmutableList.of(classDir.toFile()));
+    if (optionsParser.getNativeHeaderOutput() != null) {
+      setOutputLocation(fileManager, StandardLocation.NATIVE_HEADER_OUTPUT, nativeHeaderDir);
+    }
+    setOutputLocation(
+        fileManager, StandardLocation.CLASS_OUTPUT, Paths.get(optionsParser.getClassDir()));
+  }
+
+  private static void setOutputLocation(
+      StandardJavaFileManager fileManager, StandardLocation location, Path path)
+      throws IOException {
+    createOutputDirectory(path);
+    fileManager.setLocation(location, ImmutableList.of(path.toFile()));
   }
 
   /** Sets the compilation's annotation processors. */
@@ -266,7 +283,7 @@ public class VanillaJavaBuilder implements Closeable {
       OptionsParser optionsParser, StandardJavaFileManager fileManager, CompilationTask task) {
     ClassLoader processorLoader =
         fileManager.getClassLoader(StandardLocation.ANNOTATION_PROCESSOR_PATH);
-    Builder<Processor> processors = ImmutableList.builder();
+    ImmutableList.Builder<Processor> processors = ImmutableList.builder();
     for (String processor : optionsParser.getProcessorNames()) {
       try {
         processors.add(
@@ -288,6 +305,21 @@ public class VanillaJavaBuilder implements Closeable {
     jar.setCompression(optionsParser.compressJar());
     jar.addDirectory(optionsParser.getSourceGenDir());
     jar.execute();
+  }
+
+  private static void writeNativeHeaderOutput(OptionsParser optionsParser, Path nativeHeaderDir)
+      throws IOException {
+    if (optionsParser.getNativeHeaderOutput() == null) {
+      return;
+    }
+    JarCreator jar = new JarCreator(optionsParser.getNativeHeaderOutput());
+    try {
+      jar.setNormalize(true);
+      jar.setCompression(optionsParser.compressJar());
+      jar.addDirectory(nativeHeaderDir);
+    } finally {
+      jar.execute();
+    }
   }
 
   /** Writes the class output jar, including any resource entries. */
@@ -338,24 +370,7 @@ public class VanillaJavaBuilder implements Closeable {
   private static void createOutputDirectory(Path dir) throws IOException {
     if (Files.exists(dir)) {
       try {
-        // TODO(b/27069912): handle symlinks
-        Files.walkFileTree(
-            dir,
-            new SimpleFileVisitor<Path>() {
-              @Override
-              public FileVisitResult visitFile(Path file, BasicFileAttributes attrs)
-                  throws IOException {
-                Files.delete(file);
-                return FileVisitResult.CONTINUE;
-              }
-
-              @Override
-              public FileVisitResult postVisitDirectory(Path dir, IOException exc)
-                  throws IOException {
-                Files.delete(dir);
-                return FileVisitResult.CONTINUE;
-              }
-            });
+        MoreFiles.deleteRecursively(dir, RecursiveDeleteOption.ALLOW_INSECURE);
       } catch (IOException e) {
         throw new IOException("Cannot clean output directory '" + dir + "'", e);
       }

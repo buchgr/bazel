@@ -16,8 +16,8 @@ package com.google.devtools.build.lib.skyframe;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.ToolchainContext.ResolvedToolchainProviders;
 import com.google.devtools.build.lib.analysis.platform.ToolchainInfo;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.rules.platform.ToolchainTestCase;
@@ -33,18 +33,16 @@ public class RuleContextTest extends ToolchainTestCase {
   public void testMockRuleContextHasToolchains() throws Exception {
     mockToolsConfig.create("x/BUILD", "mock_toolchain_rule(name='x')");
     useConfiguration(
-        "--experimental_host_platform=//constraint:linux_plat",
-        "--experimental_platforms=//constraint:mac_plat");
+        "--host_platform=//platforms:linux",
+        "--platforms=//platforms:mac");
     RuleContext ruleContext = getRuleContext(getConfiguredTarget("//x"));
-    assertThat(ruleContext.getToolchainContext().getResolvedToolchainLabels())
-        .contains(Label.parseAbsolute("//toolchain:test_toolchain_1"));
+    assertThat(ruleContext.getToolchainContext().resolvedToolchainLabels())
+        .contains(Label.parseAbsolute("//toolchain:toolchain_1_impl", ImmutableMap.of()));
 
-    ResolvedToolchainProviders resolvedToolchainProviders =
-        (ResolvedToolchainProviders)
-            ruleContext.getToolchainContext().getResolvedToolchainProviders();
     ToolchainInfo toolchain =
-        resolvedToolchainProviders.getForToolchainType(
-            Label.parseAbsolute("//toolchain:test_toolchain"));
+        ruleContext
+            .getToolchainContext()
+            .forToolchainType(Label.parseAbsolute("//toolchain:test_toolchain", ImmutableMap.of()));
     assertThat(toolchain.getValue("data")).isEqualTo("foo");
   }
 }

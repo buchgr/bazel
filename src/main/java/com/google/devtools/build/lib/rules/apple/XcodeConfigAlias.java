@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.rules.apple;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.AliasProvider;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
@@ -32,13 +33,13 @@ import com.google.devtools.build.lib.rules.AliasConfiguredTarget;
  * Implementation of the {@code xcode_config_alias} rule.
  *
  * <p>This rule is an alias to the {@code xcode_config} rule currently in use, which is in turn
- * depends on the current configuration, in particular, the value of the {@code --xcode_config}
- * flag.
+ * depends on the current configuration, in particular, the value of the {@code
+ * --xcode_version_config} flag.
  */
 public class XcodeConfigAlias implements RuleConfiguredTargetFactory {
   @Override
   public ConfiguredTarget create(RuleContext ruleContext)
-      throws InterruptedException, RuleErrorException {
+      throws InterruptedException, RuleErrorException, ActionConflictException {
     ConfiguredTarget actual = (ConfiguredTarget) ruleContext.getPrerequisite(
         XcodeConfigRule.XCODE_CONFIG_ATTR_NAME, Mode.TARGET);
     return new AliasConfiguredTarget(
@@ -55,12 +56,12 @@ public class XcodeConfigAlias implements RuleConfiguredTargetFactory {
    * Rule definition for the {@code xcode_config_alias} rule.
    *
    * <p>This rule is an alias to the {@code xcode_config} rule currently in use, which is in turn
-   * depends on the current configuration, in particular, the value of the {@code --xcode_config}
-   * flag.
+   * depends on the current configuration, in particular, the value of the {@code
+   * --xcode_version_config} flag.
    *
    * <p>This is intentionally undocumented for users; the workspace is expected to contain exactly
-   * one instance of this rule under {@code @bazel_tools//tools/osx} and people who want to get
-   * data this rule provides should depend on that one.
+   * one instance of this rule under {@code @bazel_tools//tools/osx} and people who want to get data
+   * this rule provides should depend on that one.
    */
   public static class XcodeConfigAliasRule implements RuleDefinition {
 

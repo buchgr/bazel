@@ -34,17 +34,48 @@ import java.util.List;
 public class RepositoryOptions extends OptionsBase {
 
   @Option(
-    name = "experimental_repository_cache",
-    defaultValue = "null",
-    documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
-    effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
-    metadataTags = {OptionMetadataTag.EXPERIMENTAL},
-    converter = OptionsUtils.PathFragmentConverter.class,
-    help =
-        "Specifies the cache location of the downloaded values obtained "
-            + "during the fetching of external repositories."
-  )
+      name = "repository_cache",
+      oldName = "experimental_repository_cache",
+      defaultValue = "null",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      converter = OptionsUtils.PathFragmentConverter.class,
+      help =
+          "Specifies the cache location of the downloaded values obtained "
+              + "during the fetching of external repositories. An empty string "
+              + "as argument requests the cache to be disabled.")
   public PathFragment experimentalRepositoryCache;
+
+  @Option(
+      name = "experimental_repository_cache_hardlinks",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help =
+          "If set, the repository cache will hardlink the file in case of a"
+              + " cache hit, rather than copying. This is inteded to save disk space.")
+  public boolean useHardlinks;
+
+  @Option(
+      name = "distdir",
+      oldName = "experimental_distdir",
+      defaultValue = "null",
+      allowMultiple = true,
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      converter = OptionsUtils.PathFragmentConverter.class,
+      help =
+          "Additional places to search for archives before accessing the network "
+              + "to download them.")
+  public List<PathFragment> experimentalDistdir;
+
+  @Option(
+      name = "http_timeout_scaling",
+      defaultValue = "1.0",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      help = "Scale all timeouts related to http downloads by the given factor")
+  public double httpTimeoutScaling;
 
   @Option(
     name = "override_repository",
@@ -56,6 +87,51 @@ public class RepositoryOptions extends OptionsBase {
     help = "Overrides a repository with a local directory."
   )
   public List<RepositoryOverride> repositoryOverrides;
+
+  @Option(
+      name = "experimental_scale_timeouts",
+      defaultValue = "1.0",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "Scale all timeouts in Starlark repository rules by this factor."
+              + " In this way, external repositories can be made working on machines"
+              + " that are slower than the rule author expected, without changing the"
+              + " source code")
+  public double experimentalScaleTimeouts;
+
+  @Option(
+      name = "experimental_repository_hash_file",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.INPUT_STRICTNESS,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "If non-empty, specifies a file containing a resolved value, against which"
+              + " the repository directory hashes should be verified")
+  public String repositoryHashFile;
+
+  @Option(
+      name = "experimental_verify_repository_rules",
+      allowMultiple = true,
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.INPUT_STRICTNESS,
+      effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
+      metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+      help =
+          "If list of repository rules for which the hash of the output directory should be"
+              + " verified, provided a file is specified by"
+              + " --experimental_repository_hash_file.")
+  public List<String> experimentalVerifyRepositoryRules;
+
+  @Option(
+      name = "experimental_resolved_file_instead_of_workspace",
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.GENERIC_INPUTS,
+      effectTags = {OptionEffectTag.CHANGES_INPUTS},
+      help = "If non-empty read the specified resolved file instead of the WORKSPACE file")
+  public String experimentalResolvedFileInsteadOfWorkspace;
 
   /**
    * Converts from an equals-separated pair of strings into RepositoryName->PathFragment mapping.

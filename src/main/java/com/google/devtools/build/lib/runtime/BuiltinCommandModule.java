@@ -13,10 +13,13 @@
 // limitations under the License.
 package com.google.devtools.build.lib.runtime;
 
+import com.google.devtools.build.lib.runtime.commands.AqueryCommand;
 import com.google.devtools.build.lib.runtime.commands.BuildCommand;
 import com.google.devtools.build.lib.runtime.commands.CanonicalizeCommand;
 import com.google.devtools.build.lib.runtime.commands.CleanCommand;
+import com.google.devtools.build.lib.runtime.commands.ConfigCommand;
 import com.google.devtools.build.lib.runtime.commands.CoverageCommand;
+import com.google.devtools.build.lib.runtime.commands.CqueryCommand;
 import com.google.devtools.build.lib.runtime.commands.DumpCommand;
 import com.google.devtools.build.lib.runtime.commands.HelpCommand;
 import com.google.devtools.build.lib.runtime.commands.InfoCommand;
@@ -28,14 +31,20 @@ import com.google.devtools.build.lib.runtime.commands.RunCommand;
 import com.google.devtools.build.lib.runtime.commands.ShutdownCommand;
 import com.google.devtools.build.lib.runtime.commands.TestCommand;
 import com.google.devtools.build.lib.runtime.commands.VersionCommand;
-import com.google.devtools.common.options.OptionsProvider;
+import com.google.devtools.common.options.OptionsParsingResult;
 
 /**
  * Internal module for the built-in commands.
  */
-public final class BuiltinCommandModule extends BlazeModule {
+public class BuiltinCommandModule extends BlazeModule {
+  private final RunCommand runCommand;
+
+  protected BuiltinCommandModule(RunCommand runCommand) {
+    this.runCommand = runCommand;
+  }
+
   @Override
-  public void serverInit(OptionsProvider startupOptions, ServerBuilder builder) {
+  public void serverInit(OptionsParsingResult startupOptions, ServerBuilder builder) {
     builder.addCommands(
         new BuildCommand(),
         new CanonicalizeCommand(),
@@ -47,10 +56,13 @@ public final class BuiltinCommandModule extends BlazeModule {
         new PrintActionCommand(),
         new ProfileCommand(),
         new QueryCommand(),
-        new RunCommand(),
+        runCommand,
         new ShutdownCommand(),
         new TestCommand(),
-        new VersionCommand());
+        new VersionCommand(),
+        new AqueryCommand(),
+        new CqueryCommand(),
+        new ConfigCommand());
     // Only enable the "license" command when this binary has an embedded LICENSE file.
     if (LicenseCommand.isSupported()) {
       builder.addCommands(new LicenseCommand());

@@ -14,68 +14,83 @@
 
 package com.google.devtools.build.lib.authandtls;
 
+import com.google.devtools.common.options.Converters.CommaSeparatedOptionListConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionMetadataTag;
 import com.google.devtools.common.options.OptionsBase;
+import java.util.List;
 
 /**
  * Common options for authentication and TLS.
  */
 public class AuthAndTLSOptions extends OptionsBase {
   @Option(
-    name = "auth_enabled",
+    name = "google_default_credentials",
+    oldName = "auth_enabled",
     defaultValue = "false",
-    category = "remote",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
-        "Whether to enable authentication for remote execution/caching and the build event "
-            + "service (BES). If not otherwise specified 'Google Application Default Credentials' "
-            + "are used. Disabled by default."
+        "Whether to use 'Google Application Default Credentials' for authentication."
+            + " See https://cloud.google.com/docs/authentication for details. Disabled by default."
   )
-  public boolean authEnabled;
+  public boolean useGoogleDefaultCredentials;
 
   @Option(
-    name = "auth_scope",
-    defaultValue = "https://www.googleapis.com/auth/cloud-source-tools",
-    category = "remote",
+    name = "google_auth_scopes",
+    oldName = "auth_scope",
+    defaultValue = "https://www.googleapis.com/auth/cloud-platform",
+    converter = CommaSeparatedOptionListConverter.class,
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
-    help = "If server authentication requires a scope, provide it here."
+    help = "A comma-separated list of Google Cloud authentication scopes."
   )
-  public String authScope;
+  public List<String> googleAuthScopes;
 
   @Option(
-    name = "auth_credentials",
+    name = "google_credentials",
+    oldName = "auth_credentials",
     defaultValue = "null",
-    category = "remote",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help =
         "Specifies the file to get authentication credentials from. See "
-            + "https://cloud.google.com/docs/authentication for more details. 'Google Application "
-            + "Default Credentials' are used by default."
+            + "https://cloud.google.com/docs/authentication for details."
   )
-  public String authCredentials;
+  public String googleCredentials;
+
+  @Deprecated
+  @Option(
+      name = "tls_enabled",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      deprecationWarning =
+          "Deprecated. Please specify a valid protocol in the URL (https or grpcs).",
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help =
+          "DEPRECATED. Specifies whether to use TLS for remote execution/caching and "
+              + "the build event service (BES). See #8061 for details.")
+  public boolean tlsEnabled;
 
   @Option(
-    name = "tls_enabled",
-    defaultValue = "false",
-    category = "remote",
-    documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-    effectTags = {OptionEffectTag.UNKNOWN},
-    help =
-        "Specifies whether to use TLS for remote execution/caching and the build event service"
-            + " (BES)."
-  )
-  public boolean tlsEnabled;
+      name = "incompatible_tls_enabled_removed",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
+      help =
+          "If set to true, bazel will handle --tls_enabled as a not existing flag."
+              + "See #8061 for details.")
+  public boolean incompatibleTlsEnabledRemoved;
 
   @Option(
     name = "tls_certificate",
     defaultValue = "null",
-    category = "remote",
     documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
     effectTags = {OptionEffectTag.UNKNOWN},
     help = "Specify the TLS client certificate to use."
@@ -85,7 +100,6 @@ public class AuthAndTLSOptions extends OptionsBase {
   @Option(
     name = "tls_authority_override",
     defaultValue = "null",
-    category = "remote",
     metadataTags = {OptionMetadataTag.HIDDEN},
     documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
     effectTags = {OptionEffectTag.UNKNOWN},

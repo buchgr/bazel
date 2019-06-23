@@ -15,145 +15,259 @@
 package com.google.devtools.build.lib.buildeventstream.transports;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Function;
+import com.google.common.base.Throwables;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.devtools.build.lib.buildeventstream.ArtifactGroupNamer;
+import com.google.devtools.build.lib.buildeventstream.BuildEvent;
+import com.google.devtools.build.lib.buildeventstream.BuildEventArtifactUploader;
+import com.google.devtools.build.lib.buildeventstream.BuildEventContext;
+import com.google.devtools.build.lib.buildeventstream.BuildEventProtocolOptions;
+import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
 import com.google.devtools.build.lib.buildeventstream.BuildEventTransport;
+import com.google.devtools.build.lib.buildeventstream.PathConverter;
+import com.google.devtools.build.lib.util.AbruptExitException;
+import com.google.devtools.build.lib.util.ExitCode;
+import java.io.BufferedOutputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.AsynchronousFileChannel;
-import java.nio.channels.CompletionHandler;
-import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
-import java.util.concurrent.Future;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import javax.annotation.concurrent.ThreadSafe;
 
 /**
  * Non-blocking file transport.
  *
  * <p>Implementors of this class need to implement {@code #sendBuildEvent(BuildEvent)} which
- * serializes the build event and writes it to file using {@link #writeData(byte[])}.
+ * serializes the build event and writes it to a file.
  */
 abstract class FileTransport implements BuildEventTransport {
-
-  /**
-   * We use an {@link AsynchronousFileChannel} to perform non-blocking writes to a file. It get's
-   * tricky when it comes to {@link #close()}, as we may only complete the returned future when all
-   * writes have completed (succeeded or failed). Thus, we use a field {@link #outstandingWrites} to
-   * keep track of the number of writes that have not completed yet. It's simply incremented before
-   * a new write and decremented after a write has completed. When it's {@code 0} it's safe to
-   * complete the close future.
-   */
   private static final Logger logger = Logger.getLogger(FileTransport.class.getName());
 
+  private final BuildEventProtocolOptions options;
+  private final BuildEventArtifactUploader uploader;
+  private final SequentialWriter writer;
+  private final ArtifactGroupNamer namer;
+
+  FileTransport(
+      BufferedOutputStream outputStream,
+      BuildEventProtocolOptions options,
+      BuildEventArtifactUploader uploader,
+      ArtifactGroupNamer namer) {
+    this.uploader = uploader;
+    this.options = options;
+    this.writer = new SequentialWriter(outputStream, this::serializeEvent, uploader);
+    this.namer = namer;
+  }
+
+  @ThreadSafe
   @VisibleForTesting
-  final AsynchronousFileChannel ch;
-  private final WriteCompletionHandler completionHandler = new WriteCompletionHandler();
-  // The offset in the file to begin the next write at.
-  private long writeOffset;
-  // Number of writes that haven't completed yet.
-  private long outstandingWrites;
-  // The future returned by close()
-  private SettableFuture<Void> closeFuture;
+  static final class SequentialWriter implements Runnable {
+    private static final Logger logger = Logger.getLogger(SequentialWriter.class.getName());
+    private static final ListenableFuture<BuildEventStreamProtos.BuildEvent> CLOSE_EVENT_FUTURE =
+        Futures.immediateFailedFuture(
+            new IllegalStateException(
+                "A FileTransport is trying to write CLOSE_EVENT_FUTURE, this is a bug."));
+    private static final Duration FLUSH_INTERVAL = Duration.ofMillis(250);
 
-  FileTransport(String path) {
-    try {
-      ch = AsynchronousFileChannel.open(Paths.get(path), StandardOpenOption.CREATE,
-          StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-    } catch (IOException e) {
-      throw new RuntimeException(e);
+    private final Thread writerThread;
+    private final BufferedOutputStream out;
+    private final Function<BuildEventStreamProtos.BuildEvent, byte[]> serializeFunc;
+    private final BuildEventArtifactUploader uploader;
+    private final AtomicBoolean isClosed = new AtomicBoolean();
+    private final SettableFuture<Void> closeFuture = SettableFuture.create();
+
+    @VisibleForTesting
+    final BlockingQueue<ListenableFuture<BuildEventStreamProtos.BuildEvent>> pendingWrites =
+        new LinkedBlockingDeque<>();
+
+    SequentialWriter(
+        BufferedOutputStream outputStream,
+        Function<BuildEventStreamProtos.BuildEvent, byte[]> serializeFunc,
+        BuildEventArtifactUploader uploader) {
+      checkNotNull(outputStream);
+      checkNotNull(serializeFunc);
+      checkNotNull(uploader);
+
+      this.out = outputStream;
+      this.writerThread = new Thread(this, "bep-local-writer");
+      this.serializeFunc = serializeFunc;
+      this.uploader = uploader;
+      writerThread.start();
     }
-  }
 
-  synchronized void writeData(byte[] data) {
-    checkNotNull(data);
-    if (!ch.isOpen()) {
-      @SuppressWarnings({"unused", "nullness"})
-      Future<?> possiblyIgnoredError = close();
-      return;
+    @Override
+    public void run() {
+      ListenableFuture<BuildEventStreamProtos.BuildEvent> buildEventF;
+      try {
+        Instant prevFlush = Instant.now();
+        while ((buildEventF = pendingWrites.poll(FLUSH_INTERVAL.toMillis(), TimeUnit.MILLISECONDS))
+            != CLOSE_EVENT_FUTURE) {
+          if (buildEventF != null) {
+            BuildEventStreamProtos.BuildEvent buildEvent = buildEventF.get();
+            byte[] serialized = serializeFunc.apply(buildEvent);
+            out.write(serialized);
+          }
+          Instant now = Instant.now();
+          if (buildEventF == null || now.compareTo(prevFlush.plus(FLUSH_INTERVAL)) > 0) {
+            // Some users, e.g. Tulsi, expect prompt BEP stream flushes for interactive use.
+            out.flush();
+            prevFlush = now;
+          }
+        }
+      } catch (ExecutionException e) {
+        Throwables.throwIfUnchecked(e.getCause());
+        exitFailure(e);
+      } catch (IOException | InterruptedException | CancellationException e) {
+        exitFailure(e);
+      } finally {
+        try {
+          try {
+            out.flush();
+            out.close();
+          } finally {
+            uploader.shutdown();
+          }
+        } catch (IOException e) {
+          logger.log(Level.SEVERE, "Failed to close BEP file output stream.", e);
+        }
+        closeFuture.set(null);
+      }
     }
-    if (closing()) {
-      return;
+
+    private void exitFailure(Throwable e) {
+      final String message;
+      // Print a more useful error message when the upload times out.
+      // An {@link ExecutionException} may be wrapping a {@link TimeoutException} if the
+      // Future was created with {@link Futures#withTimeout}.
+      if (e instanceof ExecutionException
+          && e.getCause() instanceof TimeoutException) {
+        message = "Unable to write all BEP events to file due to timeout";
+      } else {
+        message =
+            String.format("Unable to write all BEP events to file due to '%s'", e.getMessage());
+      }
+      closeFuture.setException(
+          new AbruptExitException(message, ExitCode.TRANSIENT_BUILD_EVENT_SERVICE_UPLOAD_ERROR, e));
+      pendingWrites.clear();
+      logger.log(Level.SEVERE, message, e);
     }
 
-    outstandingWrites++;
+    private void closeNow() {
+      if (closeFuture.isDone()) {
+        return;
+      }
+      try {
+        pendingWrites.clear();
+        pendingWrites.put(CLOSE_EVENT_FUTURE);
+      } catch (InterruptedException e) {
+        logger.log(Level.SEVERE, "Failed to immediately close the sequential writer.", e);
+      }
+    }
 
-    ch.write(ByteBuffer.wrap(data), writeOffset, null, completionHandler);
+    ListenableFuture<Void> close() {
+      if (isClosed.getAndSet(true)) {
+        return closeFuture;
+      } else if (closeFuture.isDone()) {
+        return closeFuture;
+      }
 
-    writeOffset += data.length;
-  }
+      // Close abruptly if the closing future is cancelled.
+      closeFuture.addListener(
+          () -> {
+            if (closeFuture.isCancelled()) {
+              closeNow();
+            }
+          },
+          MoreExecutors.directExecutor());
 
-  @Override
-  public synchronized ListenableFuture<Void> close() {
-    if (closing()) {
+      try {
+        pendingWrites.put(CLOSE_EVENT_FUTURE);
+      } catch (InterruptedException e) {
+        closeNow();
+        logger.log(Level.SEVERE, "Failed to close the sequential writer.", e);
+        closeFuture.set(null);
+      }
       return closeFuture;
     }
-    closeFuture = SettableFuture.create();
 
-    if (writesComplete()) {
-      doClose();
-    }
-
-    return closeFuture;
-  }
-
-  private void doClose() {
-    try {
-      ch.force(true);
-      ch.close();
-    } catch (IOException e) {
-      logger.log(Level.SEVERE, e.getMessage(), e);
-    } finally {
-      closeFuture.set(null);
+    private Duration getFlushInterval() {
+      return FLUSH_INTERVAL;
     }
   }
 
   @Override
-  @SuppressWarnings("FutureReturnValueIgnored")
-  public void closeNow() {
-    close();
+  public void sendBuildEvent(BuildEvent event) {
+    if (writer.isClosed.get()) {
+      return;
+    }
+    if (!writer.pendingWrites.add(asStreamProto(event, namer))) {
+      logger.log(Level.SEVERE, "Failed to add BEP event to the write queue");
+    }
   }
 
-  private boolean closing() {
-    return closeFuture != null;
-  }
+  protected abstract byte[] serializeEvent(BuildEventStreamProtos.BuildEvent buildEvent);
 
-  private boolean writesComplete() {
-    return outstandingWrites == 0;
+  @Override
+  public ListenableFuture<Void> close() {
+    return writer.close();
   }
 
   /**
-   * Handler that's notified when a write completes.
+   * Converts the given event into a proto object; this may trigger uploading of referenced files as
+   * a side effect. May return {@code null} if there was an interrupt. This method is not
+   * thread-safe.
    */
-  private final class WriteCompletionHandler implements CompletionHandler<Integer, Void> {
+  private ListenableFuture<BuildEventStreamProtos.BuildEvent> asStreamProto(
+      BuildEvent event, ArtifactGroupNamer namer) {
+    checkNotNull(event);
 
-    @Override
-    public void completed(Integer result, Void attachment) {
-      countWriteAndTryClose();
-    }
+    return Futures.transform(
+        uploader.uploadReferencedLocalFiles(event.referencedLocalFiles()),
+        pathConverter -> {
+          BuildEventContext context =
+              new BuildEventContext() {
+                @Override
+                public PathConverter pathConverter() {
+                  return pathConverter;
+                }
 
-    @Override
-    public void failed(Throwable exc, Void attachment) {
-      logger.log(Level.SEVERE, exc.getMessage(), exc);
-      countWriteAndTryClose();
-      // There is no point in trying to continue. Close the transport.
-      @SuppressWarnings({"unused", "nullness"})
-      Future<?> possiblyIgnoredError = close();
-    }
+                @Override
+                public ArtifactGroupNamer artifactGroupNamer() {
+                  return namer;
+                }
 
-    private void countWriteAndTryClose() {
-      synchronized (FileTransport.this) {
-        checkState(outstandingWrites > 0);
+                @Override
+                public BuildEventProtocolOptions getOptions() {
+                  return options;
+                }
+              };
+          return event.asStreamProto(context);
+        },
+        MoreExecutors.directExecutor());
+  }
 
-        outstandingWrites--;
+  @Override
+  public BuildEventArtifactUploader getUploader() {
+    return uploader;
+  }
 
-        if (closing() && writesComplete()) {
-          doClose();
-        }
-      }
-    }
+  /** Determines how often the {@link FileTransport} flushes events. */
+  Duration getFlushInterval() {
+    return writer.getFlushInterval();
   }
 }
+

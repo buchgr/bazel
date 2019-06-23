@@ -19,11 +19,9 @@ import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.docgen.DocgenConsts.RuleType;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.packages.RuleClass;
-
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -46,6 +44,7 @@ public class RuleDocumentation implements Comparable<RuleDocumentation> {
   private final String ruleName;
   private final RuleType ruleType;
   private final String ruleFamily;
+  private final String familySummary;
   private final String htmlDocumentation;
   // Store these information for error messages
   private final int startLineCount;
@@ -68,9 +67,17 @@ public class RuleDocumentation implements Comparable<RuleDocumentation> {
    * Creates a RuleDocumentation from the rule's name, type, family and raw html documentation
    * (meaning without expanding the variables in the doc).
    */
-  RuleDocumentation(String ruleName, String ruleType, String ruleFamily,
-      String htmlDocumentation, int startLineCount, String fileName, ImmutableSet<String> flags,
-      ConfiguredRuleClassProvider ruleClassProvider) throws BuildEncyclopediaDocException {
+  RuleDocumentation(
+      String ruleName,
+      String ruleType,
+      String ruleFamily,
+      String htmlDocumentation,
+      int startLineCount,
+      String fileName,
+      ImmutableSet<String> flags,
+      ConfiguredRuleClassProvider ruleClassProvider,
+      String familySummary)
+      throws BuildEncyclopediaDocException {
     Preconditions.checkNotNull(ruleName);
     this.ruleName = ruleName;
     try {
@@ -85,6 +92,29 @@ public class RuleDocumentation implements Comparable<RuleDocumentation> {
     this.fileName = fileName;
     this.flags = flags;
     this.ruleClassProvider = ruleClassProvider;
+    this.familySummary = familySummary;
+  }
+
+  RuleDocumentation(
+      String ruleName,
+      String ruleType,
+      String ruleFamily,
+      String htmlDocumentation,
+      int startLineCount,
+      String fileName,
+      ImmutableSet<String> flags,
+      ConfiguredRuleClassProvider ruleClassProvider)
+      throws BuildEncyclopediaDocException {
+    this(
+        ruleName,
+        ruleType,
+        ruleFamily,
+        htmlDocumentation,
+        startLineCount,
+        fileName,
+        flags,
+        ruleClassProvider,
+        "");
   }
 
   /**
@@ -108,6 +138,14 @@ public class RuleDocumentation implements Comparable<RuleDocumentation> {
    */
   String getRuleFamily() {
     return ruleFamily;
+  }
+
+  /**
+   * Return the contribution of this rule to the summary for the rule family. Usually, the "main"
+   * rule in a family provides the summary, but all contributions are accumulated.
+   */
+  String getFamilySummary() {
+    return familySummary;
   }
 
   /**
@@ -189,7 +227,7 @@ public class RuleDocumentation implements Comparable<RuleDocumentation> {
   public String getHtmlDocumentation() throws BuildEncyclopediaDocException {
     String expandedDoc = htmlDocumentation;
     // Substituting variables
-    for (Entry<String, String> docVariable : docVariables.entrySet()) {
+    for (Map.Entry<String, String> docVariable : docVariables.entrySet()) {
       expandedDoc = expandedDoc.replace("${" + docVariable.getKey() + "}",
           expandBuiltInVariables(docVariable.getKey(), docVariable.getValue()));
     }

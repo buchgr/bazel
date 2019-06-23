@@ -16,11 +16,12 @@ package com.google.devtools.build.lib.analysis;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent;
-import com.google.devtools.build.lib.buildeventstream.BuildEventConverters;
+import com.google.devtools.build.lib.buildeventstream.BuildEventContext;
 import com.google.devtools.build.lib.buildeventstream.BuildEventId;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
 import com.google.devtools.build.lib.buildeventstream.GenericBuildEvent;
 import com.google.devtools.build.lib.buildeventstream.ProgressEvent;
+import com.google.devtools.build.lib.util.ProcessUtils;
 import java.util.Collection;
 
 /** This event raised to indicate that no build will be happening for the given command. */
@@ -67,7 +68,7 @@ public final class NoBuildEvent implements BuildEvent {
   }
 
   @Override
-  public BuildEventStreamProtos.BuildEvent asStreamProto(BuildEventConverters converters) {
+  public BuildEventStreamProtos.BuildEvent asStreamProto(BuildEventContext converters) {
     BuildEventStreamProtos.BuildStarted.Builder started =
         BuildEventStreamProtos.BuildStarted.newBuilder()
             .setBuildToolVersion(BlazeVersionInfo.instance().getVersion());
@@ -80,9 +81,14 @@ public final class NoBuildEvent implements BuildEvent {
     if (id != null) {
       started.setUuid(id);
     }
+    started.setServerPid(ProcessUtils.getpid());
     return GenericBuildEvent.protoChaining(this).setStarted(started.build()).build();
   }
 
+  /**
+   * Iff true, clients will expect to a receive a separate {@link
+   * com.google.devtools.build.lib.buildeventstream.BuildCompletingEvent}.
+   */
   public boolean separateFinishedEvent() {
     return separateFinishedEvent;
   }

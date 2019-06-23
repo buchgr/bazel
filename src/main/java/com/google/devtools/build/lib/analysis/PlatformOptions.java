@@ -14,96 +14,203 @@
 
 package com.google.devtools.build.lib.analysis;
 
-import static com.google.devtools.build.lib.analysis.config.BuildConfiguration.convertOptionsLabel;
-
-import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration.LabelListConverter;
+import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.EmptyToNullLabelConverter;
+import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.LabelListConverter;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.common.options.Converter;
+import com.google.devtools.build.lib.util.OptionsUtils;
+import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.common.options.Converters.CommaSeparatedOptionListConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionMetadataTag;
-import com.google.devtools.common.options.OptionsParsingException;
 import java.util.List;
 
 /** Command-line options for platform-related configuration. */
 public class PlatformOptions extends FragmentOptions {
 
+  // TODO(https://github.com/bazelbuild/bazel/issues/6849): After migration, set the defaults
+  // directly.
+  public static final Label LEGACY_DEFAULT_HOST_PLATFORM =
+      Label.parseAbsoluteUnchecked("@bazel_tools//platforms:host_platform");
+  public static final Label DEFAULT_HOST_PLATFORM =
+      Label.parseAbsoluteUnchecked("@local_config_platform//:host");
+
+  /**
+   * Main workspace-relative location to use when the user does not explicitly set {@code
+   * --platform_mappings}.
+   */
+  public static final PathFragment DEFAULT_PLATFORM_MAPPINGS =
+      PathFragment.create("platform_mappings");
+
   @Option(
-    name = "experimental_host_platform",
-    converter = BuildConfiguration.EmptyToNullLabelConverter.class,
-    defaultValue = "@bazel_tools//platforms:host_platform",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.UNKNOWN},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    help = "Declare the platform the build is started from"
-  )
+      name = "host_platform",
+      oldName = "experimental_host_platform",
+      converter = EmptyToNullLabelConverter.class,
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
+      effectTags = {
+        OptionEffectTag.AFFECTS_OUTPUTS,
+        OptionEffectTag.CHANGES_INPUTS,
+        OptionEffectTag.LOADING_AND_ANALYSIS
+      },
+      help = "The label of a platform rule that describes the host system.")
   public Label hostPlatform;
 
-  // TODO(katre): Add execution platforms.
+  @Option(
+      name = "extra_execution_platforms",
+      converter = CommaSeparatedOptionListConverter.class,
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
+      allowMultiple = true,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "The platforms that are available as execution platforms to run actions. "
+              + "Platforms can be specified by exact target, or as a target pattern. "
+              + "These platforms will be considered before those declared in the WORKSPACE file by "
+              + "register_execution_platforms().")
+  public List<String> extraExecutionPlatforms;
 
   @Option(
-    name = "experimental_platforms",
-    converter = BuildConfiguration.LabelListConverter.class,
-    defaultValue = "@bazel_tools//platforms:target_platform",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.UNKNOWN},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    help = "Declare the platforms targeted by the current build"
-  )
+      name = "platforms",
+      oldName = "experimental_platforms",
+      converter = LabelListConverter.class,
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
+      effectTags = {
+        OptionEffectTag.AFFECTS_OUTPUTS,
+        OptionEffectTag.CHANGES_INPUTS,
+        OptionEffectTag.LOADING_AND_ANALYSIS
+      },
+      help =
+          "The labels of the platform rules describing the target platforms for the current "
+              + "command.")
   public List<Label> platforms;
 
   @Option(
-    name = "extra_toolchains",
-    converter = LabelListConverter.class,
-    defaultValue = "",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.UNKNOWN},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    help = "Extra toolchains to be considered during toolchain resolution."
-  )
-  public List<Label> extraToolchains;
+      name = "target_platform_fallback",
+      converter = EmptyToNullLabelConverter.class,
+      defaultValue = "@bazel_tools//platforms:target_platform",
+      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
+      effectTags = {
+        OptionEffectTag.AFFECTS_OUTPUTS,
+        OptionEffectTag.CHANGES_INPUTS,
+        OptionEffectTag.LOADING_AND_ANALYSIS
+      },
+      help =
+          "The label of a platform rule that should be used if no target platform is set and no"
+              + " platform mapping matches the current set of flags.")
+  public Label targetPlatformFallback;
 
   @Option(
-    name = "toolchain_resolution_override",
-    converter = ToolchainResolutionOverrideConverter.class,
-    allowMultiple = true,
-    defaultValue = "",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.UNKNOWN},
-    metadataTags = {OptionMetadataTag.HIDDEN},
-    help =
-        "Override toolchain resolution for a toolchain type with a specific toolchain. "
-            + "Example: --toolchain_resolution_override=@io_bazel_rules_go//:toolchain="
-            + "@io_bazel_rules_go//:linux-arm64-toolchain"
-  )
-  public List<ToolchainResolutionOverride> toolchainResolutionOverrides;
+      name = "extra_toolchains",
+      defaultValue = "",
+      converter = CommaSeparatedOptionListConverter.class,
+      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
+      allowMultiple = true,
+      effectTags = {
+        OptionEffectTag.AFFECTS_OUTPUTS,
+        OptionEffectTag.CHANGES_INPUTS,
+        OptionEffectTag.LOADING_AND_ANALYSIS
+      },
+      help =
+          "The toolchain rules to be considered during toolchain resolution. "
+              + "Toolchains can be specified by exact target, or as a target pattern. "
+              + "These toolchains will be considered before those declared in the WORKSPACE file "
+              + "by register_toolchains().")
+  public List<String> extraToolchains;
 
   @Option(
-    name = "toolchain_resolution_debug",
-    defaultValue = "false",
-    documentationCategory = OptionDocumentationCategory.LOGGING,
-    effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
-    help =
-        "Print debug information while finding toolchains for a rule. This might help developers "
-            + "of Bazel or Skylark rules with debugging failures due to missing toolchains."
-  )
+      name = "toolchain_resolution_override",
+      allowMultiple = true,
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {
+        OptionEffectTag.AFFECTS_OUTPUTS,
+        OptionEffectTag.CHANGES_INPUTS,
+        OptionEffectTag.LOADING_AND_ANALYSIS
+      },
+      deprecationWarning =
+          "toolchain_resolution_override is now a no-op and will be removed in"
+              + " an upcoming release",
+      help =
+          "Override toolchain resolution for a toolchain type with a specific toolchain. "
+              + "Example: --toolchain_resolution_override=@io_bazel_rules_go//:toolchain="
+              + "@io_bazel_rules_go//:linux-arm64-toolchain")
+  public List<String> toolchainResolutionOverrides;
+
+  @Option(
+      name = "toolchain_resolution_debug",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
+      help =
+          "Print debug information while finding toolchains for a rule. This might help developers "
+              + "of Bazel or Starlark rules with debugging failures due to missing toolchains.")
   public boolean toolchainResolutionDebug;
 
   @Option(
-    name = "enabled_toolchain_types",
-    defaultValue = "",
-    converter = LabelListConverter.class,
-    category = "semantics",
-    documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-    effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
-    help = "Signals that the given rule categories use platform-based toolchain resolution"
-  )
+      name = "enabled_toolchain_types",
+      defaultValue = "",
+      converter = LabelListConverter.class,
+      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+      deprecationWarning =
+          "Use --incompatible_enable_cc_toolchain_resolution to enable toolchain for cc rules. "
+              + "Other rules will define separate flags as needed.",
+      help =
+          "Enable toolchain resolution for the given toolchain type, if the rules used support "
+              + "that. This does not directly change the core Blaze machinery, but is a signal to "
+              + "participating rule implementations that toolchain resolution should be used.")
   public List<Label> enabledToolchainTypes;
+
+  @Option(
+      name = "incompatible_auto_configure_host_platform",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
+      help =
+          "If true, the host platform will be inherited from @local_config_platform//:host, "
+              + "instead of being based on the --cpu (and --host_cpu) flags.")
+  public boolean autoConfigureHostPlatform;
+
+  @Option(
+      name = "incompatible_use_toolchain_resolution_for_java_rules",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = OptionEffectTag.UNKNOWN,
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
+      help =
+          "If set to true, toolchain resolution will be used to resolve java_toolchain and"
+              + " java_runtime.")
+  public boolean useToolchainResolutionForJavaRules;
+
+  @Option(
+      name = "platform_mappings",
+      converter = OptionsUtils.EmptyToNullRelativePathFragmentConverter.class,
+      defaultValue = "",
+      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
+      effectTags = {
+        OptionEffectTag.AFFECTS_OUTPUTS,
+        OptionEffectTag.CHANGES_INPUTS,
+        OptionEffectTag.LOADING_AND_ANALYSIS
+      },
+      help =
+          "The location of a mapping file that describes which platform to use if none is set or "
+              + "which flags to set when a platform already exists. Must be relative to the main "
+              + "workspace root. Defaults to 'platform_mappings' (a file directly under the "
+              + "workspace root).")
+  public PathFragment platformMappings;
 
   @Override
   public PlatformOptions getHost() {
@@ -111,48 +218,47 @@ public class PlatformOptions extends FragmentOptions {
     host.platforms =
         this.hostPlatform == null ? ImmutableList.of() : ImmutableList.of(this.hostPlatform);
     host.hostPlatform = this.hostPlatform;
+    host.extraExecutionPlatforms = this.extraExecutionPlatforms;
     host.extraToolchains = this.extraToolchains;
     host.enabledToolchainTypes = this.enabledToolchainTypes;
+    host.toolchainResolutionDebug = this.toolchainResolutionDebug;
+    host.toolchainResolutionOverrides = this.toolchainResolutionOverrides;
+    host.autoConfigureHostPlatform = this.autoConfigureHostPlatform;
+    host.useToolchainResolutionForJavaRules = this.useToolchainResolutionForJavaRules;
     return host;
   }
 
-  /** Data about which toolchain instance should be used for a given toolchain type. */
-  @AutoValue
-  public abstract static class ToolchainResolutionOverride {
-    public abstract Label toolchainType();
+  /** Returns the intended target platform value based on options defined in this fragment. */
+  public Label computeTargetPlatform() {
+    // Handle default values for the host and target platform.
+    // TODO(https://github.com/bazelbuild/bazel/issues/6849): After migration, set the defaults
+    // directly.
 
-    public abstract Label toolchainLabel();
-
-    private static ToolchainResolutionOverride create(Label toolchainType, Label toolchainLabel) {
-      return new AutoValue_PlatformOptions_ToolchainResolutionOverride(
-          toolchainType, toolchainLabel);
+    if (!platforms.isEmpty()) {
+      return Iterables.getFirst(platforms, null);
+    } else if (autoConfigureHostPlatform) {
+      // Default to the host platform, whatever it is.
+      return computeHostPlatform();
+    } else {
+      // Use the legacy target platform
+      return targetPlatformFallback;
     }
   }
 
-  /**
-   * {@link Converter} implementation to create {@link ToolchainResolutionOverride} instances from
-   * the value set in the flag.
-   */
-  public static class ToolchainResolutionOverrideConverter
-      implements Converter<ToolchainResolutionOverride> {
+  /** Returns the intended host platform value based on options defined in this fragment. */
+  public Label computeHostPlatform() {
+    // Handle default values for the host and target platform.
+    // TODO(https://github.com/bazelbuild/bazel/issues/6849): After migration, set the defaults
+    // directly.
 
-    @Override
-    public ToolchainResolutionOverride convert(String input) throws OptionsParsingException {
-      int index = input.indexOf('=');
-      if (index == -1) {
-        throw new OptionsParsingException(
-            "Toolchain resolution override not in the type=toolchain format");
-      }
-      Label toolchainType = convertOptionsLabel(input.substring(0, index));
-      Label toolchain = convertOptionsLabel(input.substring(index + 1));
-
-      return ToolchainResolutionOverride.create(toolchainType, toolchain);
-    }
-
-    @Override
-    public String getTypeDescription() {
-      return "a hard-coded override for toolchain resolution, "
-          + "in the format toolchainTypeLabel=toolchainLabel";
+    if (this.hostPlatform != null) {
+      return this.hostPlatform;
+    } else if (autoConfigureHostPlatform) {
+      // Use the auto-configured host platform.
+      return DEFAULT_HOST_PLATFORM;
+    } else {
+      // Use the legacy host platform.
+      return LEGACY_DEFAULT_HOST_PLATFORM;
     }
   }
 }

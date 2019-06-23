@@ -19,7 +19,7 @@ import java.io.OutputStream;
 /**
  * Represents the value associated with DataKey interface for resource and asset values.
  *
- * A DataValue is either an android resource or asset derived from a Path.
+ * <p>A DataValue is either an android resource or asset derived from a Path.
  */
 public interface DataValue {
 
@@ -28,12 +28,10 @@ public interface DataValue {
    */
   DataSource source();
 
-  /**
-   * Serializes to a supplied stream and returns the number of bytes written.
-   */
+  /** Serializes to a supplied stream and returns the number of bytes written. */
   int serializeTo(
-      DataKey key, DataSourceTable sourceTable, OutputStream output) throws IOException;
-  
+      DataSourceTable sourceTable, OutputStream output) throws IOException;
+
   DataValue update(DataSource source);
 
   /** Provides a representation of the value suitable for a conflict message. */
@@ -44,4 +42,11 @@ public interface DataValue {
    * equivalent to another given DataValue object
    */
   boolean valueEquals(DataValue value);
+
+  /**
+   * Compares priority in hopes of auto-resolving a merge conflict. Returns 1 if the value
+   * properties are higher in priority than those in another given DataValue object, -1 if lower
+   * priority, 0 if same priority (i.e. in conflict).
+   */
+  int compareMergePriorityTo(DataValue value);
 }

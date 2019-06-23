@@ -114,7 +114,7 @@ class DexBuilder {
     }
 
     OptionsParser optionsParser =
-        OptionsParser.newOptionsParser(Options.class, DexingOptions.class);
+        OptionsParser.builder().optionsClasses(Options.class, DexingOptions.class).build();
     optionsParser.parseAndExitUponError(args);
     Options options = optionsParser.getOptions(Options.class);
     if (options.persistentWorker) {
@@ -138,8 +138,6 @@ class DexBuilder {
         executor.shutdown();
       }
     }
-    // Use input's timestamp for output file so the output file is stable.
-    Files.setLastModifiedTime(options.outputZip, Files.getLastModifiedTime(options.inputJar));
   }
 
   /**
@@ -211,8 +209,10 @@ class DexBuilder {
       List<String> args)
       throws OptionsParsingException, IOException, InterruptedException, ExecutionException {
     OptionsParser optionsParser =
-        OptionsParser.newOptionsParser(Options.class, DexingOptions.class);
-    optionsParser.setAllowResidue(false);
+        OptionsParser.builder()
+            .optionsClasses(Options.class, DexingOptions.class)
+            .allowResidue(false)
+            .build();
     optionsParser.parse(args);
     Options options = optionsParser.getOptions(Options.class);
     try (ZipFile in = new ZipFile(options.inputJar.toFile());
@@ -225,8 +225,6 @@ class DexBuilder {
           new Dexing(context, optionsParser.getOptions(DexingOptions.class)),
           dexCache);
     }
-    // Use input's timestamp for output file so the output file is stable.
-    Files.setLastModifiedTime(options.outputZip, Files.getLastModifiedTime(options.inputJar));
   }
 
   private static ZipOutputStream createZipOutputStream(Path path) throws IOException {

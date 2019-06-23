@@ -14,24 +14,25 @@
 
 #include "src/main/cpp/option_processor.h"
 
+#include "src/main/cpp/bazel_startup_options.h"
 #include "src/main/cpp/blaze_util.h"
 #include "src/main/cpp/blaze_util_platform.h"
 #include "src/main/cpp/option_processor-internal.h"
 #include "src/main/cpp/util/file.h"
 #include "src/main/cpp/util/file_platform.h"
+#include "src/main/cpp/util/path.h"
 #include "src/main/cpp/workspace_layout.h"
-#include "gtest/gtest.h"
-#include "re2/re2.h"
+#include "googletest/include/gtest/gtest.h"
 
 namespace blaze {
 
 class OptionProcessorTest : public ::testing::Test {
  protected:
-  OptionProcessorTest() :
-      workspace_(
-          blaze_util::JoinPath(blaze::GetEnv("TEST_TMPDIR"), "testdir")),
-      cwd_("cwd"),
-      workspace_layout_(new WorkspaceLayout()) {}
+  OptionProcessorTest()
+      : workspace_(
+            blaze_util::JoinPath(blaze::GetPathEnv("TEST_TMPDIR"), "testdir")),
+        cwd_("cwd"),
+        workspace_layout_(new WorkspaceLayout()) {}
 
   ~OptionProcessorTest() override {}
 
@@ -40,7 +41,7 @@ class OptionProcessorTest : public ::testing::Test {
     option_processor_.reset(new OptionProcessor(
         workspace_layout_.get(),
         std::unique_ptr<StartupOptions>(
-            new StartupOptions(workspace_layout_.get()))));
+            new BazelStartupOptions(workspace_layout_.get()))));
   }
 
   void TearDown() override {
@@ -77,6 +78,19 @@ class OptionProcessorTest : public ::testing::Test {
     EXPECT_EQ(expected.command_args, result->command_args);
   }
 
+  void HelpArgIsInterpretedAsACommand(const std::string& arg) {
+    const std::vector<std::string> args = {"bazel", arg};
+    std::string error;
+    ASSERT_EQ(blaze_exit_code::SUCCESS,
+              option_processor_->ParseOptions(args, workspace_, cwd_, &error))
+        << error;
+    ASSERT_EQ("", error);
+
+    EXPECT_EQ(arg, option_processor_->GetCommand());
+    EXPECT_EQ(std::vector<std::string>({}),
+              option_processor_->GetExplicitCommandArguments());
+  }
+
   const std::string workspace_;
   const std::string cwd_;
   const std::unique_ptr<WorkspaceLayout> workspace_layout_;
@@ -84,21 +98,32 @@ class OptionProcessorTest : public ::testing::Test {
 };
 
 TEST_F(OptionProcessorTest, CanParseOptions) {
-  const std::vector<std::string> args =
-      {"bazel",
-       "--host_jvm_args=MyParam", "--nobatch",
-       "command",
-       "--flag", "//my:target", "--flag2=42"};
+  const std::vector<std::string> args = {"bazel",     "--host_jvm_args=MyParam",
+                                         "--nobatch", "command",
+                                         "--flag",    "//my:target",
+                                         "--flag2=42"};
   std::string error;
   ASSERT_EQ(blaze_exit_code::SUCCESS,
             option_processor_->ParseOptions(args, workspace_, cwd_, &error))
-                << error;
+      << error;
 
   ASSERT_EQ("", error);
-  ASSERT_EQ(1,
+#if defined(_WIN32) || defined(__CYGWIN__)
+  ASSERT_EQ(size_t(2),
+            option_processor_->GetParsedStartupOptions()->host_jvm_args.size());
+  const std::string win_unix_root("-Dbazel.windows_unix_root=");
+  const std::string host_jvm_args_0 =
+      option_processor_->GetParsedStartupOptions()->host_jvm_args[0];
+  EXPECT_EQ(host_jvm_args_0.find(win_unix_root), 0) << host_jvm_args_0;
+  EXPECT_GT(host_jvm_args_0.size(), win_unix_root.size());
+  EXPECT_EQ("MyParam",
+            option_processor_->GetParsedStartupOptions()->host_jvm_args[1]);
+#else   // ! (defined(_WIN32) || defined(__CYGWIN__))
+  ASSERT_EQ(size_t(1),
             option_processor_->GetParsedStartupOptions()->host_jvm_args.size());
   EXPECT_EQ("MyParam",
             option_processor_->GetParsedStartupOptions()->host_jvm_args[0]);
+#endif  // defined(_WIN32) || defined(__CYGWIN__)
   EXPECT_FALSE(option_processor_->GetParsedStartupOptions()->batch);
 
   EXPECT_EQ("command", option_processor_->GetCommand());
@@ -107,28 +132,51 @@ TEST_F(OptionProcessorTest, CanParseOptions) {
             option_processor_->GetExplicitCommandArguments());
 }
 
-TEST_F(OptionProcessorTest, CanParseHelpArgs) {
-  const std::vector<std::string> args =
-      {"bazel",
-       "--host_jvm_args=MyParam", "--nobatch",
-       "help",
-       "--flag", "//my:target", "--flag2=42"};
+TEST_F(OptionProcessorTest, CanParseHelpCommandSurroundedByOtherArgs) {
+  const std::vector<std::string> args = {"bazel",     "--host_jvm_args=MyParam",
+                                         "--nobatch", "help",
+                                         "--flag",    "//my:target",
+                                         "--flag2=42"};
   std::string error;
   ASSERT_EQ(blaze_exit_code::SUCCESS,
             option_processor_->ParseOptions(args, workspace_, cwd_, &error))
-                << error;
+      << error;
 
   ASSERT_EQ("", error);
-  ASSERT_EQ(1,
+#if defined(_WIN32) || defined(__CYGWIN__)
+  ASSERT_EQ(size_t(2),
+            option_processor_->GetParsedStartupOptions()->host_jvm_args.size());
+  const std::string win_unix_root("-Dbazel.windows_unix_root=");
+  const std::string host_jvm_args_0 =
+      option_processor_->GetParsedStartupOptions()->host_jvm_args[0];
+  EXPECT_EQ(host_jvm_args_0.find(win_unix_root), 0) << host_jvm_args_0;
+  EXPECT_GT(host_jvm_args_0.size(), win_unix_root.size());
+  EXPECT_EQ("MyParam",
+            option_processor_->GetParsedStartupOptions()->host_jvm_args[1]);
+#else   // ! (defined(_WIN32) || defined(__CYGWIN__))
+  ASSERT_EQ(size_t(1),
             option_processor_->GetParsedStartupOptions()->host_jvm_args.size());
   EXPECT_EQ("MyParam",
             option_processor_->GetParsedStartupOptions()->host_jvm_args[0]);
+#endif  // defined(_WIN32) || defined(__CYGWIN__)
   EXPECT_FALSE(option_processor_->GetParsedStartupOptions()->batch);
 
   EXPECT_EQ("help", option_processor_->GetCommand());
 
   EXPECT_EQ(std::vector<std::string>({"--flag", "//my:target", "--flag2=42"}),
             option_processor_->GetExplicitCommandArguments());
+}
+
+TEST_F(OptionProcessorTest, CanParseHelpCommand) {
+  HelpArgIsInterpretedAsACommand("help");
+}
+
+TEST_F(OptionProcessorTest, CanParseHelpShortFlag) {
+  HelpArgIsInterpretedAsACommand("-h");
+}
+
+TEST_F(OptionProcessorTest, CanParseHelpFlag) {
+  HelpArgIsInterpretedAsACommand("-help");
 }
 
 TEST_F(OptionProcessorTest, CanParseEmptyArgs) {
@@ -155,222 +203,31 @@ TEST_F(OptionProcessorTest, CanParseDifferentStartupArgs) {
                 << error;
   ASSERT_EQ("", error);
 
-  ASSERT_EQ(2,
+#if defined(_WIN32) || defined(__CYGWIN__)
+  ASSERT_EQ(size_t(3),
+            option_processor_->GetParsedStartupOptions()->host_jvm_args.size());
+  const std::string win_unix_root("-Dbazel.windows_unix_root=");
+  const std::string host_jvm_args_0 =
+      option_processor_->GetParsedStartupOptions()->host_jvm_args[0];
+  EXPECT_EQ(host_jvm_args_0.find(win_unix_root), 0) << host_jvm_args_0;
+  EXPECT_GT(host_jvm_args_0.size(), win_unix_root.size());
+  EXPECT_EQ("MyParam",
+            option_processor_->GetParsedStartupOptions()->host_jvm_args[1]);
+  EXPECT_EQ("42",
+            option_processor_->GetParsedStartupOptions()->host_jvm_args[2]);
+#else   // ! (defined(_WIN32) || defined(__CYGWIN__))
+  ASSERT_EQ(size_t(2),
             option_processor_->GetParsedStartupOptions()->host_jvm_args.size());
   EXPECT_EQ("MyParam",
             option_processor_->GetParsedStartupOptions()->host_jvm_args[0]);
   EXPECT_EQ("42",
             option_processor_->GetParsedStartupOptions()->host_jvm_args[1]);
+#endif  // defined(_WIN32) || defined(__CYGWIN__)
 
   EXPECT_EQ("", option_processor_->GetCommand());
 
   EXPECT_EQ(std::vector<std::string>({}),
             option_processor_->GetExplicitCommandArguments());
-}
-
-TEST_F(OptionProcessorTest, CommandLineBazelrcTest) {
-  const std::string cmdline_rc_path =
-      blaze_util::JoinPath(workspace_, "mybazelrc");
-  ASSERT_TRUE(blaze_util::MakeDirectories(
-      blaze_util::Dirname(cmdline_rc_path), 0755));
-  ASSERT_TRUE(blaze_util::WriteFile("startup --foo", cmdline_rc_path, 0755));
-
-  const std::vector<std::string> args =
-      {"bazel", "--bazelrc=" + cmdline_rc_path, "build"};
-  const std::string expected_error =
-      "Unknown startup option: '--foo'.\n"
-          "  For more info, run 'bazel help startup_options'.";
-  std::string error;
-  ASSERT_NE(blaze_exit_code::SUCCESS,
-            option_processor_->ParseOptions(args, workspace_, cwd_, &error))
-                << error;
-  ASSERT_EQ(expected_error, error);
-
-  // Check that the startup option option provenance message prints the correct
-  // information for the incorrect flag, and does not print the command-line
-  // provided startup flags.
-  testing::internal::CaptureStderr();
-  option_processor_->PrintStartupOptionsProvenanceMessage();
-  const std::string& output = testing::internal::GetCapturedStderr();
-
-  EXPECT_PRED1(
-      [](std::string actualOutput) {
-        return RE2::FullMatch(
-            actualOutput,
-            "INFO: Reading 'startup' options from .*mybazelrc: "
-            "--foo\n");
-      },
-      output);
-}
-
-TEST_F(OptionProcessorTest, NoMasterBazelrcAndBazelrcWorkTogetherCorrectly) {
-  const std::string cmdline_rc_path =
-      blaze_util::JoinPath(workspace_, "mybazelrc");
-  ASSERT_TRUE(blaze_util::MakeDirectories(
-      blaze_util::Dirname(cmdline_rc_path), 0755));
-  ASSERT_TRUE(blaze_util::WriteFile("startup --max_idle_secs=123",
-                                    cmdline_rc_path, 0755));
-
-  const std::string master_rc_path =
-      blaze_util::JoinPath(workspace_, "tools/bazel.rc");
-  ASSERT_TRUE(blaze_util::MakeDirectories(
-      blaze_util::Dirname(master_rc_path), 0755));
-  ASSERT_TRUE(blaze_util::WriteFile("startup --foo", master_rc_path, 0755));
-
-  const std::vector<std::string> args =
-      {"bazel",
-       "--bazelrc=" + cmdline_rc_path, "--nomaster_bazelrc",
-       "build"};
-  std::string error;
-  ASSERT_EQ(blaze_exit_code::SUCCESS,
-            option_processor_->ParseOptions(args, workspace_, cwd_, &error))
-                << error;
-
-  EXPECT_EQ(123, option_processor_->GetParsedStartupOptions()->max_idle_secs);
-
-  // Check that the startup option option provenance message prints the correct
-  // information for the provided rc, and prints nothing for the master bazelrc.
-  testing::internal::CaptureStderr();
-  option_processor_->PrintStartupOptionsProvenanceMessage();
-  const std::string& output = testing::internal::GetCapturedStderr();
-
-  EXPECT_PRED1(
-      [](std::string actualOutput) {
-        return RE2::FullMatch(
-            actualOutput,
-            "INFO: Reading 'startup' options from .*mybazelrc: "
-            "--max_idle_secs=123\n");
-      },
-      output);
-}
-
-TEST_F(OptionProcessorTest, MultipleStartupArgsInMasterBazelrcWorksCorrectly) {
-  // Add startup flags to the master bazelrc.
-  const std::string master_rc_path =
-      blaze_util::JoinPath(workspace_, "tools/bazel.rc");
-  ASSERT_TRUE(
-      blaze_util::MakeDirectories(blaze_util::Dirname(master_rc_path), 0755));
-  ASSERT_TRUE(blaze_util::WriteFile(
-      "startup --max_idle_secs=42\nstartup --io_nice_level=6", master_rc_path,
-      0755));
-
-  const std::vector<std::string> args = {"bazel", "build"};
-  std::string error;
-  ASSERT_EQ(blaze_exit_code::SUCCESS,
-            option_processor_->ParseOptions(args, workspace_, cwd_, &error))
-      << error;
-
-  EXPECT_EQ(42, option_processor_->GetParsedStartupOptions()->max_idle_secs);
-  EXPECT_EQ(6, option_processor_->GetParsedStartupOptions()->io_nice_level);
-
-  // Check that the startup options get grouped together properly in the output
-  // message.
-  testing::internal::CaptureStderr();
-  option_processor_->PrintStartupOptionsProvenanceMessage();
-  const std::string& output = testing::internal::GetCapturedStderr();
-
-  EXPECT_PRED1(
-      [](std::string actualOutput) {
-        return RE2::FullMatch(
-            actualOutput,
-            "INFO: Reading 'startup' options from .*tools.*bazel.rc: "
-            "--max_idle_secs=42 --io_nice_level=6\n");
-      },
-      output);
-}
-
-TEST_F(OptionProcessorTest, CustomBazelrcOverridesMasterBazelrc) {
-  // Add startup flags to the master bazelrc.
-  const std::string master_rc_path =
-      blaze_util::JoinPath(workspace_, "tools/bazel.rc");
-  ASSERT_TRUE(
-      blaze_util::MakeDirectories(blaze_util::Dirname(master_rc_path), 0755));
-  ASSERT_TRUE(blaze_util::WriteFile(
-      "startup --max_idle_secs=42\nstartup --io_nice_level=6", master_rc_path,
-      0755));
-
-  // Override one of the master bazelrc's flags in the custom bazelrc.
-  const std::string cmdline_rc_path =
-      blaze_util::JoinPath(workspace_, "mybazelrc");
-  ASSERT_TRUE(
-      blaze_util::MakeDirectories(blaze_util::Dirname(cmdline_rc_path), 0755));
-  ASSERT_TRUE(blaze_util::WriteFile("startup --max_idle_secs=123",
-                                    cmdline_rc_path, 0755));
-  const std::vector<std::string> args = {
-      "bazel", "--bazelrc=" + cmdline_rc_path, "build"};
-  std::string error;
-  ASSERT_EQ(blaze_exit_code::SUCCESS,
-            option_processor_->ParseOptions(args, workspace_, cwd_, &error))
-      << error;
-
-  EXPECT_EQ(123, option_processor_->GetParsedStartupOptions()->max_idle_secs);
-  EXPECT_EQ(6, option_processor_->GetParsedStartupOptions()->io_nice_level);
-
-  // Check that the options are reported in the correct order in the provenance
-  // message.
-  testing::internal::CaptureStderr();
-  option_processor_->PrintStartupOptionsProvenanceMessage();
-  const std::string& output = testing::internal::GetCapturedStderr();
-
-  EXPECT_PRED1(
-      [](std::string actualOutput) {
-        return RE2::FullMatch(
-            actualOutput,
-            "INFO: Reading 'startup' options from .*tools.*bazel.rc: "
-            "--max_idle_secs=42 --io_nice_level=6\n"
-            "INFO: Reading 'startup' options from .*mybazelrc: "
-            "--max_idle_secs=123\n");
-      },
-      output);
-}
-
-TEST_F(OptionProcessorTest, BazelRcImportsMaintainsFlagOrdering) {
-  // Override one of the master bazelrc's flags in the custom bazelrc.
-  const std::string imported_rc_path =
-      blaze_util::JoinPath(workspace_, "myimportedbazelrc");
-  ASSERT_TRUE(
-      blaze_util::MakeDirectories(blaze_util::Dirname(imported_rc_path), 0755));
-  ASSERT_TRUE(blaze_util::WriteFile(
-      "startup --max_idle_secs=123\nstartup --io_nice_level=4",
-      imported_rc_path, 0755));
-
-  // Add startup flags the imported bazelrc.
-  const std::string master_rc_path =
-      blaze_util::JoinPath(workspace_, "tools/bazel.rc");
-  ASSERT_TRUE(
-      blaze_util::MakeDirectories(blaze_util::Dirname(master_rc_path), 0755));
-  ASSERT_TRUE(blaze_util::WriteFile("startup --max_idle_secs=42\nimport " +
-                                        imported_rc_path +
-                                        "\nstartup --io_nice_level=6",
-                                    master_rc_path, 0755));
-
-  const std::vector<std::string> args = {"bazel", "build"};
-  std::string error;
-  ASSERT_EQ(blaze_exit_code::SUCCESS,
-            option_processor_->ParseOptions(args, workspace_, cwd_, &error))
-      << error;
-
-  EXPECT_EQ(123, option_processor_->GetParsedStartupOptions()->max_idle_secs);
-  EXPECT_EQ(6, option_processor_->GetParsedStartupOptions()->io_nice_level);
-
-  // Check that the options are reported in the correct order in the provenance
-  // message, the imported file between the two master flags
-  testing::internal::CaptureStderr();
-  option_processor_->PrintStartupOptionsProvenanceMessage();
-  const std::string& output = testing::internal::GetCapturedStderr();
-
-  EXPECT_PRED1(
-      [](std::string actualOutput) {
-        return RE2::FullMatch(
-            actualOutput,
-            "INFO: Reading 'startup' options from .*tools.*bazel.rc: "
-            "--max_idle_secs=42\n"
-            "INFO: Reading 'startup' options from .*myimportedbazelrc: "
-            "--max_idle_secs=123 --io_nice_level=4\n"
-            "INFO: Reading 'startup' options from .*tools.*bazel.rc: "
-            "--io_nice_level=6\n");
-      },
-      output);
 }
 
 TEST_F(OptionProcessorTest, SplitCommandLineWithEmptyArgs) {
@@ -489,6 +346,12 @@ TEST_F(OptionProcessorTest, TestDedupePathsOmitsInvalidPath) {
   ASSERT_EQ(expected, internal::DedupeBlazercPaths(input));
 }
 
+TEST_F(OptionProcessorTest, TestDedupePathsOmitsEmptyPath) {
+  std::vector<std::string> input = {""};
+  std::vector<std::string> expected = {};
+  ASSERT_EQ(expected, internal::DedupeBlazercPaths(input));
+}
+
 TEST_F(OptionProcessorTest, TestDedupePathsWithDifferentFiles) {
   std::string foo_path = blaze_util::JoinPath(workspace_, "foo");
   std::string bar_path = blaze_util::JoinPath(workspace_, "bar");
@@ -523,7 +386,7 @@ TEST_F(OptionProcessorTest, TestDedupePathsWithRelativePath) {
   ASSERT_EQ(expected, internal::DedupeBlazercPaths(input));
 }
 
-#if !defined(COMPILER_MSVC) && !defined(__CYGWIN__)
+#if !defined(_WIN32) && !defined(__CYGWIN__)
 static bool Symlink(const std::string& old_path, const std::string& new_path) {
   return symlink(old_path.c_str(), new_path.c_str()) == 0;
 }
@@ -538,6 +401,6 @@ TEST_F(OptionProcessorTest, TestDedupePathsWithSymbolicLink) {
   std::vector<std::string> expected = {foo_path};
   ASSERT_EQ(expected, internal::DedupeBlazercPaths(input));
 }
-#endif  // !defined(COMPILER_MSVC) && !defined(__CYGWIN__)
+#endif  // !defined(_WIN32) && !defined(__CYGWIN__)
 
 }  // namespace blaze

@@ -25,7 +25,7 @@ import java.util.Objects;
 /**
  * Represents a file based android resource or asset.
  *
- * These include all resource types except those found in values, as well as all assets.
+ * <p>These include all resource types except those found in values, as well as all assets.
  */
 public class DataValueFile implements DataResource, DataAsset {
 
@@ -85,7 +85,7 @@ public class DataValueFile implements DataResource, DataAsset {
   }
 
   @Override
-  public int serializeTo(DataKey key, DataSourceTable sourceTable, OutputStream output)
+  public int serializeTo(DataSourceTable sourceTable, OutputStream output)
       throws IOException {
     SerializeFormat.DataValue.Builder builder = SerializeFormat.DataValue.newBuilder();
     SerializeFormat.DataValue value = builder.setSourceId(sourceTable.getSourceId(source)).build();
@@ -133,5 +133,10 @@ public class DataValueFile implements DataResource, DataAsset {
   @Override
   public boolean valueEquals(DataValue value) {
     return equals(value);
+  }
+
+  @Override
+  public int compareMergePriorityTo(DataValue value) {
+    return 0;
   }
 }

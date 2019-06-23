@@ -18,25 +18,30 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType.ABSTRACT;
 import static com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType.TEST;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
+import com.google.devtools.build.lib.actions.ActionEnvironment;
 import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoFactory;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfiguration.Fragment;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFragmentFactory;
-import com.google.devtools.build.lib.analysis.config.DefaultsPackage;
-import com.google.devtools.build.lib.analysis.config.DynamicTransitionMapper;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
+import com.google.devtools.build.lib.analysis.config.transitions.ComposingTransitionFactory;
+import com.google.devtools.build.lib.analysis.config.transitions.PatchTransition;
+import com.google.devtools.build.lib.analysis.config.transitions.TransitionFactory;
+import com.google.devtools.build.lib.analysis.constraints.ConstraintSemantics;
+import com.google.devtools.build.lib.analysis.skylark.BazelStarlarkContext;
 import com.google.devtools.build.lib.analysis.skylark.SkylarkModules;
+import com.google.devtools.build.lib.analysis.skylark.SymbolGenerator;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.graph.Digraph;
 import com.google.devtools.build.lib.graph.Node;
@@ -46,50 +51,74 @@ import com.google.devtools.build.lib.packages.NonconfigurableAttributeMapper;
 import com.google.devtools.build.lib.packages.OutputFile;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.RuleClass;
+import com.google.devtools.build.lib.packages.RuleClass.Builder.ThirdPartyLicenseExistencePolicy;
 import com.google.devtools.build.lib.packages.RuleClassProvider;
 import com.google.devtools.build.lib.packages.RuleErrorConsumer;
 import com.google.devtools.build.lib.packages.Target;
-import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.InvocationPolicy;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
+import com.google.devtools.build.lib.skylarkbuildapi.Bootstrap;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkInterfaceUtils;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
 import com.google.devtools.build.lib.syntax.Environment;
 import com.google.devtools.build.lib.syntax.Environment.Extension;
-import com.google.devtools.build.lib.syntax.Environment.Phase;
+import com.google.devtools.build.lib.syntax.Environment.GlobalFrame;
 import com.google.devtools.build.lib.syntax.Mutability;
-import com.google.devtools.build.lib.syntax.SkylarkSemantics;
 import com.google.devtools.build.lib.syntax.SkylarkUtils;
+import com.google.devtools.build.lib.syntax.SkylarkUtils.Phase;
+import com.google.devtools.build.lib.syntax.StarlarkSemantics;
 import com.google.devtools.build.lib.syntax.Type;
-import com.google.devtools.common.options.OptionsClassProvider;
+import com.google.devtools.common.options.Option;
+import com.google.devtools.common.options.OptionDefinition;
+import com.google.devtools.common.options.OptionsProvider;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
+import java.util.TreeSet;
 import javax.annotation.Nullable;
 
 /**
  * Knows about every rule Blaze supports and the associated configuration options.
  *
  * <p>This class is initialized on server startup and the set of rules, build info factories
- * and configuration options is guarantees not to change over the life time of the Blaze server.
+ * and configuration options is guaranteed not to change over the life time of the Blaze server.
  */
 public class ConfiguredRuleClassProvider implements RuleClassProvider {
+
+  /**
+   * Predicate for determining whether the analysis cache should be cleared, given the new and old
+   * value of an option which has changed and the values of the other new options.
+   */
+  @FunctionalInterface
+  public interface OptionsDiffPredicate {
+    public static final OptionsDiffPredicate ALWAYS_INVALIDATE =
+        (options, option, oldValue, newValue) -> true;
+
+    public boolean apply(
+        BuildOptions newOptions, OptionDefinition option, Object oldValue, Object newValue);
+  }
 
   /**
    * Custom dependency validation logic.
    */
   public interface PrerequisiteValidator {
     /**
-     * Checks whether the rule in {@code contextBuilder} is allowed to depend on
-     * {@code prerequisite} through the attribute {@code attribute}.
+     * Checks whether the rule in {@code contextBuilder} is allowed to depend on {@code
+     * prerequisite} through the attribute {@code attribute}.
      *
      * <p>Can be used for enforcing any organization-specific policies about the layout of the
      * workspace.
      */
     void validate(
-        RuleContext.Builder contextBuilder, ConfiguredTarget prerequisite, Attribute attribute);
+        RuleContext.Builder contextBuilder,
+        ConfiguredTargetAndData prerequisite,
+        Attribute attribute);
   }
 
   /** Validator to check for and warn on the deprecation of dependencies. */
@@ -97,7 +126,9 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
     /** Checks if the given prerequisite is deprecated and prints a warning if so. */
     @Override
     public void validate(
-        RuleContext.Builder contextBuilder, ConfiguredTarget prerequisite, Attribute attribute) {
+        RuleContext.Builder contextBuilder,
+        ConfiguredTargetAndData prerequisite,
+        Attribute attribute) {
       validateDirectPrerequisiteForDeprecation(
           contextBuilder, contextBuilder.getRule(), prerequisite, contextBuilder.forAspect());
     }
@@ -145,7 +176,10 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
 
     /** Checks if the given prerequisite is deprecated and prints a warning if so. */
     public static void validateDirectPrerequisiteForDeprecation(
-        RuleErrorConsumer errors, Rule rule, ConfiguredTarget prerequisite, boolean forAspect) {
+        RuleErrorConsumer errors,
+        Rule rule,
+        ConfiguredTargetAndData prerequisite,
+        boolean forAspect) {
       Target prerequisiteTarget = prerequisite.getTarget();
       Label prerequisiteLabel = prerequisiteTarget.getLabel();
       PackageIdentifier thatPackage = prerequisiteLabel.getPackageIdentifier();
@@ -154,9 +188,14 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
       if (prerequisiteTarget instanceof Rule) {
         Rule prerequisiteRule = (Rule) prerequisiteTarget;
         String thisDeprecation =
-            NonconfigurableAttributeMapper.of(rule).get("deprecation", Type.STRING);
+            NonconfigurableAttributeMapper.of(rule).has("deprecation", Type.STRING)
+                ? NonconfigurableAttributeMapper.of(rule).get("deprecation", Type.STRING)
+                : null;
         String thatDeprecation =
-            NonconfigurableAttributeMapper.of(prerequisiteRule).get("deprecation", Type.STRING);
+            NonconfigurableAttributeMapper.of(prerequisiteRule).has("deprecation", Type.STRING)
+                ? NonconfigurableAttributeMapper.of(prerequisiteRule)
+                    .get("deprecation", Type.STRING)
+                : null;
         if (shouldEmitDeprecationWarningFor(
             thisDeprecation, thisPackage, thatDeprecation, thatPackage, forAspect)) {
           errors.ruleWarning("target '" + rule.getLabel() +  "' depends on deprecated target '"
@@ -184,7 +223,7 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
    * A coherent set of options, fragments, aspects and rules; each of these may declare a dependency
    * on other such sets.
    */
-  public static interface RuleSet {
+  public interface RuleSet {
     /** Add stuff to the configured rule class provider builder. */
     void init(ConfiguredRuleClassProvider.Builder builder);
 
@@ -202,7 +241,8 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
     private final List<ConfigurationFragmentFactory> configurationFragmentFactories =
         new ArrayList<>();
     private final List<BuildInfoFactory> buildInfoFactories = new ArrayList<>();
-    private final List<Class<? extends FragmentOptions>> configurationOptions = new ArrayList<>();
+    private final Set<Class<? extends FragmentOptions>> configurationOptions =
+        new LinkedHashSet<>();
 
     private final Map<String, RuleClass> ruleClassMap = new HashMap<>();
     private final Map<String, RuleDefinition> ruleDefinitionMap = new HashMap<>();
@@ -211,37 +251,44 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
     private final Map<Class<? extends RuleDefinition>, RuleClass> ruleMap = new HashMap<>();
     private final Digraph<Class<? extends RuleDefinition>> dependencyGraph =
         new Digraph<>();
-    private ImmutableMap.Builder<Attribute.Transition, Attribute.Transition> dynamicTransitionMaps
-        = ImmutableMap.builder();
-    private Class<? extends BuildConfiguration.Fragment> universalFragment;
+    private List<Class<? extends BuildConfiguration.Fragment>> universalFragments =
+        new ArrayList<>();
+    @Nullable private TransitionFactory<Rule> trimmingTransitionFactory = null;
+    @Nullable private PatchTransition toolchainTaggedTrimmingTransition = null;
+    private OptionsDiffPredicate shouldInvalidateCacheForOptionDiff =
+        OptionsDiffPredicate.ALWAYS_INVALIDATE;
     private PrerequisiteValidator prerequisiteValidator;
+    private ImmutableList.Builder<Bootstrap> skylarkBootstraps =
+        ImmutableList.<Bootstrap>builder();
     private ImmutableMap.Builder<String, Object> skylarkAccessibleTopLevels =
         ImmutableMap.builder();
-    private ImmutableList.Builder<Class<?>> skylarkModules =
-        ImmutableList.<Class<?>>builder().addAll(SkylarkModules.MODULES);
-    private ImmutableBiMap.Builder<String, Class<? extends TransitiveInfoProvider>>
-        registeredSkylarkProviders = ImmutableBiMap.builder();
-    private Map<String, String> platformRegexps = new TreeMap<>();
+    private Set<String> reservedActionMnemonics = new TreeSet<>();
+    private BuildConfiguration.ActionEnvironmentProvider actionEnvironmentProvider =
+        (BuildOptions options) -> ActionEnvironment.EMPTY;
+    private ConstraintSemantics constraintSemantics = new ConstraintSemantics();
 
-    // TODO(pcloudy): Remove this field after Bazel rule definitions are not used internally.
-    private String nativeLauncherLabel;
+    private ThirdPartyLicenseExistencePolicy thirdPartyLicenseExistencePolicy =
+        ThirdPartyLicenseExistencePolicy.USER_CONTROLLABLE;
 
-    public Builder setNativeLauncherLabel(String label) {
-      this.nativeLauncherLabel = label;
+    public Builder addWorkspaceFilePrefix(String contents) {
+      defaultWorkspaceFilePrefix.append(contents);
       return this;
     }
 
-    public void addWorkspaceFilePrefix(String contents) {
-      defaultWorkspaceFilePrefix.append(contents);
+    public Builder addWorkspaceFileSuffix(String contents) {
+      defaultWorkspaceFileSuffix.append(contents);
+      return this;
     }
 
-    public void addWorkspaceFileSuffix(String contents) {
-      defaultWorkspaceFileSuffix.append(contents);
+    @VisibleForTesting
+    public Builder clearWorkspaceFileSuffixForTesting() {
+      defaultWorkspaceFileSuffix.delete(0, defaultWorkspaceFileSuffix.length());
+      return this;
     }
 
     public Builder setPrelude(String preludeLabelString) {
       try {
-        this.preludeLabel = Label.parseAbsolute(preludeLabelString);
+        this.preludeLabel = Label.parseAbsolute(preludeLabelString, ImmutableMap.of());
       } catch (LabelSyntaxException e) {
         String errorMsg =
             String.format("Prelude label '%s' is invalid: %s", preludeLabelString, e.getMessage());
@@ -286,45 +333,37 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
       return this;
     }
 
+    /**
+     * Adds a configuration fragment factory and all build options required by its fragment.
+     *
+     * <p>Note that configuration fragments annotated with a Skylark name must have a unique name;
+     * no two different configuration fragments can share the same name.
+     */
+    public Builder addConfigurationFragment(ConfigurationFragmentFactory factory) {
+      this.configurationOptions.addAll(factory.requiredOptions());
+      configurationFragmentFactories.add(factory);
+      return this;
+    }
+
+    /**
+     * Adds configuration options that aren't required by configuration fragments.
+     *
+     * <p>If {@link #addConfigurationFragment(ConfigurationFragmentFactory)} adds a fragment factory
+     * that also requires these options, this method is redundant.
+     */
     public Builder addConfigurationOptions(Class<? extends FragmentOptions> configurationOptions) {
       this.configurationOptions.add(configurationOptions);
       return this;
     }
 
-    /**
-     * Adds an options class and a corresponding factory. There's usually a 1:1:1 correspondence
-     * between option classes, factories, and fragments, such that the factory depends only on the
-     * options class and creates the fragment. This method provides a convenient way of adding both
-     * the options class and the factory in a single call.
-     */
-    public Builder addConfig(
-        Class<? extends FragmentOptions> options, ConfigurationFragmentFactory factory) {
-      // Enforce that the factory requires the options.
-      Preconditions.checkState(factory.requiredOptions().contains(options));
-      this.configurationOptions.add(options);
-      this.configurationFragmentFactories.add(factory);
-      return this;
-    }
-
-    public Builder addConfigurationOptions(
-        Collection<Class<? extends FragmentOptions>> optionsClasses) {
-      this.configurationOptions.addAll(optionsClasses);
-      return this;
-    }
-
-    public Builder addConfigurationFragment(ConfigurationFragmentFactory factory) {
-      configurationFragmentFactories.add(factory);
-      return this;
-    }
-
-    public Builder addDynamicTransitionMaps(Map<Attribute.Transition, Attribute.Transition> maps) {
-      dynamicTransitionMaps.putAll(maps);
-      return this;
-    }
-
-    public Builder setUniversalConfigurationFragment(
+    public Builder addUniversalConfigurationFragment(
         Class<? extends BuildConfiguration.Fragment> fragment) {
-      this.universalFragment = fragment;
+      this.universalFragments.add(fragment);
+      return this;
+    }
+
+    public Builder addSkylarkBootstrap(Bootstrap bootstrap) {
+      this.skylarkBootstraps.add(bootstrap);
       return this;
     }
 
@@ -333,29 +372,99 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
       return this;
     }
 
-    public Builder addSkylarkModule(Class<?>... modules) {
-      this.skylarkModules.add(modules);
+    public Builder addReservedActionMnemonic(String mnemonic) {
+      this.reservedActionMnemonics.add(mnemonic);
+      return this;
+    }
+
+    public Builder setActionEnvironmentProvider(
+        BuildConfiguration.ActionEnvironmentProvider actionEnvironmentProvider) {
+      this.actionEnvironmentProvider = actionEnvironmentProvider;
       return this;
     }
 
     /**
-     * Do not use - this only exists for backwards compatibility! Platform regexps are part of a
-     * legacy mechanism - {@code vardef} - that is not exposed in Bazel.
-     *
-     * <p>{@code vardef} needs explicit support in the rule implementations, and cannot express
-     * conditional dependencies, only conditional attribute values. This mechanism will be
-     * supplanted by configuration dependent attributes, and its effect can usually also be achieved
-     * with select().
-     *
-     * <p>This is a map of platform names to regexps. When a name is used as the third argument to
-     * {@code vardef}, the corresponding regexp is used to match on the C++ abi, and the variable is
-     * only set to that value if the regexp matches. For example, the entry
-     * {@code "oldlinux": "i[34]86-libc[345]-linux"} might define a set of platforms representing
-     * certain older linux releases.
+     * Sets the logic that lets rules declare which environments they support and validates rules
+     * don't depend on rules that aren't compatible with the same environments. Defaults to
+     * {@ConstraintSemantics}. See {@ConstraintSemantics} for more details.
      */
-    public Builder addPlatformRegexps(Map<String, String> platformRegexps) {
-      this.platformRegexps.putAll(Preconditions.checkNotNull(platformRegexps));
+    public Builder setConstraintSemantics(ConstraintSemantics constraintSemantics) {
+      this.constraintSemantics = constraintSemantics;
       return this;
+    }
+
+    /**
+     * Sets the policy for checking if third_party rules declare <code>licenses()</code>. See {@link
+     * #thirdPartyLicenseExistencePolicy} for the default value.
+     */
+    public Builder setThirdPartyLicenseExistencePolicy(ThirdPartyLicenseExistencePolicy policy) {
+      this.thirdPartyLicenseExistencePolicy = policy;
+      return this;
+    }
+
+    /**
+     * Adds a transition factory that produces a trimming transition to be run over all targets
+     * after other transitions.
+     *
+     * <p>Transitions are run in the order they're added.
+     *
+     * <p>This is a temporary measure for supporting trimming of test rules and manual trimming of
+     * feature flags, and support for this transition factory will likely be removed at some point
+     * in the future (whenever automatic trimming is sufficiently workable).
+     */
+    public Builder addTrimmingTransitionFactory(TransitionFactory<Rule> factory) {
+      Preconditions.checkNotNull(factory);
+      Preconditions.checkArgument(!factory.isSplit());
+      if (trimmingTransitionFactory == null) {
+        trimmingTransitionFactory = factory;
+      } else {
+        trimmingTransitionFactory =
+            ComposingTransitionFactory.of(trimmingTransitionFactory, factory);
+      }
+      return this;
+    }
+
+    /** Sets the transition manual feature flag trimming should apply to toolchain deps. */
+    public Builder setToolchainTaggedTrimmingTransition(PatchTransition transition) {
+      Preconditions.checkNotNull(transition);
+      Preconditions.checkState(toolchainTaggedTrimmingTransition == null);
+      this.toolchainTaggedTrimmingTransition = transition;
+      return this;
+    }
+
+    /**
+     * Overrides the transition factory run over all targets.
+     *
+     * @see {@link #addTrimmingTransitionFactory(TransitionFactory<Rule>)}
+     */
+    @VisibleForTesting(/* for testing trimming transition factories without relying on prod use */ )
+    public Builder overrideTrimmingTransitionFactoryForTesting(TransitionFactory<Rule> factory) {
+      trimmingTransitionFactory = null;
+      return this.addTrimmingTransitionFactory(factory);
+    }
+
+    /**
+     * Sets the predicate which determines whether the analysis cache should be invalidated for the
+     * given options diff.
+     */
+    public Builder setShouldInvalidateCacheForOptionDiff(
+        OptionsDiffPredicate shouldInvalidateCacheForOptionDiff) {
+      Preconditions.checkState(
+          this.shouldInvalidateCacheForOptionDiff.equals(OptionsDiffPredicate.ALWAYS_INVALIDATE),
+          "Cache invalidation function was already set");
+      this.shouldInvalidateCacheForOptionDiff = shouldInvalidateCacheForOptionDiff;
+      return this;
+    }
+
+    /**
+     * Overrides the predicate which determines whether the analysis cache should be invalidated for
+     * the given options diff.
+     */
+    @VisibleForTesting(/* for testing cache invalidation without relying on prod use */ )
+    public Builder overrideShouldInvalidateCacheForOptionDiffForTesting(
+        OptionsDiffPredicate shouldInvalidateCacheForOptionDiff) {
+      this.shouldInvalidateCacheForOptionDiff = OptionsDiffPredicate.ALWAYS_INVALIDATE;
+      return this.setShouldInvalidateCacheForOptionDiff(shouldInvalidateCacheForOptionDiff);
     }
 
     private RuleConfiguredTargetFactory createFactory(
@@ -374,7 +483,9 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
           "addRuleDefinition(new %s()) should be called before build()", definitionClass.getName());
 
       RuleDefinition.Metadata metadata = instance.getMetadata();
-      checkArgument(ruleClassMap.get(metadata.name()) == null, metadata.name());
+      checkArgument(
+          ruleClassMap.get(metadata.name()) == null,
+          "The rule " + metadata.name() + " was committed already, use another name");
 
       List<Class<? extends RuleDefinition>> ancestors = metadata.ancestors();
 
@@ -403,6 +514,7 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
       RuleClass.Builder builder = new RuleClass.Builder(
           metadata.name(), metadata.type(), false, ancestorClasses);
       builder.factory(factory);
+      builder.setThirdPartyLicenseExistencePolicy(thirdPartyLicenseExistencePolicy);
       RuleClass ruleClass = instance.build(builder, this);
       ruleMap.put(definitionClass, ruleClass);
       ruleClassMap.put(ruleClass.getName(), ruleClass);
@@ -429,57 +541,29 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
           ImmutableList.copyOf(buildInfoFactories),
           ImmutableList.copyOf(configurationOptions),
           ImmutableList.copyOf(configurationFragmentFactories),
-          new DynamicTransitionMapper(dynamicTransitionMaps.build()),
-          universalFragment,
+          ImmutableList.copyOf(universalFragments),
+          trimmingTransitionFactory,
+          toolchainTaggedTrimmingTransition,
+          shouldInvalidateCacheForOptionDiff,
           prerequisiteValidator,
           skylarkAccessibleTopLevels.build(),
-          skylarkModules.build());
-    }
-
-    @Override
-    public Label getLabel(String labelValue) {
-      return LABELS.getUnchecked(labelValue);
+          skylarkBootstraps.build(),
+          ImmutableSet.copyOf(reservedActionMnemonics),
+          actionEnvironmentProvider,
+          constraintSemantics,
+          thirdPartyLicenseExistencePolicy);
     }
 
     @Override
     public Label getToolsLabel(String labelValue) {
-      return getLabel(toolsRepository + labelValue);
-    }
-
-    @Override
-    public Label getLauncherLabel() {
-      if (nativeLauncherLabel == null) {
-        return null;
-      }
-      return getToolsLabel(nativeLauncherLabel);
+      return Label.parseAbsoluteUnchecked(toolsRepository + labelValue);
     }
 
     @Override
     public String getToolsRepository() {
       return toolsRepository;
     }
-
-    @Nullable
-    public Map<String, String> getPlatformRegexps() {
-      return platformRegexps.isEmpty() ? null : ImmutableMap.copyOf(platformRegexps);
-    }
   }
-
-  /**
-   * Used to make the label instances unique, so that we don't create a new
-   * instance for every rule.
-   */
-  private static final LoadingCache<String, Label> LABELS = CacheBuilder.newBuilder().build(
-      new CacheLoader<String, Label>() {
-    @Override
-    public Label load(String from) {
-      try {
-        return Label.parseAbsolute(from);
-      } catch (LabelSyntaxException e) {
-        throw new IllegalArgumentException(from, e);
-      }
-    }
-  });
 
   /**
    * Default content that should be added at the beginning of the WORKSPACE file.
@@ -531,21 +615,42 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
   private final ImmutableList<ConfigurationFragmentFactory> configurationFragmentFactories;
 
   /**
-   * The dynamic configuration transition mapper.
+   * Maps build option names to matching config fragments. This is used to determine correct
+   * fragment requirements for config_setting rules, which are unique in that their dependencies are
+   * triggered by string representations of option names.
    */
-  private final DynamicTransitionMapper dynamicTransitionMapper;
+  private final Map<String, Class<? extends Fragment>> optionsToFragmentMap;
+
+  /** The transition factory used to produce the transition that will trim targets. */
+  @Nullable private final TransitionFactory<Rule> trimmingTransitionFactory;
+
+  /** The transition to apply to toolchain deps for manual trimming. */
+  @Nullable private final PatchTransition toolchainTaggedTrimmingTransition;
+
+  /** The predicate used to determine whether a diff requires the cache to be invalidated. */
+  private final OptionsDiffPredicate shouldInvalidateCacheForOptionDiff;
 
   /**
-   * A configuration fragment that should be available to all rules even when they don't
+   * Configuration fragments that should be available to all rules even when they don't
    * explicitly require it.
    */
-  private final Class<? extends BuildConfiguration.Fragment> universalFragment;
+  private final ImmutableList<Class<? extends BuildConfiguration.Fragment>> universalFragments;
 
   private final ImmutableList<BuildInfoFactory> buildInfoFactories;
 
   private final PrerequisiteValidator prerequisiteValidator;
 
-  private final Environment.Frame globals;
+  private final Environment.GlobalFrame globals;
+
+  private final ImmutableSet<String> reservedActionMnemonics;
+
+  private final BuildConfiguration.ActionEnvironmentProvider actionEnvironmentProvider;
+
+  private final ImmutableMap<String, Class<?>> configurationFragmentMap;
+
+  private final ConstraintSemantics constraintSemantics;
+
+  private final ThirdPartyLicenseExistencePolicy thirdPartyLicenseExistencePolicy;
 
   private ConfiguredRuleClassProvider(
       Label preludeLabel,
@@ -559,11 +664,17 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
       ImmutableList<BuildInfoFactory> buildInfoFactories,
       ImmutableList<Class<? extends FragmentOptions>> configurationOptions,
       ImmutableList<ConfigurationFragmentFactory> configurationFragments,
-      DynamicTransitionMapper dynamicTransitionMapper,
-      Class<? extends BuildConfiguration.Fragment> universalFragment,
+      ImmutableList<Class<? extends BuildConfiguration.Fragment>> universalFragments,
+      @Nullable TransitionFactory<Rule> trimmingTransitionFactory,
+      PatchTransition toolchainTaggedTrimmingTransition,
+      OptionsDiffPredicate shouldInvalidateCacheForOptionDiff,
       PrerequisiteValidator prerequisiteValidator,
       ImmutableMap<String, Object> skylarkAccessibleJavaClasses,
-      ImmutableList<Class<?>> skylarkModules) {
+      ImmutableList<Bootstrap> skylarkBootstraps,
+      ImmutableSet<String> reservedActionMnemonics,
+      BuildConfiguration.ActionEnvironmentProvider actionEnvironmentProvider,
+      ConstraintSemantics constraintSemantics,
+      ThirdPartyLicenseExistencePolicy thirdPartyLicenseExistencePolicy) {
     this.preludeLabel = preludeLabel;
     this.runfilesPrefix = runfilesPrefix;
     this.toolsRepository = toolsRepository;
@@ -575,10 +686,49 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
     this.buildInfoFactories = buildInfoFactories;
     this.configurationOptions = configurationOptions;
     this.configurationFragmentFactories = configurationFragments;
-    this.dynamicTransitionMapper = dynamicTransitionMapper;
-    this.universalFragment = universalFragment;
+    this.optionsToFragmentMap = computeOptionsToFragmentMap(configurationFragments);
+    this.universalFragments = universalFragments;
+    this.trimmingTransitionFactory = trimmingTransitionFactory;
+    this.toolchainTaggedTrimmingTransition = toolchainTaggedTrimmingTransition;
+    this.shouldInvalidateCacheForOptionDiff = shouldInvalidateCacheForOptionDiff;
     this.prerequisiteValidator = prerequisiteValidator;
-    this.globals = createGlobals(skylarkAccessibleJavaClasses, skylarkModules);
+    this.globals = createGlobals(skylarkAccessibleJavaClasses, skylarkBootstraps);
+    this.reservedActionMnemonics = reservedActionMnemonics;
+    this.actionEnvironmentProvider = actionEnvironmentProvider;
+    this.configurationFragmentMap = createFragmentMap(configurationFragmentFactories);
+    this.constraintSemantics = constraintSemantics;
+    this.thirdPartyLicenseExistencePolicy = thirdPartyLicenseExistencePolicy;
+  }
+
+  /**
+   * Computes the option name --> config fragments map. Note that this mapping is technically
+   * one-to-many: a single option may be required by multiple fragments (e.g. Java options are used
+   * by both JavaConfiguration and Jvm). In such cases, we arbitrarily choose one fragment since
+   * that's all that's needed to satisfy the config_setting.
+   */
+  private static Map<String, Class<? extends Fragment>> computeOptionsToFragmentMap(
+      Iterable<ConfigurationFragmentFactory> configurationFragments) {
+    Map<String, Class<? extends Fragment>> result = new LinkedHashMap<>();
+    Map<Class<? extends FragmentOptions>, Integer> visitedOptionsClasses = new HashMap<>();
+    for (ConfigurationFragmentFactory factory : configurationFragments) {
+      Set<Class<? extends FragmentOptions>> requiredOpts = factory.requiredOptions();
+      for (Class<? extends FragmentOptions> optionsClass : requiredOpts) {
+        Integer previousBest = visitedOptionsClasses.get(optionsClass);
+        if (previousBest != null && previousBest <= requiredOpts.size()) {
+          // Multiple config fragments may require the same options class, but we only need one of
+          // them to guarantee that class makes it into the configuration. Pick one that depends
+          // on as few options classes as possible (not necessarily unique).
+          continue;
+        }
+        visitedOptionsClasses.put(optionsClass, requiredOpts.size());
+        for (Field field : optionsClass.getFields()) {
+          if (field.isAnnotationPresent(Option.class)) {
+            result.put(field.getAnnotation(Option.class).name(), factory.creates());
+          }
+        }
+      }
+    }
+    return result;
   }
 
   public PrerequisiteValidator getPrerequisiteValidator() {
@@ -629,6 +779,39 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
     return configurationFragmentFactories;
   }
 
+  @Nullable
+  public Class<? extends Fragment> getConfigurationFragmentForOption(String requiredOption) {
+    return optionsToFragmentMap.get(requiredOption);
+  }
+
+  /**
+   * Returns the transition factory used to produce the transition to trim targets.
+   *
+   * <p>This is a temporary measure for supporting manual trimming of feature flags, and support for
+   * this transition factory will likely be removed at some point in the future (whenever automatic
+   * trimming is sufficiently workable
+   */
+  @Nullable
+  public TransitionFactory<Rule> getTrimmingTransitionFactory() {
+    return trimmingTransitionFactory;
+  }
+
+  /**
+   * Returns the transition manual feature flag trimming should apply to toolchain deps.
+   *
+   * <p>See extra notes on {@link #getTrimmingTransitionFactory()}.
+   */
+  @Nullable
+  public PatchTransition getToolchainTaggedTrimmingTransition() {
+    return toolchainTaggedTrimmingTransition;
+  }
+
+  /** Returns whether the analysis cache should be invalidated for the given option diff. */
+  public boolean shouldInvalidateCacheForOptionDiff(
+      BuildOptions newOptions, OptionDefinition changedOption, Object oldValue, Object newValue) {
+    return shouldInvalidateCacheForOptionDiff.apply(newOptions, changedOption, oldValue, newValue);
+  }
+
   /**
    * Returns the set of configuration options that are supported in this module.
    */
@@ -644,77 +827,72 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
   }
 
   /**
-   * Returns the dynamic configuration transition mapper.
-   */
-  public DynamicTransitionMapper getDynamicTransitionMapper() {
-    return dynamicTransitionMapper;
-  }
-
-  /**
    * Returns the configuration fragment that should be available to all rules even when they
    * don't explicitly require it.
    */
-  public Class<? extends BuildConfiguration.Fragment> getUniversalFragment() {
-    return universalFragment;
-  }
-
-  /**
-   * Returns the defaults package for the default settings.
-   */
-  public String getDefaultsPackageContent(InvocationPolicy invocationPolicy) {
-    return DefaultsPackage.getDefaultsPackageContent(configurationOptions, invocationPolicy);
-  }
-
-  /**
-   * Returns the defaults package for the given options taken from an optionsProvider.
-   */
-  public String getDefaultsPackageContent(OptionsClassProvider optionsProvider) {
-    return DefaultsPackage.getDefaultsPackageContent(
-        BuildOptions.of(configurationOptions, optionsProvider));
+  public ImmutableList<Class<? extends BuildConfiguration.Fragment>> getUniversalFragments() {
+    return universalFragments;
   }
 
   /**
    * Creates a BuildOptions class for the given options taken from an optionsProvider.
    */
-  public BuildOptions createBuildOptions(OptionsClassProvider optionsProvider) {
+  public BuildOptions createBuildOptions(OptionsProvider optionsProvider) {
     return BuildOptions.of(configurationOptions, optionsProvider);
   }
 
-  private Environment.Frame createGlobals(
-      ImmutableMap<String, Object> skylarkAccessibleToplLevels,
-      ImmutableList<Class<?>> modules) {
-    try (Mutability mutability = Mutability.create("ConfiguredRuleClassProvider globals")) {
-      Environment env = createSkylarkRuleClassEnvironment(
-          mutability,
-          SkylarkModules.getGlobals(modules),
-          SkylarkSemantics.DEFAULT_SEMANTICS,
-          /*eventHandler=*/ null,
-          /*astFileContentHashCode=*/ null,
-          /*importMap=*/ null);
-      for (Map.Entry<String, Object> entry : skylarkAccessibleToplLevels.entrySet()) {
-        env.setup(entry.getKey(), entry.getValue());
-      }
-      return env.getGlobals();
+  private Environment.GlobalFrame createGlobals(
+      ImmutableMap<String, Object> skylarkAccessibleTopLevels,
+      ImmutableList<Bootstrap> bootstraps) {
+    ImmutableMap.Builder<String, Object> envBuilder = ImmutableMap.builder();
+
+    SkylarkModules.addSkylarkGlobalsToBuilder(envBuilder);
+    envBuilder.putAll(skylarkAccessibleTopLevels.entrySet());
+    for (Bootstrap bootstrap : bootstraps) {
+      bootstrap.addBindingsToBuilder(envBuilder);
     }
+
+    return GlobalFrame.createForBuiltins(envBuilder.build());
+  }
+
+  private static ImmutableMap<String, Class<?>> createFragmentMap(
+      Iterable<ConfigurationFragmentFactory> configurationFragmentFactories) {
+    ImmutableMap.Builder<String, Class<?>> mapBuilder = ImmutableMap.builder();
+    for (ConfigurationFragmentFactory fragmentFactory : configurationFragmentFactories) {
+      Class<? extends Fragment> fragmentClass = fragmentFactory.creates();
+      SkylarkModule fragmentModule = SkylarkInterfaceUtils.getSkylarkModule((fragmentClass));
+      if (fragmentModule != null) {
+        mapBuilder.put(fragmentModule.name(), fragmentClass);
+      }
+    }
+    return mapBuilder.build();
   }
 
   private Environment createSkylarkRuleClassEnvironment(
       Mutability mutability,
-      Environment.Frame globals,
-      SkylarkSemantics skylarkSemantics,
+      GlobalFrame globals,
+      StarlarkSemantics starlarkSemantics,
       EventHandler eventHandler,
       String astFileContentHashCode,
-      Map<String, Extension> importMap) {
+      Map<String, Extension> importMap,
+      ImmutableMap<RepositoryName, RepositoryName> repoMapping,
+      Label callerLabel) {
+    BazelStarlarkContext context =
+        new BazelStarlarkContext(
+            toolsRepository,
+            configurationFragmentMap,
+            repoMapping,
+            new SymbolGenerator<>(callerLabel));
     Environment env =
         Environment.builder(mutability)
             .setGlobals(globals)
-            .setSemantics(skylarkSemantics)
+            .setSemantics(starlarkSemantics)
             .setEventHandler(eventHandler)
             .setFileContentHashCode(astFileContentHashCode)
+            .setStarlarkContext(context)
             .setImportedExtensions(importMap)
-            .setPhase(Phase.LOADING)
             .build();
-    SkylarkUtils.setToolsRepository(env, toolsRepository);
+    SkylarkUtils.setPhase(env, Phase.LOADING);
     return env;
   }
 
@@ -722,17 +900,20 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
   public Environment createSkylarkRuleClassEnvironment(
       Label extensionLabel,
       Mutability mutability,
-      SkylarkSemantics skylarkSemantics,
+      StarlarkSemantics starlarkSemantics,
       EventHandler eventHandler,
       String astFileContentHashCode,
-      Map<String, Extension> importMap) {
+      Map<String, Extension> importMap,
+      ImmutableMap<RepositoryName, RepositoryName> repoMapping) {
     return createSkylarkRuleClassEnvironment(
         mutability,
         globals.withLabel(extensionLabel),
-        skylarkSemantics,
+        starlarkSemantics,
         eventHandler,
         astFileContentHashCode,
-        importMap);
+        importMap,
+        repoMapping,
+        extensionLabel);
   }
 
   @Override
@@ -745,16 +926,46 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
     return defaultWorkspaceFileSuffix;
   }
 
-  /**
-   * Returns all registered {@link BuildConfiguration.Fragment} classes.
-   */
-  public Set<Class<? extends BuildConfiguration.Fragment>> getAllFragments() {
-    ImmutableSet.Builder<Class<? extends BuildConfiguration.Fragment>> fragmentsBuilder =
-        ImmutableSet.builder();
+  @Override
+  public Map<String, Class<?>> getConfigurationFragmentMap() {
+    return configurationFragmentMap;
+  }
+
+  public ConstraintSemantics getConstraintSemantics() {
+    return constraintSemantics;
+  }
+
+  @Override
+  public ThirdPartyLicenseExistencePolicy getThirdPartyLicenseExistencePolicy() {
+    return thirdPartyLicenseExistencePolicy;
+  }
+
+  /** Returns all skylark objects in global scope for this RuleClassProvider. */
+  public Map<String, Object> getTransitiveGlobalBindings() {
+    return globals.getTransitiveBindings();
+  }
+
+  public Object getGlobalsForConstantRegistration() {
+    return globals;
+  }
+
+  /** Returns all registered {@link BuildConfiguration.Fragment} classes. */
+  public ImmutableSortedSet<Class<? extends BuildConfiguration.Fragment>> getAllFragments() {
+    ImmutableSortedSet.Builder<Class<? extends BuildConfiguration.Fragment>> fragmentsBuilder =
+        ImmutableSortedSet.orderedBy(BuildConfiguration.lexicalFragmentSorter);
     for (ConfigurationFragmentFactory factory : getConfigurationFragments()) {
       fragmentsBuilder.add(factory.creates());
     }
-    fragmentsBuilder.add(getUniversalFragment());
+    fragmentsBuilder.addAll(getUniversalFragments());
     return fragmentsBuilder.build();
+  }
+
+  /** Returns a reserved set of action mnemonics. These cannot be used from a Skylark action. */
+  public ImmutableSet<String> getReservedActionMnemonics() {
+    return reservedActionMnemonics;
+  }
+
+  public BuildConfiguration.ActionEnvironmentProvider getActionEnvironmentProvider() {
+    return actionEnvironmentProvider;
   }
 }

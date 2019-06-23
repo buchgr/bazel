@@ -14,23 +14,24 @@
 
 package com.google.devtools.build.lib.rules.cpp;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.collect.nestedset.Order;
-import com.google.devtools.build.lib.util.Preconditions;
-import java.util.ArrayList;
+import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.skylarkbuildapi.cpp.CcCompilationOutputsApi;
+import com.google.devtools.build.lib.syntax.Environment;
+import com.google.devtools.build.lib.syntax.EvalException;
+import com.google.devtools.build.lib.syntax.SkylarkList;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Set;
 
-/**
- * A structured representation of the compilation outputs of a C++ rule.
- */
-public class CcCompilationOutputs {
+/** A structured representation of the compilation outputs of a C++ rule. */
+public class CcCompilationOutputs implements CcCompilationOutputsApi<Artifact> {
+  public static final CcCompilationOutputs EMPTY = builder().build();
+
   /**
    * All .o files built by the target.
    */
@@ -42,10 +43,10 @@ public class CcCompilationOutputs {
   private final ImmutableList<Artifact> picObjectFiles;
 
   /**
-   * Maps all .o bitcode files coming from a ThinLTO C(++) compilation under our control to the
-   * corresponding minimized bitcode files that can be used for the LTO indexing step.
+   * Maps all .o bitcode files coming from a ThinLTO C(++) compilation under our control to
+   * information needed by the LTO indexing and backend steps.
    */
-  private final ImmutableMap<Artifact, Artifact> ltoBitcodeFiles;
+  private final LtoCompilationContext ltoCompilationContext;
 
   /**
    * All .dwo files built by the target, corresponding to .o outputs.
@@ -67,25 +68,21 @@ public class CcCompilationOutputs {
    */
   private final ImmutableList<Artifact> headerTokenFiles;
 
-  private final List<IncludeScannable> lipoScannables;
-
   private CcCompilationOutputs(
       ImmutableList<Artifact> objectFiles,
       ImmutableList<Artifact> picObjectFiles,
-      ImmutableMap<Artifact, Artifact> ltoBitcodeFiles,
+      LtoCompilationContext ltoCompilationContext,
       ImmutableList<Artifact> dwoFiles,
       ImmutableList<Artifact> picDwoFiles,
       NestedSet<Artifact> temps,
-      ImmutableList<Artifact> headerTokenFiles,
-      ImmutableList<IncludeScannable> lipoScannables) {
+      ImmutableList<Artifact> headerTokenFiles) {
     this.objectFiles = objectFiles;
     this.picObjectFiles = picObjectFiles;
-    this.ltoBitcodeFiles = ltoBitcodeFiles;
+    this.ltoCompilationContext = ltoCompilationContext;
     this.dwoFiles = dwoFiles;
     this.picDwoFiles = picDwoFiles;
     this.temps = temps;
     this.headerTokenFiles = headerTokenFiles;
-    this.lipoScannables = lipoScannables;
   }
 
   /**
@@ -104,9 +101,29 @@ public class CcCompilationOutputs {
     return usePic ? picObjectFiles : objectFiles;
   }
 
-  /** Returns unmodifiable map of bitcode object files resulting from compilation. */
-  public ImmutableMap<Artifact, Artifact> getLtoBitcodeFiles() {
-    return ltoBitcodeFiles;
+  @Override
+  public SkylarkList<Artifact> getSkylarkObjectFiles(
+      boolean usePic, Location location, Environment environment) throws EvalException {
+    CcCommon.checkLocationWhitelisted(
+        environment.getSemantics(),
+        location,
+        environment.getGlobals().getLabel().getPackageIdentifier().toString());
+    return SkylarkList.createImmutable(getObjectFiles(usePic));
+  }
+
+  @Override
+  public SkylarkList<Artifact> getSkylarkObjects(Location location) throws EvalException {
+    return SkylarkList.createImmutable(getObjectFiles(/* usePic= */ false));
+  }
+
+  @Override
+  public SkylarkList<Artifact> getSkylarkPicObjects(Location location) throws EvalException {
+    return SkylarkList.createImmutable(getObjectFiles(/* usePic= */ true));
+  }
+
+  /** Returns information about bitcode object files resulting from compilation. */
+  public LtoCompilationContext getLtoCompilationContext() {
+    return ltoCompilationContext;
   }
 
   /**
@@ -137,22 +154,8 @@ public class CcCompilationOutputs {
     return headerTokenFiles;
   }
 
-  /**
-   * Returns the {@link IncludeScannable} objects this C++ compile action contributes to a
-   * LIPO context collector.
-   */
-  public List<IncludeScannable> getLipoScannables() {
-    return lipoScannables;
-  }
-  
-  /**
-   * Returns the output files that are considered "compiled" by this C++ compile action.
-   */
-  NestedSet<Artifact> getFilesToCompile(
-      boolean isLipoContextCollector, boolean parseHeaders, boolean usePic) {
-    if (isLipoContextCollector) {
-      return NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER);
-    }
+  /** Returns the output files that are considered "compiled" by this C++ compile action. */
+  NestedSet<Artifact> getFilesToCompile(boolean parseHeaders, boolean usePic) {
     NestedSetBuilder<Artifact> files = NestedSetBuilder.stableOrder();
     files.addAll(getObjectFiles(usePic));
     if (parseHeaders) {
@@ -161,27 +164,35 @@ public class CcCompilationOutputs {
     return files.build();
   }
 
+  /** Creates a new builder. */
+  public static Builder builder() {
+    return new Builder();
+  }
 
+  /** Builder for CcCompilationOutputs. */
   public static final class Builder {
     private final Set<Artifact> objectFiles = new LinkedHashSet<>();
     private final Set<Artifact> picObjectFiles = new LinkedHashSet<>();
-    private final ImmutableMap.Builder<Artifact, Artifact> ltoBitcodeFiles = ImmutableMap.builder();
+    private final LtoCompilationContext.Builder ltoCompilationContext =
+        new LtoCompilationContext.Builder();
     private final Set<Artifact> dwoFiles = new LinkedHashSet<>();
     private final Set<Artifact> picDwoFiles = new LinkedHashSet<>();
     private final NestedSetBuilder<Artifact> temps = NestedSetBuilder.stableOrder();
     private final Set<Artifact> headerTokenFiles = new LinkedHashSet<>();
-    private final List<IncludeScannable> lipoScannables = new ArrayList<>();
+
+    private Builder() {
+      // private to avoid class initialization deadlock between this class and its outer class
+    }
 
     public CcCompilationOutputs build() {
       return new CcCompilationOutputs(
           ImmutableList.copyOf(objectFiles),
           ImmutableList.copyOf(picObjectFiles),
-          ltoBitcodeFiles.build(),
+          ltoCompilationContext.build(),
           ImmutableList.copyOf(dwoFiles),
           ImmutableList.copyOf(picDwoFiles),
           temps.build(),
-          ImmutableList.copyOf(headerTokenFiles),
-          ImmutableList.copyOf(lipoScannables));
+          ImmutableList.copyOf(headerTokenFiles));
     }
 
     public Builder merge(CcCompilationOutputs outputs) {
@@ -191,13 +202,11 @@ public class CcCompilationOutputs {
       this.picDwoFiles.addAll(outputs.picDwoFiles);
       this.temps.addTransitive(outputs.temps);
       this.headerTokenFiles.addAll(outputs.headerTokenFiles);
-      this.lipoScannables.addAll(outputs.lipoScannables);
+      this.ltoCompilationContext.addAll(outputs.ltoCompilationContext);
       return this;
     }
 
-    /**
-     * Adds an .o file.
-     */
+    /** Adds an object file. */
     public Builder addObjectFile(Artifact artifact) {
       // We skip file extension checks for TreeArtifacts because they represent directory artifacts
       // without a file extension.
@@ -209,33 +218,34 @@ public class CcCompilationOutputs {
 
     public Builder addObjectFiles(Iterable<Artifact> artifacts) {
       for (Artifact artifact : artifacts) {
-        Preconditions.checkArgument(Link.OBJECT_FILETYPES.matches(artifact.getFilename()));
+        Preconditions.checkArgument(
+            artifact.isTreeArtifact() || Link.OBJECT_FILETYPES.matches(artifact.getFilename()));
       }
       Iterables.addAll(objectFiles, artifacts);
       return this;
     }
 
-    /**
-     * Adds a .pic.o file.
-     */
+    /** Adds a pic object file. */
     public Builder addPicObjectFile(Artifact artifact) {
       picObjectFiles.add(artifact);
       return this;
     }
 
-    public Builder addLtoBitcodeFile(Artifact fullBitcode, Artifact ltoIndexingBitcode) {
-      ltoBitcodeFiles.put(fullBitcode, ltoIndexingBitcode);
+    public Builder addLtoBitcodeFile(
+        Artifact fullBitcode, Artifact ltoIndexingBitcode, ImmutableList<String> copts) {
+      ltoCompilationContext.addBitcodeFile(fullBitcode, ltoIndexingBitcode, copts);
       return this;
     }
 
-    public Builder addLtoBitcodeFile(ImmutableMap<Artifact, Artifact> artifacts) {
-      ltoBitcodeFiles.putAll(artifacts);
+    public Builder addLtoCompilationContext(LtoCompilationContext ltoCompilationContext) {
+      this.ltoCompilationContext.addAll(ltoCompilationContext);
       return this;
     }
 
     public Builder addPicObjectFiles(Iterable<Artifact> artifacts) {
       for (Artifact artifact : artifacts) {
-        Preconditions.checkArgument(Link.OBJECT_FILETYPES.matches(artifact.getFilename()));
+        Preconditions.checkArgument(
+            artifact.isTreeArtifact() || Link.OBJECT_FILETYPES.matches(artifact.getFilename()));
       }
 
       Iterables.addAll(picObjectFiles, artifacts);
@@ -262,15 +272,6 @@ public class CcCompilationOutputs {
 
     public Builder addHeaderTokenFile(Artifact artifact) {
       headerTokenFiles.add(artifact);
-      return this;
-    }
-
-    /**
-     * Adds an {@link IncludeScannable} that this compilation output object contributes to a
-     * LIPO context collector.
-     */
-    public Builder addLipoScannable(IncludeScannable scannable) {
-      lipoScannables.add(scannable);
       return this;
     }
   }

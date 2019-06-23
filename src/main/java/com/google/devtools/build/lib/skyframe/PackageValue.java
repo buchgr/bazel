@@ -13,25 +13,27 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Interner;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
+import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.packages.BuildFileContainsErrorsException;
 import com.google.devtools.build.lib.packages.Package;
-import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.build.skyframe.LegacySkyKey;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.NotComparableSkyValue;
+import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * A Skyframe value representing a package.
- */
+/** A Skyframe value representing a package. */
+@AutoCodec(explicitlyAllowClass = Package.class)
 @Immutable
 @ThreadSafe
 public class PackageValue implements NotComparableSkyValue {
-
   private final Package pkg;
 
   public PackageValue(Package pkg) {
@@ -53,9 +55,31 @@ public class PackageValue implements NotComparableSkyValue {
     return "<PackageValue name=" + pkg.getName() + ">";
   }
 
-  public static SkyKey key(PackageIdentifier pkgIdentifier) {
+  public static Key key(PackageIdentifier pkgIdentifier) {
     Preconditions.checkArgument(!pkgIdentifier.getRepository().isDefault());
-    return LegacySkyKey.create(SkyFunctions.PACKAGE, pkgIdentifier);
+    return Key.create(pkgIdentifier);
+  }
+
+  /** Skyframe key for packages */
+  @AutoCodec.VisibleForSerialization
+  @AutoCodec
+  public static class Key extends AbstractSkyKey<PackageIdentifier> {
+    private static final Interner<Key> interner = BlazeInterners.newWeakInterner();
+
+    private Key(PackageIdentifier arg) {
+      super(arg);
+    }
+
+    @AutoCodec.VisibleForSerialization
+    @AutoCodec.Instantiator
+    static Key create(PackageIdentifier arg) {
+      return interner.intern(new Key(arg));
+    }
+
+    @Override
+    public SkyFunctionName functionName() {
+      return SkyFunctions.PACKAGE;
+    }
   }
 
   public static List<SkyKey> keys(Iterable<PackageIdentifier> pkgIdentifiers) {
@@ -65,5 +89,4 @@ public class PackageValue implements NotComparableSkyValue {
     }
     return keys;
   }
-
 }

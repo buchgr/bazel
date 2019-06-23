@@ -14,16 +14,17 @@
 
 package com.google.devtools.build.lib.analysis;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.devtools.build.lib.analysis.OutputGroupProvider.HIDDEN_OUTPUT_GROUP_PREFIX;
+import static com.google.devtools.build.lib.analysis.OutputGroupInfo.HIDDEN_OUTPUT_GROUP_PREFIX;
 import static com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.getAllArtifactsToBuild;
-import static com.google.devtools.build.lib.util.Preconditions.checkNotNull;
 import static java.util.Arrays.asList;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.Root;
+import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.ArtifactsInOutputGroup;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.ArtifactsToBuild;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
@@ -42,17 +43,18 @@ import org.junit.runners.JUnit4;
 public class TopLevelArtifactHelperTest {
 
   private TopLevelArtifactContext ctx;
-  private OutputGroupProvider groupProvider;
+  private OutputGroupInfo groupProvider;
 
   private Path path;
-  private Root root;
+  private ArtifactRoot root;
   private int artifactIdx;
 
   @Before
   public final void setRootDir() throws Exception {
     Scratch scratch = new Scratch();
-    path = scratch.dir("/foo");
-    root = Root.asDerivedRoot(scratch.dir("/"));
+    Path execRoot = scratch.getFileSystem().getPath("/");
+    root = ArtifactRoot.asDerivedRoot(execRoot, scratch.dir("/blaze-out"));
+    path = scratch.dir("/blaze-out/foo");
   }
 
   private void setup(Iterable<Pair<String, Integer>> groupArtifacts) {
@@ -64,7 +66,7 @@ public class TopLevelArtifactHelperTest {
           groupArtifact.getFirst(), newArtifacts(checkNotNull(groupArtifact.getSecond())));
     }
     ctx = new TopLevelArtifactContext(false, setBuilder.build());
-    groupProvider = new OutputGroupProvider(mapBuilder.build());
+    groupProvider = new OutputGroupInfo(mapBuilder.build());
   }
 
   @Test
@@ -123,6 +125,6 @@ public class TopLevelArtifactHelperTest {
   }
 
   private Artifact newArtifact() {
-    return new Artifact(path.getRelative(Integer.toString(artifactIdx++)), root);
+    return ActionsTestUtil.createArtifact(root, path.getRelative(Integer.toString(artifactIdx++)));
   }
 }

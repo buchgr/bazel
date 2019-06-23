@@ -18,6 +18,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
+import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
@@ -109,18 +110,16 @@ public final class UmbrellaHeaderAction extends AbstractFileWriteAction {
   }
 
   @Override
-  protected String computeKey() {
-    Fingerprint f = new Fingerprint();
-    f.addString(GUID);
-    f.addPath(umbrellaHeader.getExecPath());
-    f.addInt(publicHeaders.size());
+  protected void computeKey(ActionKeyContext actionKeyContext, Fingerprint fp) {
+    fp.addString(GUID);
+    fp.addPath(umbrellaHeader.getExecPath());
+    fp.addInt(publicHeaders.size());
     for (Artifact artifact : publicHeaders) {
-      f.addPath(artifact.getExecPath());
+      fp.addPath(artifact.getExecPath());
     }
-    f.addInt(additionalExportedHeaders.size());
+    fp.addInt(additionalExportedHeaders.size());
     for (PathFragment path : additionalExportedHeaders) {
-      f.addPath(path);
+      fp.addPath(path);
     }
-    return f.hexDigestAndReset();
   }
 }

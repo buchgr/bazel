@@ -5,10 +5,10 @@ title: Depsets
 
 # Depsets
 
-Depsets are a specialized data structure for efficiently collecting data across
-a target’s transitive dependencies. Since this use case concerns the [analysis
-phase](concepts.md#evaluation-model), depsets are useful for authors of rules
-and aspects, but probably not macros.
+[Depsets](lib/depset.html) are a specialized data structure for efficiently
+collecting data across a target’s transitive dependencies. Since this use case
+concerns the [analysis phase](concepts.md#evaluation-model), depsets are useful
+for authors of rules and aspects, but probably not macros.
 
 The main feature of depsets is that they support a time- and space-efficient
 merge operation, whose cost is independent of the size of the existing contents.
@@ -22,16 +22,24 @@ Example uses of depsets include:
 *   for an interpreted language, storing the transitive source files that will
     be included in an executable's runfiles
 
-<!-- [TOC] -->
+If you don't need the merge operation, consider using another type, such as
+[list](lib/list.html) or [dict](lib/dict.html).
+
+* ToC
+{:toc}
 
 ## Full example
 
+
+This example is available at
+[https://github.com/bazelbuild/examples/tree/master/rules/depsets](https://github.com/bazelbuild/examples/tree/master/rules/depsets).
+
 Suppose we have a hypothetical interpreted language Foo. In order to build each
-`foo_binary` we need to know all the \*.foo files that it directly or indirectly
+`foo_binary` we need to know all the `*.foo` files that it directly or indirectly
 depends on.
 
 ```python
-# //mypackage:BUILD
+# //depsets:BUILD
 
 load(":foo.bzl", "foo_library", "foo_binary")
 
@@ -66,7 +74,7 @@ foo_binary(
 ```
 
 ```python
-# //mypackage:foocc.py
+# //depsets:foocc.py
 
 # "Foo compiler" that just concatenates its inputs to form its output.
 import sys
@@ -79,7 +87,7 @@ if __name__ == "__main__":
     output.write(input.read())
 ```
 
-Here, the transitive sources of the binary `d` are all of the \*.foo files in
+Here, the transitive sources of the binary `d` are all of the `*.foo` files in
 the `srcs` fields of `a`, `b`, `c`, and `d`. In order for the `foo_binary`
 target to know about any file besides `d.foo`, the `foo_library` targets need to
 pass them along in a provider. Each library receives the providers from its own
@@ -91,10 +99,10 @@ command line for an action.
 Here’s a complete implementation of the `foo_library` and `foo_binary` rules.
 
 ```python
-# //mypackage/foo.bzl
+# //depsets/foo.bzl
 
 # A provider with one field, transitive_sources.
-FooFiles = provider()
+FooFiles = provider(fields = ["transitive_sources"])
 
 def get_transitive_srcs(srcs, deps):
   """Obtain the source files for a target and its transitive dependencies.
@@ -105,11 +113,9 @@ def get_transitive_srcs(srcs, deps):
   Returns:
     a collection of the transitive sources
   """
-  trans_srcs = depset()
-  for dep in deps:
-    trans_srcs += dep[FooFiles].transitive_sources
-  trans_srcs += srcs
-  return trans_srcs
+  return depset(
+        srcs,
+        transitive = [dep[FooFiles].transitive_sources for dep in deps])
 
 def _foo_library_impl(ctx):
   trans_srcs = get_transitive_srcs(ctx.files.srcs, ctx.attr.deps)
@@ -128,18 +134,17 @@ def _foo_binary_impl(ctx):
   out = ctx.outputs.out
   trans_srcs = get_transitive_srcs(ctx.files.srcs, ctx.attr.deps)
   srcs_list = trans_srcs.to_list()
-  cmd_string = (foocc.path + " " + out.path + " " +
-                " ".join([src.path for src in srcs_list]))
-  ctx.actions.run_shell(command=cmd_string,
-                        inputs=srcs_list + [foocc],
-                        outputs=[out])
+  ctx.actions.run(executable = foocc,
+                  arguments = [out.path] + [src.path for src in srcs_list],
+                  inputs = srcs_list + [foocc],
+                  outputs = [out])
 
 foo_binary = rule(
     implementation = _foo_binary_impl,
     attrs = {
         "srcs": attr.label_list(allow_files=True),
         "deps": attr.label_list(),
-        "_foocc": attr.label(default=Label("//mypackage:foocc"),
+        "_foocc": attr.label(default=Label("//depsets:foocc"),
                              allow_files=True, executable=True, cfg="host")
     },
     outputs = {"out": "%{name}.out"},
@@ -147,7 +152,7 @@ foo_binary = rule(
 ```
 
 You can test this by copying these files into a fresh package, renaming the
-labels appropriately, creating the source \*.foo files with dummy content, and
+labels appropriately, creating the source `*.foo` files with dummy content, and
 building the `d` target.
 
 ## Description and operations
@@ -159,29 +164,16 @@ previous without having to read or copy them.
 
 Each node in the DAG holds a list of direct elements and a list of child nodes.
 The contents of the depset are the transitive elements, i.e. the direct elements
-of all the nodes. A new depset with direct elements but no children can be
-created using the [depset](lib/globals.html#depset) constructor. Given an
-existing depset, the `+` operator can be used to form a new depset that has
-additional contents. Specifically, for the operation `a + b` where `a` is a
-depset, the result is a copy of `a` where:
-
-*   if `b` is a depset, then `b` is appended to `a`’s list of children; and
-    otherwise,
-
-*   if `b` is an iterable, then `b`’s elements are appended to `a`’s list of
-    direct elements.
-
-In all cases, the original depset is left unmodified because depsets are
-immutable. The returned value shares most of its internal structure with the old
-depset. As with other immutable types, `s += t` is shorthand for `s = s + t`.
+of all the nodes. A new depset can be created using the
+[depset](lib/globals.html#depset) constructor: it accepts a list of direct
+elements and another list of child nodes.
 
 ```python
 s = depset(["a", "b", "c"])
-t = s
-s += depset(["d", "e"])
+t = depset(["d", "e"], transitive = [s])
 
-print(s)    # depset(["d", "e", "a", "b", "c"])
-print(t)    # depset(["a", "b", "c"])
+print(s)    # depset(["a", "b", "c"])
+print(t)    # depset(["d", "e", "a", "b", "c"])
 ```
 
 To retrieve the contents of a depset, use the
@@ -209,11 +201,6 @@ t = s
 print(s == t)  # True
 
 t = depset(["a", "b", "c"])
-print(s == t)  # False
-
-t = s
-# Trivial modification that adds no elements
-t += []
 print(s == t)  # False
 
 d = {}
@@ -269,20 +256,12 @@ all-parents-before-child guarantee does not apply in the case that there are
 duplicate elements in different nodes of the DAG.
 
 ```python
-# This demonstrates how the + operator interacts with traversal orders.
+# This demonstrates different traversal orders.
 
 def create(order):
-  # Create s with "a" and "b" as direct elements.
-  s = depset(["a", "b"], order=order)
-  # Add a new child with contents "c" and "d".
-  s += depset(["c", "d"], order=order)
-  # Append "e" and "f" as direct elements.
-  s += ["e", "f"]
-  # Add a new child with contents "g" and "h"
-  s += depset(["g", "h"], order=order)
-  # During postorder traversal, all contents of children are emitted first,
-  # then the direct contents.
-  return s
+  cd = depset(["c", "d"], order = order)
+  gh = depset(["g", "h"], order = order)
+  return depset(["a", "b", "e", "f"], transitive = [cd, gh])
 
 print(create("postorder").to_list())  # ["c", "d", "g", "h", "a", "b", "e", "f"]
 print(create("preorder").to_list())   # ["a", "b", "e", "f", "c", "d", "g", "h"]
@@ -293,12 +272,9 @@ print(create("preorder").to_list())   # ["a", "b", "e", "f", "c", "d", "g", "h"]
 
 def create(order):
   a = depset(["a"], order=order)
-  b = depset(["b"], order=order)
-  b += a
-  c = depset(["c"], order=order)
-  c += a
-  d = depset(["d"], order=order)
-  d = d + b + c
+  b = depset(["b"], transitive = [a], order = order)
+  c = depset(["c"], transitive = [a], order = order)
+  d = depset(["d"], transitive = [b, c], order = order)
   return d
 
 print(create("postorder").to_list())    # ["a", "b", "c", "d"]
@@ -309,13 +285,15 @@ print(create("topological").to_list())  # ["d", "b", "c", "a"]
 Due to how traversals are implemented, the order must be specified at the time
 the depset is created with the constructor’s `order` keyword argument. If this
 argument is omitted, the depset has the special `default` order, in which case
-there are no guarantees about the order of any of its elements.
+there are no guarantees about the order of any of its elements (except that it
+is deterministic).
 
 For safety, depsets with different orders cannot be merged with the `+` operator
 unless one of them uses the default order; the resulting depset’s order is the
 same as the left operand. Note that when two depsets of different order are
 merged in this way, the child may appear to have had its elements rearranged
-when it is traversed via the parent.
+when it is traversed via the parent. **The `+` operator is deprecated, anyway;
+use the `transitive` argument instead.**
 
 ## Performance
 
@@ -337,16 +315,16 @@ will appear twice on the command line and twice in the contents of the output
 file.
 
 The next alternative is using a general set, which can be simulated by a
-dictionary where the keys are the elements and all the keys map to `None`.
+dictionary where the keys are the elements and all the keys map to `True`.
 
 ```python
 def get_transitive_srcs(srcs, deps):
   trans_srcs = {}
   for dep in deps:
     for file in dep[FooFiles].transitive_sources:
-      trans_srcs[file] = None
+      trans_srcs[file] = True
   for file in srcs:
-    trans_srcs[file] = None
+    trans_srcs[file] = True
   return trans_srcs
 ```
 
@@ -382,22 +360,17 @@ quadratic behavior.
 The API for depsets is being updated to be more consistent. Here are some recent
 and/or upcoming changes.
 
-*   The name “set” has been replaced by “depset”. Do not use the `set`
-    constructor in new code; it is deprecated and will be removed. The traversal
-    orders have undergone a similar renaming; their old names will be removed as
-    well.
-
-*   Depset contents should be retrieved using `to_list()`, not by iterating over
-    the depset itself. Direct iteration over depsets is deprecated and will be
-    removed. I.e., don't use `list(...)`, `sorted(...)`, or other functions
-    expecting an iterable, on depsets.
+*   When it's necessary to retrieve a depset's contents, this should be done by
+    explicitly converting the depset to a list via its `to_list()` method. Do
+    not iterate directly over the depset itself; direct iteration is deprecated
+    and will be removed. For example, don't use `list(...)`, `sorted(...)`, or
+    other functions expecting an iterable, on depsets. The rationale of this
+    change is that iterating over depsets is generally expensive, and expensive
+    operations should be made obvious in code.
 
 *   Depset elements currently must have the same type, e.g. all ints or all
     strings. This restriction will be lifted.
 
-*   The `|` operator is defined for depsets as a synonym for `+`. This will be
-    going away; use `+` instead.
-
-*   (Pending approval) The `+` operator will be deprecated in favor of a new
-    syntax based on function calls. This avoids confusion regarding how `+`
-    treats direct elements vs children.
+*   A merge operation should be done by using the `transitive` argument in the
+    depset constructor. All other methods (`|` and `+` operators, and the
+    `union` method) are deprecated and will be going away.

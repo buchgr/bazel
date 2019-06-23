@@ -24,9 +24,6 @@ public class BuildInfo {
    */
   public static final String BUILD_EMBED_LABEL = "BUILD_EMBED_LABEL";
 
-  /** Named constant for the reference timestamp to be included. */
-  public static final String SOURCE_DATE_EPOCH = "SOURCE_DATE_EPOCH";
-
   /**
    * The name of the user that performs the build.
    */
@@ -38,7 +35,7 @@ public class BuildInfo {
   public static final String BUILD_HOST = "BUILD_HOST";
 
   /**
-   * Build time as milliseconds since epoch
+   * Build time as seconds since epoch
    */
   public static final String BUILD_TIMESTAMP = "BUILD_TIMESTAMP";
 

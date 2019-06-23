@@ -21,11 +21,15 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${CURRENT_DIR}/../integration_test_setup.sh" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
+add_to_bazelrc "build --experimental_build_event_upload_strategy=local"
+
 #### SETUP #############################################################
 
 set -e
 
 function set_up() {
+  setup_skylib_support
+
   mkdir -p pkg
   touch pkg/somesourcefile
   cat > pkg/true.sh <<'EOF'
@@ -70,7 +74,7 @@ sh_test(
 genrule(
   name = "fails_to_build",
   outs = ["fails_to_build.txt"],
-  cmd = "false",
+  cmd = "echo This build will fail && false",
   executable = 1,
 )
 sh_test(
@@ -121,7 +125,7 @@ simple_aspect = aspect(implementation=_simple_aspect_impl)
 EOF
 cat > failingaspect.bzl <<'EOF'
 def _failing_aspect_impl(target, ctx):
-    for orig_out in ctx.rule.attr.outs:
+    for orig_out in ctx.rule.attr.outs.to_list():
         aspect_out = ctx.actions.declare_file(orig_out.name + ".aspect")
         ctx.actions.run_shell(
             inputs = [],
@@ -154,6 +158,25 @@ genrule(
     srcs = ["//visibility/hidden:hello"],
     cmd = "cp $< $@",
 )
+
+genrule(
+    name = "indirect",
+    outs = ["indirect.txt"],
+    srcs = [":cannotsee"],
+    cmd = "cp $< $@",
+)
+genrule(
+    name = "cannotsee2",
+    outs = ["cannotsee2.txt"],
+    srcs = ["//visibility/hidden:hello"],
+    cmd = "cp $< $@",
+)
+genrule(
+    name = "indirect2",
+    outs = ["indirect2.txt"],
+    srcs = [":cannotsee2.txt"],
+    cmd = "cp $< $@",
+)
 EOF
 mkdir -p failingtool
 cat > failingtool/BUILD <<'EOF'
@@ -184,13 +207,32 @@ alias(
   actual = "//alias/actual:it",
 )
 EOF
+mkdir -p chain
+cat > chain/BUILD <<'EOF'
+genrule(
+  name = "entry0",
+  outs = ["entry0.txt"],
+  cmd = "echo Hello0; touch $@",
+)
+EOF
+for i in `seq 1 10`
+do
+    cat >> chain/BUILD <<EOF
+genrule(
+  name = "entry$i",
+  outs = ["entry$i.txt"],
+  srcs = [ "entry$(( $i - 1)).txt" ],
+  cmd = "echo Hello$i; cp \$< \$@",
+)
+EOF
+done
 }
 
 #### TESTS #############################################################
 
 function test_basic() {
   # Basic properties of the event stream
-  # - a completed target explicity requested should be reported
+  # - a completed target explicitly requested should be reported
   # - after success the stream should close naturally, without any
   #   reports about aborted events
   # - the command line is reported in structured and unstructured form
@@ -241,7 +283,9 @@ function test_basic() {
   expect_log 'build_finished'
   expect_log 'SUCCESS'
   expect_log 'finish_time'
+  expect_log_once 'last_message: true'
   expect_not_log 'aborted'
+  expect_log_once '^build_tool_logs'
 
   # Target kind for the sh_test
   expect_log 'target_kind:.*sh'
@@ -305,6 +349,8 @@ function test_suite() {
     || fail "bazel test failed"
   expect_log 'pkg:true'
   expect_not_log 'aborted'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_test_summary() {
@@ -333,6 +379,8 @@ function test_test_inidivual_results() {
   expect_log 'status.*PASSED'
   expect_log_once '^test_summary '
   expect_not_log 'aborted'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_test_attempts() {
@@ -441,6 +489,27 @@ function test_target_complete() {
   expect_log 'tag2'
 }
 
+function test_test_target_complete() {
+    bazel test --build_event_text_file="${TEST_log}" pkg:true \
+          || tail "expected success"
+    expect_log_once '^completed'
+
+    cp "${TEST_log}" complete_event
+    ed complete_event <<'EOF'
+1
+/^complete
+1,.-1d
+/^}
++1,$d
+w
+q
+EOF
+    grep -q 'output_group' complete_event \
+        || fail "expected reference to output in complete event"
+
+    expect_log 'name: *"pkg/true.sh"'
+}
+
 function test_extra_action() {
   # verify that normal successful actions are not reported, but extra actions
   # are
@@ -451,6 +520,8 @@ function test_extra_action() {
     --experimental_action_listener=pkg:listener \
     pkg:output_files_and_tags || fail "bazel build with listener failed"
   expect_log '^action'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_action_ids() {
@@ -482,6 +553,8 @@ function test_aspect_artifacts() {
   expect_not_log 'aborted'
   count=`grep '^configured' "${TEST_log}" | wc -l`
   [ "${count}" -eq 2 ] || fail "Expected 2 configured events, found $count."
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_failing_aspect() {
@@ -491,6 +564,8 @@ function test_failing_aspect() {
     pkg:output_files_and_tags && fail "expected failure") || true
   expect_log 'aspect.*failing_aspect'
   expect_log '^finished'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_build_only() {
@@ -505,24 +580,8 @@ function test_build_only() {
   expect_log 'build_finished'
   expect_log 'finish_time'
   expect_log 'SUCCESS'
-}
-
-function test_query() {
-  # Verify that at least a minimally meaningful event stream is generated
-  # for non-build. In particular, we expect bazel not to crash.
-  bazel query --build_event_text_file=$TEST_log 'tests(//...)' \
-    || fail "bazel query failed"
-  expect_log '^started'
-  expect_log 'command: "query"'
-  expect_log 'args: "--build_event_text_file='
-  expect_log 'build_finished'
-  expect_not_log 'aborted'
-  # For query, we also expect the full output to be contained in the protocol,
-  # as well as a proper finished event.
-  expect_log '//pkg:true'
-  expect_log '//pkg:slow'
-  expect_log '^finished'
-  expect_log 'name: "SUCCESS"'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_command_whitelisting() {
@@ -572,12 +631,15 @@ function test_root_cause_early() {
   # precisely on report on a completed target; moreover, the action has
   # to be reported first.
   expect_log_once '^action'
+  expect_log 'type: "Genrule"'
   expect_log_once '^completed'
   expect_not_log 'success: true'
   local naction=`grep -n '^action' $TEST_log | cut -f 1 -d :`
   local ncomplete=`grep -n '^completed' $TEST_log | cut -f 1 -d :`
   [ $naction -lt $ncomplete ] \
       || fail "failed action not before completed target"
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_action_conf() {
@@ -596,36 +658,78 @@ function test_loading_failure() {
   # reason for the target expansion event not resulting in targets
   # being expanded.
   (bazel build --build_event_text_file=$TEST_log \
-         --noexperimental_skyframe_target_pattern_evaluator \
          //does/not/exist && fail "build failure expected") || true
   expect_log_once 'aborted'
   expect_log_once 'reason: LOADING_FAILURE'
-  expect_log 'description.*BUILD file not found on package path'
+  expect_log 'description.*BUILD file not found'
   expect_not_log 'expanded'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_visibility_failure() {
   bazel shutdown
   (bazel build --build_event_text_file=$TEST_log \
          //visibility:cannotsee && fail "build failure expected") || true
-  expect_log_once 'reason: ANALYSIS_FAILURE'
-  expect_log_once '^aborted'
+  expect_log 'reason: ANALYSIS_FAILURE'
+  expect_log '^aborted'
 
   # The same should hold true, if the server has already analyzed the target
   (bazel build --build_event_text_file=$TEST_log \
          //visibility:cannotsee && fail "build failure expected") || true
-  expect_log_once 'reason: ANALYSIS_FAILURE'
-  expect_log_once '^aborted'
+  expect_log 'reason: ANALYSIS_FAILURE'
+  expect_log '^aborted'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
+}
+
+function test_visibility_indirect() {
+  # verify that an indirect visibility error is reported, including the
+  # target that violates visibility constraints.
+  bazel shutdown
+  (bazel build --build_event_text_file=$TEST_log \
+         //visibility:indirect && fail "build failure expected") || true
+  expect_log 'reason: ANALYSIS_FAILURE'
+  expect_log '^aborted'
+  expect_log '//visibility:cannotsee'
+  # There should be precisely one events with target_completed as event id type
+  (echo 'g/^id/+1p'; echo 'q') | ed "${TEST_log}" 2>&1 | tail -n +2 > event_id_types
+  [ `grep target_completed event_id_types | wc -l` -eq 1 ] \
+      || fail "not precisely one target_completed event id"
+}
+
+function test_independent_visibility_failures() {
+  bazel shutdown
+  (bazel build -k --build_event_text_file=$TEST_log \
+         //visibility:indirect //visibility:indirect2 \
+       && fail "build failure expected") || true
+  (echo 'g/^aborted/.,+2p'; echo 'q') | ed "${TEST_log}" 2>&1 | tail -n +2 \
+     > aborted_events
+  [ `grep '^aborted' aborted_events | wc -l` \
+        -eq `grep ANALYSIS_FAILURE aborted_events | wc -l` ] \
+      || fail "events should only be aborted due to analysis failure"
 }
 
 function test_loading_failure_keep_going() {
   (bazel build --build_event_text_file=$TEST_log \
-         --noexperimental_skyframe_target_pattern_evaluator \
          -k //does/not/exist && fail "build failure expected") || true
   expect_log_once 'aborted'
   expect_log_once 'reason: LOADING_FAILURE'
+  # We don't expect an expanded message in this case, since all patterns failed.
+  expect_log 'description.*BUILD file not found'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
+}
+
+function test_loading_failure_keep_going_two_targets() {
+  (bazel build --build_event_text_file=$TEST_log \
+         -k //does/not/exist //pkg:somesourcefile && fail "build failure expected") || true
+  expect_log_once 'aborted'
+  expect_log_once 'reason: LOADING_FAILURE'
   expect_log_once '^expanded'
-  expect_log 'description.*BUILD file not found on package path'
+  expect_log 'description.*BUILD file not found'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 # TODO(aehlig): readd, once we stop reporting the important artifacts
@@ -657,6 +761,18 @@ function test_stdout_stderr_reported() {
   expect_log "stderr.*${sample_line}"
 }
 
+function test_unbuffered_stdout_stderr() {
+   # Verify that the option --bes_outerr_buffer_size ensures that messages are
+   # flushed out to the BEP immediately
+  bazel clean --expunge
+  bazel build --build_event_text_file="${TEST_log}" \
+        --bes_outerr_buffer_size=1 chain:entry10
+  progress_count=$(grep '^progress' "${TEST_log}" | wc -l )
+  # As we requested no buffereing, each action output has to be reported
+  # immediately, creating an individual progress event.
+  [ "${progress_count}" -gt 10 ] || fail "expected at least 10 progress events"
+}
+
 function test_srcfiles() {
   # Even if the build target is a source file, the stream should be correctly
   # and bazel shouldn't crash.
@@ -665,6 +781,8 @@ function test_srcfiles() {
   expect_log 'SUCCESS'
   expect_log_once '^configuration'
   expect_not_log 'aborted'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_test_fails_to_build() {
@@ -673,6 +791,9 @@ function test_test_fails_to_build() {
   expect_not_log '^test_summary'
   expect_log 'last_message: true'
   expect_log 'BUILD_FAILURE'
+  expect_log 'last_message: true'
+  expect_log 'command_line:.*This build will fail'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_no_tests_found() {
@@ -681,6 +802,8 @@ function test_no_tests_found() {
   expect_not_log '^test_summary'
   expect_log 'last_message: true'
   expect_log 'NO_TESTS_FOUND'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_no_tests_found_build_failure() {
@@ -690,6 +813,8 @@ function test_no_tests_found_build_failure() {
   expect_log 'last_message: true'
   expect_log 'yet testing was requested'
   expect_log 'BUILD_FAILURE'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
 }
 
 function test_alias() {
@@ -712,6 +837,27 @@ function test_alias() {
     || fail "build failed"
   expect_log 'label: "//alias:it"'
   expect_not_log 'label: "//alias/actual'
+}
+
+function test_circular_dep() {
+  touch test.sh
+  chmod u+x test.sh
+  cat > BUILD <<'EOF'
+sh_test(
+  name = "circular",
+  srcs = ["test.sh"],
+  deps = ["circular"],
+)
+EOF
+  (bazel build --build_event_text_file="${TEST_log}" :circular \
+      && fail "Expected failure") || :
+  expect_log_once 'last_message: true'
+  expect_log 'name: "PARSING_FAILURE"'
+
+  (bazel test --build_event_text_file="${TEST_log}" :circular \
+      && fail "Expected failure") || :
+  expect_log_once 'last_message: true'
+  expect_log 'name: "PARSING_FAILURE"'
 }
 
 function test_missing_file() {
@@ -766,5 +912,46 @@ function test_tool_command_line() {
   expect_log_once 'chunk: "foo bar"'
 }
 
+function test_noanalyze() {
+  bazel build --noanalyze --build_event_text_file="${TEST_log}" pkg:true \
+    || fail "build failed"
+  expect_log_once '^aborted'
+  expect_log 'reason: NO_ANALYZE'
+  expect_log 'last_message: true'
+  expect_log_once '^build_tool_logs'
+}
+
+function test_nobuild() {
+  bazel build --nobuild --build_event_text_file="${TEST_log}" pkg:true \
+    || fail "build failed"
+  expect_log_once '^aborted'
+  expect_log 'reason: NO_BUILD'
+}
+
+function test_server_pid() {
+  bazel build --test_output=all --build_event_text_file=bep.txt \
+    || fail "Build failed but should have succeeded"
+  cat bep.txt | grep server_pid >> "$TEST_log"
+  expect_log_once "server_pid:.*$(bazel info server_pid)$"
+  rm bep.txt
+}
+
+function test_bep_report_all_artifacts() {
+  bazel build --test_output=all --build_event_text_file=bep.txt \
+      --experimental_bep_report_only_important_artifacts=false //pkg:true \
+      || fail "Build failed but should have succeeded"
+  cat bep.txt >> "$TEST_log"
+  expect_log "_hidden_top_level_INTERNAL_"
+  rm bep.txt
+}
+
+function test_bep_report_only_important_artifacts() {
+  bazel build --test_output=all --build_event_text_file=bep.txt \
+      --experimental_bep_report_only_important_artifacts=true //pkg:true \
+      || fail "Build failed but should have succeeded"
+  cat bep.txt >> "$TEST_log"
+  expect_not_log "_hidden_top_level_INTERNAL_"
+  rm bep.txt
+}
 
 run_suite "Integration tests for the build event stream"

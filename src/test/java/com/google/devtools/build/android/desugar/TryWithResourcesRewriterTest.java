@@ -19,12 +19,14 @@ import static com.google.devtools.build.android.desugar.runtime.ThrowableExtensi
 import static com.google.devtools.build.android.desugar.runtime.ThrowableExtensionTestUtility.isMimicStrategy;
 import static com.google.devtools.build.android.desugar.runtime.ThrowableExtensionTestUtility.isNullStrategy;
 import static com.google.devtools.build.android.desugar.runtime.ThrowableExtensionTestUtility.isReuseStrategy;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 import static org.junit.Assert.fail;
 import static org.objectweb.asm.ClassWriter.COMPUTE_MAXS;
 import static org.objectweb.asm.Opcodes.ASM5;
 import static org.objectweb.asm.Opcodes.INVOKESTATIC;
 import static org.objectweb.asm.Opcodes.INVOKEVIRTUAL;
 
+import com.google.devtools.build.android.desugar.io.BitFlags;
 import com.google.devtools.build.android.desugar.runtime.ThrowableExtension;
 import com.google.devtools.build.android.desugar.testdata.ClassUsingTryWithResources;
 import java.io.IOException;
@@ -156,23 +158,20 @@ public class TryWithResourcesRewriterTest {
   @Test
   public void testSimpleTryWithResources() throws Throwable {
     {
-      try {
-        ClassUsingTryWithResources.simpleTryWithResources();
-        fail("Expected RuntimeException");
-      } catch (RuntimeException expected) {
-        assertThat(expected.getClass()).isEqualTo(RuntimeException.class);
+      RuntimeException expected =
+          assertThrows(
+              RuntimeException.class, () -> ClassUsingTryWithResources.simpleTryWithResources());
+      assertThat(expected.getClass()).isEqualTo(RuntimeException.class);
         assertThat(expected.getSuppressed()).hasLength(1);
-        assertThat(expected.getSuppressed()[0].getClass()).isEqualTo(IOException.class);
-      }
+      assertThat(expected.getSuppressed()[0].getClass()).isEqualTo(IOException.class);
     }
 
     try {
-      try {
-        desugaredClass.getMethod("simpleTryWithResources").invoke(null);
-        fail("Expected RuntimeException");
-      } catch (InvocationTargetException e) {
-        throw e.getCause();
-      }
+      InvocationTargetException e =
+          assertThrows(
+              InvocationTargetException.class,
+              () -> desugaredClass.getMethod("simpleTryWithResources").invoke(null));
+      throw e.getCause();
     } catch (RuntimeException expected) {
       String expectedStrategyName = getTwrStrategyClassNameSpecifiedInSystemProperty();
       assertThat(getStrategyClassName()).isEqualTo(expectedStrategyName);
@@ -206,16 +205,20 @@ public class TryWithResourcesRewriterTest {
         .isEqualTo(orig.countExtPrintStackTracePrintWriter());
 
     assertThat(orig.countThrowableGetSuppressed()).isEqualTo(desugared.countExtGetSuppressed());
-    // $closeResource is rewritten to ThrowableExtension.closeResource, so addSuppressed() is called
-    // in the runtime library now.
-    assertThat(orig.countThrowableAddSuppressed())
-        .isAtLeast(desugared.countThrowableAddSuppressed());
+    // $closeResource may be specialized into multiple versions.
+    assertThat(orig.countThrowableAddSuppressed()).isAtMost(desugared.countExtAddSuppressed());
     assertThat(orig.countThrowablePrintStackTrace()).isEqualTo(desugared.countExtPrintStackTrace());
     assertThat(orig.countThrowablePrintStackTracePrintStream())
         .isEqualTo(desugared.countExtPrintStackTracePrintStream());
     assertThat(orig.countThrowablePrintStackTracePrintWriter())
         .isEqualTo(desugared.countExtPrintStackTracePrintWriter());
 
+    if (orig.getSyntheticCloseResourceCount() > 0) {
+      // Depending on the specific javac version, $closeResource(Throwable, AutoCloseable) may not
+      // be there.
+      assertThat(orig.getSyntheticCloseResourceCount()).isEqualTo(1);
+      assertThat(desugared.getSyntheticCloseResourceCount()).isAtLeast(1);
+    }
     assertThat(desugared.countThrowablePrintStackTracePrintStream()).isEqualTo(0);
     assertThat(desugared.countThrowablePrintStackTracePrintStream()).isEqualTo(0);
     assertThat(desugared.countThrowablePrintStackTracePrintWriter()).isEqualTo(0);
@@ -270,6 +273,7 @@ public class TryWithResourcesRewriterTest {
   private static class DesugaredThrowableMethodCallCounter extends ClassVisitor {
     private final ClassLoader classLoader;
     private final Map<String, AtomicInteger> counterMap;
+    private int syntheticCloseResourceCount;
 
     public DesugaredThrowableMethodCallCounter(ClassLoader loader) {
       super(ASM5);
@@ -291,6 +295,12 @@ public class TryWithResourcesRewriterTest {
     @Override
     public MethodVisitor visitMethod(
         int access, String name, String desc, String signature, String[] exceptions) {
+      if (BitFlags.isSet(access, Opcodes.ACC_SYNTHETIC | Opcodes.ACC_STATIC)
+          && name.equals("$closeResource")
+          && Type.getArgumentTypes(desc).length == 2
+          && Type.getArgumentTypes(desc)[0].getDescriptor().equals("Ljava/lang/Throwable;")) {
+        ++syntheticCloseResourceCount;
+      }
       return new InvokeCounter();
     }
 
@@ -322,6 +332,10 @@ public class TryWithResourcesRewriterTest {
           counter.incrementAndGet();
         }
       }
+    }
+
+    public int getSyntheticCloseResourceCount() {
+      return syntheticCloseResourceCount;
     }
 
     public int countThrowableAddSuppressed() {
@@ -396,13 +410,16 @@ public class TryWithResourcesRewriterTest {
     private byte[] desugarTryWithResources(String className) {
       try {
         ClassReader reader = new ClassReader(className);
+        CloseResourceMethodScanner scanner = new CloseResourceMethodScanner();
+        reader.accept(scanner, ClassReader.SKIP_DEBUG);
         ClassWriter writer = new ClassWriter(reader, COMPUTE_MAXS);
         TryWithResourcesRewriter rewriter =
             new TryWithResourcesRewriter(
                 writer,
                 TryWithResourcesRewriterTest.class.getClassLoader(),
                 visitedExceptionTypes,
-                numOfTryWithResourcesInvoked);
+                numOfTryWithResourcesInvoked,
+                scanner.hasCloseResourceMethod());
         reader.accept(rewriter, 0);
         return writer.toByteArray();
       } catch (IOException e) {

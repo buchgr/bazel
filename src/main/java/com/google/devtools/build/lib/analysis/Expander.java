@@ -17,8 +17,8 @@ import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.LocationExpander.Options;
 import com.google.devtools.build.lib.analysis.stringtemplate.ExpansionException;
+import com.google.devtools.build.lib.analysis.stringtemplate.TemplateContext;
 import com.google.devtools.build.lib.analysis.stringtemplate.TemplateExpander;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.shell.ShellUtils;
@@ -31,65 +31,58 @@ import javax.annotation.Nullable;
  * Expansion of strings and string lists by replacing make variables and $(location) functions.
  */
 public final class Expander {
-  /** Indicates whether a string list attribute should be tokenized. */
-  private enum Tokenize {
-    YES,
-    NO
-  }
 
   private final RuleContext ruleContext;
-  private final ConfigurationMakeVariableContext makeVariableContext;
-  @Nullable private final LocationExpander locationExpander;
+  private final TemplateContext templateContext;
+  @Nullable ImmutableMap<Label, ImmutableCollection<Artifact>> labelMap;
 
-  private Expander(
-      RuleContext ruleContext,
-      ConfigurationMakeVariableContext makeVariableContext,
-      @Nullable LocationExpander locationExpander) {
-    this.ruleContext = ruleContext;
-    this.makeVariableContext = makeVariableContext;
-    this.locationExpander = locationExpander;
+  Expander(RuleContext ruleContext, TemplateContext templateContext) {
+    this(ruleContext, templateContext, /* labelMap= */ null);
   }
 
   Expander(
       RuleContext ruleContext,
-      ConfigurationMakeVariableContext makeVariableContext) {
-    this(ruleContext, makeVariableContext, null);
+      TemplateContext templateContext,
+      @Nullable ImmutableMap<Label, ImmutableCollection<Artifact>> labelMap) {
+    this.ruleContext = ruleContext;
+    this.templateContext = templateContext;
+    this.labelMap = labelMap;
   }
 
   /**
-   * Returns a new instance that also expands locations using the default configuration of
-   * {@link LocationExpander}.
+   * Returns a new instance that also expands locations using the default configuration of {@link
+   * LocationTemplateContext}.
    */
-  public Expander withLocations(Options... options) {
-    LocationExpander newLocationExpander =
-        new LocationExpander(ruleContext, options);
-    return new Expander(ruleContext, makeVariableContext, newLocationExpander);
+  private Expander withLocations(boolean execPaths, boolean allowData) {
+    TemplateContext newTemplateContext =
+        new LocationTemplateContext(templateContext, ruleContext, labelMap, execPaths, allowData);
+    return new Expander(ruleContext, newTemplateContext, labelMap);
   }
 
   /**
-   * Returns a new instance that also expands locations, passing {@link Options#ALLOW_DATA} to the
-   * underlying {@link LocationExpander}.
+   * Returns a new instance that also expands locations, passing {@code allowData} to the underlying
+   * {@link LocationTemplateContext}.
    */
   public Expander withDataLocations() {
-    return withLocations(Options.ALLOW_DATA);
+    return withLocations(false, true);
   }
 
   /**
-   * Returns a new instance that also expands locations, passing {@link Options#ALLOW_DATA} and
-   * {@link Options#EXEC_PATHS} to the underlying {@link LocationExpander}.
+   * Returns a new instance that also expands locations, passing {@code allowData} and {@code
+   * execPaths} to the underlying {@link LocationTemplateContext}.
    */
   public Expander withDataExecLocations() {
-    return withLocations(Options.ALLOW_DATA, Options.EXEC_PATHS);
+    return withLocations(true, true);
   }
 
   /**
    * Returns a new instance that also expands locations, passing the given location map, as well as
-   * {@link Options#EXEC_PATHS} to the underlying {@link LocationExpander}.
+   * {@code execPaths} to the underlying {@link LocationTemplateContext}.
    */
   public Expander withExecLocations(ImmutableMap<Label, ImmutableCollection<Artifact>> locations) {
-    LocationExpander newLocationExpander =
-        new LocationExpander(ruleContext, locations, Options.EXEC_PATHS);
-    return new Expander(ruleContext, makeVariableContext, newLocationExpander);
+    TemplateContext newTemplateContext =
+        new LocationTemplateContext(templateContext, ruleContext, locations, true, false);
+    return new Expander(ruleContext, newTemplateContext);
   }
 
   /**
@@ -100,19 +93,14 @@ public final class Expander {
       List<String> result,
       String attributeName,
       String value) {
-    expandValue(result, attributeName, value, Tokenize.YES);
+    expandValue(result, attributeName, value, /* shouldTokenize */ true);
   }
 
-  /**
-   * Expands make variables and $(location) tags in value, and optionally tokenizes the result.
-   */
+  /** Expands make variables and $(location) tags in value, and optionally tokenizes the result. */
   private void expandValue(
-      List<String> tokens,
-      String attributeName,
-      String value,
-      Tokenize tokenize) {
+      List<String> tokens, String attributeName, String value, boolean shouldTokenize) {
     value = expand(attributeName, value);
-    if (tokenize == Tokenize.YES) {
+    if (shouldTokenize) {
       try {
         ShellUtils.tokenize(tokens, value);
       } catch (ShellUtils.TokenizationException e) {
@@ -145,14 +133,15 @@ public final class Expander {
    * @param expression the string to expand.
    * @return the expansion of "expression".
    */
-  public String expand(String attributeName, String expression) {
-    if (locationExpander != null) {
-      expression = locationExpander.expandAttribute(attributeName, expression);
-    }
+  public String expand(@Nullable String attributeName, String expression) {
     try {
-      return TemplateExpander.expand(expression, makeVariableContext);
+      return TemplateExpander.expand(expression, templateContext);
     } catch (ExpansionException e) {
-      ruleContext.attributeError(attributeName, e.getMessage());
+      if (attributeName == null) {
+        ruleContext.ruleError(e.getMessage());
+      } else {
+        ruleContext.attributeError(attributeName, e.getMessage());
+      }
       return expression;
     }
   }
@@ -162,10 +151,10 @@ public final class Expander {
    * attribute name is only used for error reporting.
    */
   private ImmutableList<String> expandAndTokenizeList(
-      String attrName, List<String> values, Tokenize tokenize) {
+      String attrName, List<String> values, boolean shouldTokenize) {
     List<String> variables = new ArrayList<>();
     for (String variable : values) {
-      expandValue(variables, attrName, variable, tokenize);
+      expandValue(variables, attrName, variable, shouldTokenize);
     }
     return ImmutableList.copyOf(variables);
   }
@@ -183,7 +172,7 @@ public final class Expander {
    * Expands all the strings in the given list. The attribute name is only used for error reporting.
    */
   public ImmutableList<String> list(String attrName, List<String> values) {
-    return expandAndTokenizeList(attrName, values, Tokenize.NO);
+    return expandAndTokenizeList(attrName, values, /* shouldTokenize */ false);
   }
 
   /**
@@ -199,7 +188,7 @@ public final class Expander {
    * name is only used for error reporting.
    */
   public ImmutableList<String> tokenized(String attrName, List<String> values) {
-    return expandAndTokenizeList(attrName, values, Tokenize.YES);
+    return expandAndTokenizeList(attrName, values, /* shouldTokenize */ true);
   }
 
   /**
@@ -214,7 +203,7 @@ public final class Expander {
   @Nullable
   public String expandSingleMakeVariable(String attrName, String expression) {
     try {
-      return TemplateExpander.expandSingleVariable(expression, makeVariableContext);
+      return TemplateExpander.expandSingleVariable(expression, templateContext);
     } catch (ExpansionException e) {
       ruleContext.attributeError(attrName, e.getMessage());
       return expression;

@@ -20,16 +20,17 @@
 
 #include "src/main/cpp/blaze_util_platform.h"
 #include "src/main/cpp/util/file.h"
-#include "gtest/gtest.h"
+#include "src/main/cpp/util/path.h"
+#include "googletest/include/gtest/gtest.h"
 
 namespace blaze {
 
 class WorkspaceLayoutTest : public ::testing::Test {
  protected:
-  WorkspaceLayoutTest() :
-      build_root_(blaze_util::JoinPath(
-          blaze::GetEnv("TEST_TMPDIR"), "build_root")),
-      workspace_layout_(new WorkspaceLayout()) {}
+  WorkspaceLayoutTest()
+      : build_root_(blaze_util::JoinPath(blaze::GetPathEnv("TEST_TMPDIR"),
+                                         "build_root")),
+        workspace_layout_(new WorkspaceLayout()) {}
 
   void SetUp() override {
     ASSERT_TRUE(blaze_util::MakeDirectories(build_root_, 0755));

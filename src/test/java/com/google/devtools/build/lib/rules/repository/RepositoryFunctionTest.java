@@ -18,21 +18,23 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.io.BaseEncoding;
+import com.google.devtools.build.lib.actions.FileContentsProxy;
+import com.google.devtools.build.lib.actions.FileStateValue;
+import com.google.devtools.build.lib.actions.FileStateValue.RegularFileStateValue;
+import com.google.devtools.build.lib.actions.FileValue;
+import com.google.devtools.build.lib.actions.FileValue.RegularFileValue;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.packages.Rule;
-import com.google.devtools.build.lib.skyframe.FileContentsProxy;
-import com.google.devtools.build.lib.skyframe.FileStateValue;
-import com.google.devtools.build.lib.skyframe.FileStateValue.RegularFileStateValue;
-import com.google.devtools.build.lib.skyframe.FileValue;
-import com.google.devtools.build.lib.skyframe.FileValue.RegularFileValue;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
+import com.google.devtools.build.skyframe.SkyKey;
 import java.util.Map;
 import javax.annotation.Nullable;
 import org.junit.Test;
@@ -52,8 +54,13 @@ public class RepositoryFunctionTest extends BuildViewTestCase {
   static class TestingRepositoryFunction extends RepositoryFunction {
     @Nullable
     @Override
-    public RepositoryDirectoryValue.Builder fetch(Rule rule, Path outputDirectory,
-        BlazeDirectories directories, SkyFunction.Environment env, Map<String, String> markerData)
+    public RepositoryDirectoryValue.Builder fetch(
+        Rule rule,
+        Path outputDirectory,
+        BlazeDirectories directories,
+        SkyFunction.Environment env,
+        Map<String, String> markerData,
+        SkyKey key)
         throws SkyFunctionException, InterruptedException {
       return null;
     }
@@ -122,15 +129,16 @@ public class RepositoryFunctionTest extends BuildViewTestCase {
 
   @Test
   public void testFileValueToMarkerValue() throws Exception {
-    RootedPath path = RootedPath.toRootedPath(rootDirectory, scratch.file("foo", "bar"));
+    RootedPath path =
+        RootedPath.toRootedPath(Root.fromPath(rootDirectory), scratch.file("foo", "bar"));
 
     // Digest should be returned if the FileStateValue has it.
-    FileStateValue fsv = new RegularFileStateValue(3, 100, new byte[] {1, 2, 3, 4}, null);
+    FileStateValue fsv = new RegularFileStateValue(3, new byte[] {1, 2, 3, 4}, null);
     FileValue fv = new RegularFileValue(path, fsv);
     assertThat(RepositoryFunction.fileValueToMarkerValue(fv)).isEqualTo("01020304");
 
     // Digest should also be returned if the FileStateValue doesn't have it.
-    fsv = new RegularFileStateValue(3, 100, null, new FileContentsProxy(100, 200));
+    fsv = new RegularFileStateValue(3, null, new FileContentsProxy(100, 200));
     fv = new RegularFileValue(path, fsv);
     String expectedDigest = BaseEncoding.base16().lowerCase().encode(path.asPath().getDigest());
     assertThat(RepositoryFunction.fileValueToMarkerValue(fv)).isEqualTo(expectedDigest);

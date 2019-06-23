@@ -17,20 +17,17 @@ package com.google.devtools.build.lib.rules.cpp;
 import com.google.devtools.build.lib.actions.Artifact;
 
 /**
- * Something that appears on the command line of the linker. Since we sometimes expand archive
- * files to their constituent object files, we need to keep information whether a certain file
- * contains embedded objects and if so, the list of the object files themselves.
+ * Something that appears on the command line of the linker. Since we sometimes expand archive files
+ * to their constituent object files, we need to keep information whether a certain file contains
+ * embedded objects and if so, the list of the object files themselves.
  */
 public interface LinkerInput {
-
   /**
    * Returns the type of the linker input.
    */
   ArtifactCategory getArtifactCategory();
 
-  /**
-   * Returns the artifact that is the input of the linker.
-   */
+  /** Returns the artifact that is the input of the linker. */
   Artifact getArtifact();
 
   /**
@@ -54,4 +51,12 @@ public interface LinkerInput {
    * legal to call this only when {@link #containsObjectFiles()} returns true.
    */
   Iterable<Artifact> getObjectFiles();
+
+  /**
+   * Returns whether we must keep debug symbols for this input.
+   */
+  boolean isMustKeepDebug();
+
+  /** If true, Bazel will not wrap this input in whole-archive block. */
+  boolean disableWholeArchive();
 }

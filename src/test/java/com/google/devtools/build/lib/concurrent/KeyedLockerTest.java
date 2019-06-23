@@ -14,15 +14,15 @@
 package com.google.devtools.build.lib.concurrent;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.fail;
+import static com.google.devtools.build.lib.testutil.MoreAsserts.assertThrows;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
 import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.devtools.build.lib.concurrent.KeyedLocker.AutoUnlocker;
 import com.google.devtools.build.lib.concurrent.KeyedLocker.AutoUnlocker.IllegalUnlockException;
 import com.google.devtools.build.lib.testutil.TestUtils;
-import com.google.devtools.build.lib.util.Preconditions;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -110,11 +110,7 @@ public abstract class KeyedLockerTest {
   protected void runDoubleUnlockOnSameAutoUnlockerNotAllowed(final Supplier<AutoUnlocker> lockFn) {
     AutoUnlocker unlocker = lockFn.get();
     unlocker.close();
-    try {
-      unlocker.close();
-      fail();
-    } catch (IllegalUnlockException expected) {
-    }
+    assertThrows(IllegalUnlockException.class, () -> unlocker.close());
   }
 
   @Test
@@ -192,22 +188,21 @@ public abstract class KeyedLockerTest {
         unlockerRefSetLatch.countDown();
       }
     };
-    Runnable runnable2 = new Runnable() {
-      @Override
-      public void run() {
-        try {
-          unlockerRefSetLatch.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-          runnableInterrupted.set(true);
-        }
-        try {
-          Preconditions.checkNotNull(unlockerRef.get()).close();
-          fail();
-        } catch (IllegalMonitorStateException expected) {
-          runnable2Executed.set(true);
-        }
-      }
-    };
+    Runnable runnable2 =
+        new Runnable() {
+          @Override
+          public void run() {
+            try {
+              unlockerRefSetLatch.await(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+              runnableInterrupted.set(true);
+            }
+            assertThrows(
+                IllegalMonitorStateException.class,
+                () -> Preconditions.checkNotNull(unlockerRef.get()).close());
+            runnable2Executed.set(true);
+          }
+        };
     @SuppressWarnings("unused")
     Future<?> possiblyIgnoredError = executorService.submit(wrapper.wrap(runnable1));
     @SuppressWarnings("unused")
