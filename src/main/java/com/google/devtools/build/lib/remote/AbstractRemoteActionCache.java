@@ -55,7 +55,7 @@ import com.google.devtools.build.lib.remote.AbstractRemoteActionCache.ActionResu
 import com.google.devtools.build.lib.remote.AbstractRemoteActionCache.ActionResultMetadata.SymlinkMetadata;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
-import com.google.devtools.build.lib.remote.util.DigestUtil.ActionKey;
+import com.google.devtools.build.lib.remote.common.SimpleBlobStore.ActionKey;
 import com.google.devtools.build.lib.remote.util.Utils;
 import com.google.devtools.build.lib.remote.util.Utils.InMemoryOutput;
 import com.google.devtools.build.lib.util.io.FileOutErr;
@@ -68,7 +68,6 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
-import io.grpc.StatusRuntimeException;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -119,10 +118,10 @@ public abstract class AbstractRemoteActionCache implements AutoCloseable {
    * @throws IOException if the remote cache is unavailable.
    */
   @Nullable
-  abstract ActionResult getCachedActionResult(DigestUtil.ActionKey actionKey)
+  abstract ActionResult getCachedActionResult(ActionKey actionKey)
       throws IOException, InterruptedException;
 
-  protected abstract void setCachedActionResult(DigestUtil.ActionKey actionKey, ActionResult action) throws IOException, InterruptedException;
+  protected abstract void setCachedActionResult(ActionKey actionKey, ActionResult action) throws IOException, InterruptedException;
 
   /**
    * Uploads a file
@@ -852,7 +851,7 @@ public abstract class AbstractRemoteActionCache implements AutoCloseable {
      * Adds an action and command protos to upload. They need to be uploaded as part of the action
      * result.
      */
-    public void addAction(DigestUtil.ActionKey actionKey, Action action, Command command) {
+    public void addAction(ActionKey actionKey, Action action, Command command) {
       digestToBlobs.put(actionKey.getDigest(), action.toByteString());
       digestToBlobs.put(action.getCommandDigest(), command.toByteString());
     }
