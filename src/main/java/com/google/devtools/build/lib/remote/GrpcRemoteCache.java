@@ -49,6 +49,7 @@ import com.google.common.util.concurrent.SettableFuture;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.remote.RemoteRetrier.ProgressiveBackoff;
+import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.SimpleBlobStore.ActionKey;
 import com.google.devtools.build.lib.remote.merkletree.MerkleTree;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
@@ -263,7 +264,7 @@ public class GrpcRemoteCache extends AbstractRemoteActionCache {
     if (!options.remoteInstanceName.isEmpty()) {
       resourceName += options.remoteInstanceName + "/";
     }
-    resourceName += "blobs/" + digestUtil.toString(digest);
+    resourceName += "blobs/" + digest.getHash() + "/" + digest.getSizeBytes();
 
     @Nullable Supplier<HashCode> hashSupplier = null;
     if (options.remoteVerifyDownloads) {
@@ -348,7 +349,7 @@ public class GrpcRemoteCache extends AbstractRemoteActionCache {
               public void onError(Throwable t) {
                 Status status = Status.fromThrowable(t);
                 if (status.getCode() == Status.Code.NOT_FOUND) {
-                  future.setException(new CacheNotFoundException(digest, digestUtil));
+                  future.setException(new CacheNotFoundException(digest));
                 } else {
                   future.setException(t);
                 }
