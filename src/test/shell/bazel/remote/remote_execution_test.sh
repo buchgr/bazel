@@ -1097,6 +1097,69 @@ EOF
   expect_log "uri:.*bytestream://localhost"
 }
 
+function test_remote_exec_properties() {
+  # Test that setting remote exec properties works.
+  mkdir -p a
+  cat > a/BUILD <<'EOF'
+genrule(
+  name = "foo",
+  srcs = [],
+  outs = ["foo.txt"],
+  cmd = "echo \"foo\" > \"$@\"",
+)
+EOF
+
+  bazel build \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --remote_default_exec_properties=OSFamily=linux \
+    //a:foo || fail "Failed to build //a:foo"
+
+  bazel clean
+
+  bazel build \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --remote_default_exec_properties=OSFamily=windows \
+    //a:foo >& $TEST_log || fail "Failed to build //a:foo"
+
+  expect_not_log "remote cache hit"
+}
+
+function test_nobuild_runfile_links() {
+  mkdir data && echo "hello" > data/hello && echo "world" > data/world
+    cat > WORKSPACE <<EOF
+workspace(name = "foo")
+EOF
+
+  cat > test.sh <<'EOF'
+#!/bin/bash
+set -e
+[[ -f ${RUNFILES_DIR}/foo/data/hello ]]
+[[ -f ${RUNFILES_DIR}/foo/data/world ]]
+exit 0
+EOF
+  chmod 755 test.sh
+  cat > BUILD <<'EOF'
+filegroup(
+  name = "runfiles",
+  srcs = ["data/hello", "data/world"],
+)
+
+sh_test(
+  name = "test",
+  srcs = ["test.sh"],
+  data = [":runfiles"],
+)
+EOF
+
+  bazel test \
+    --nobuild_runfile_links \
+    --remote_executor=grpc://localhost:${worker_port} \
+    //:test || fail "Testing //:test failed"
+
+  [[ ! -f bazel-bin/test.runfiles/foo/data/hello ]] || fail "expected no runfile data/hello"
+  [[ ! -f bazel-bin/test.runfiles/foo/data/world ]] || fail "expected no runfile data/world"
+  [[ ! -f bazel-bin/test.runfiles/MANIFEST ]] || fail "expected output manifest to exist"
+}
 # TODO(alpha): Add a test that fails remote execution when remote worker
 # supports sandbox.
 
