@@ -38,6 +38,7 @@ import com.google.common.collect.Maps;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -479,6 +480,26 @@ public abstract class AbstractRemoteActionCache implements MissingDigestsFinder,
     }
   }
 
+  private static ListenableFuture<Void> closeStreamOnError(Throwable rootCause, OutputStream out) {
+    try {
+      out.close();
+    } catch (IOException e) {
+      if (rootCause != e) {
+        rootCause.addSuppressed(e);
+      }
+    }
+    return Futures.immediateFailedFuture(rootCause);
+  }
+
+  private static ListenableFuture<Void> closeStream(OutputStream out) {
+    try {
+      out.close();
+      return Futures.immediateFuture(null);
+    } catch (IOException e) {
+      return Futures.immediateFailedFuture(e);
+    }
+  }
+
   /** Download a file (that is not a directory). The content is fetched from the digest. */
   public ListenableFuture<Void> downloadFile(Path path, Digest digest) throws IOException {
     Preconditions.checkNotNull(path.getParentDirectory()).createDirectoryAndParents();
@@ -489,36 +510,16 @@ public abstract class AbstractRemoteActionCache implements MissingDigestsFinder,
     }
 
     OutputStream out = new LazyFileOutputStream(path);
-    SettableFuture<Void> outerF = SettableFuture.create();
-    ListenableFuture<Void> f = downloadBlob(digest, out);
-    Futures.addCallback(
-        f,
-        new FutureCallback<Void>() {
-          @Override
-          public void onSuccess(Void result) {
-            try {
-              out.close();
-              outerF.set(null);
-            } catch (IOException e) {
-              outerF.setException(e);
-            }
-          }
+    ListenableFuture<Void> downloadFuture = downloadBlob(digest, out);
 
-          @Override
-          public void onFailure(Throwable t) {
-            try {
-              out.close();
-            } catch (IOException e) {
-              if (t != e) {
-                t.addSuppressed(e);
-              }
-            } finally {
-              outerF.setException(t);
-            }
-          }
-        },
-        directExecutor());
-    return outerF;
+    // Ensure the output stream gets closed if the download fails
+    downloadFuture = Futures.catchingAsync(downloadFuture, Throwable.class,
+        (t) -> closeStreamOnError(t, out), MoreExecutors.directExecutor());
+    // Ensure the output stream gets closed if the download succeeds
+    downloadFuture = Futures.transformAsync(downloadFuture, (v) -> closeStream(out),
+        MoreExecutors.directExecutor());
+
+    return downloadFuture;
   }
 
   private List<ListenableFuture<FileMetadata>> downloadOutErr(ActionResult result, OutErr outErr)
