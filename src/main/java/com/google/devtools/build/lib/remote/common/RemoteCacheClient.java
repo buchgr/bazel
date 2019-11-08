@@ -29,13 +29,14 @@ import java.io.OutputStream;
  *
  * <p>Implementations must be thread-safe.
  */
-public interface SimpleBlobStore {
+public interface RemoteCacheClient extends MissingDigestsFinder {
 
   /**
    * A key in the remote action cache. The type wraps around a {@link Digest} of an {@link Action}.
    * Action keys are special in that they aren't content-addressable but refer to action results.
    */
   final class ActionKey {
+
     private final Digest digest;
 
     public Digest getDigest() {
@@ -45,14 +46,29 @@ public interface SimpleBlobStore {
     public ActionKey(Digest digest) {
       this.digest = Preconditions.checkNotNull(digest, "digest");
     }
+
+    @Override
+    public boolean equals(Object other) {
+      if (!(other instanceof ActionKey)) {
+        return false;
+      }
+
+      ActionKey otherKey = (ActionKey) other;
+      return other.equals(digest);
+    }
+
+    @Override
+    public int hashCode() {
+      return digest.hashCode();
+    }
   }
 
   /**
    * Downloads an action result for the {@code actionKey}.
    *
    * @param actionKey The digest of the {@link Action} that generated the action result.
-   * @return A Future representing pending download of an action result. If an action result
-   * for {@code actionKey} cannot be found the result of the Future is {@code null}.
+   * @return A Future representing pending download of an action result. If an action result for
+   * {@code actionKey} cannot be found the result of the Future is {@code null}.
    */
   ListenableFuture<ActionResult> downloadActionResult(ActionKey actionKey);
 
@@ -95,6 +111,8 @@ public interface SimpleBlobStore {
    */
   ListenableFuture<Void> uploadBlob(Digest digest, ByteString data);
 
-  /** Close resources associated with the remote cache. */
+  /**
+   * Close resources associated with the remote cache.
+   */
   void close();
 }

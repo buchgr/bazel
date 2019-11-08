@@ -34,14 +34,10 @@ public class RemoteRetrier extends Retrier {
 
   public static final Predicate<? super Exception> RETRIABLE_GRPC_ERRORS =
       e -> {
-        if (!(e instanceof StatusException) && !(e instanceof StatusRuntimeException)) {
-          return false;
-        }
         Status s = Status.fromThrowable(e);
         switch (s.getCode()) {
           case CANCELLED:
             return !Thread.currentThread().isInterrupted();
-          case UNKNOWN:
           case DEADLINE_EXCEEDED:
           case ABORTED:
           case INTERNAL:
