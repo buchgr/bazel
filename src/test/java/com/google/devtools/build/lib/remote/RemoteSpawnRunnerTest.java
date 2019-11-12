@@ -212,7 +212,7 @@ public class RemoteSpawnRunnerTest {
     runner.exec(spawn, policy);
 
     verify(localRunner).exec(spawn, policy);
-    verify(cache).ensureInputsPresent(any(), any(), eq(execRoot));
+    verify(cache).ensureInputsPresent(any(), any());
     verifyNoMoreInteractions(cache);
   }
 

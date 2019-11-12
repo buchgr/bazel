@@ -33,12 +33,12 @@ import java.util.concurrent.ExecutionException;
  * remote blob store. If a blob isn't found in the first store, the second store is used, and the
  * blob added to the first. Put puts the blob on both stores.
  */
-public final class CombinedDiskHttpCacheClient implements RemoteCacheClient {
+public final class DiskAndRemoteCacheClient implements RemoteCacheClient {
 
   private final RemoteCacheClient remoteCache;
   private final DiskCacheClient diskCache;
 
-  public CombinedDiskHttpCacheClient(DiskCacheClient diskCache, RemoteCacheClient remoteCache) {
+  public DiskAndRemoteCacheClient(DiskCacheClient diskCache, RemoteCacheClient remoteCache) {
     this.diskCache = Preconditions.checkNotNull(diskCache);
     this.remoteCache = Preconditions.checkNotNull(remoteCache);
   }
@@ -86,10 +86,14 @@ public final class CombinedDiskHttpCacheClient implements RemoteCacheClient {
   public ListenableFuture<ImmutableSet<Digest>> findMissingDigests(Iterable<Digest> digests) {
     ListenableFuture<ImmutableSet<Digest>> remoteQuery = remoteCache.findMissingDigests(digests);
     ListenableFuture<ImmutableSet<Digest>> diskQuery = diskCache.findMissingDigests(digests);
-    return Futures.whenAllSucceed(remoteQuery, diskQuery).call(() -> ImmutableSet.<Digest>builder()
-        .addAll(remoteQuery.get())
-        .addAll(diskQuery.get())
-        .build(), MoreExecutors.directExecutor());
+    return Futures.whenAllSucceed(remoteQuery, diskQuery)
+        .call(
+            () ->
+                ImmutableSet.<Digest>builder()
+                    .addAll(remoteQuery.get())
+                    .addAll(diskQuery.get())
+                    .build(),
+            MoreExecutors.directExecutor());
   }
 
   private Path newTempPath(){

@@ -21,7 +21,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.authandtls.AuthAndTLSOptions;
 import com.google.devtools.build.lib.authandtls.GoogleAuthUtils;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
-import com.google.devtools.build.lib.remote.disk.CombinedDiskHttpCacheClient;
+import com.google.devtools.build.lib.remote.disk.DiskAndRemoteCacheClient;
 import com.google.devtools.build.lib.remote.disk.DiskCacheClient;
 import com.google.devtools.build.lib.remote.http.HttpCacheClient;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
@@ -42,6 +42,14 @@ public final class RemoteCacheClientFactory {
 
   private RemoteCacheClientFactory() {}
 
+  public static RemoteCacheClient createDiskAndRemoteClient(Path workingDirectory,
+      PathFragment diskCachePath, boolean remoteVerifyDownloads, DigestUtil digestUtil,
+      RemoteCacheClient remoteCacheClient) throws IOException {
+    DiskCacheClient diskCacheClient =
+        createDiskCache(workingDirectory, diskCachePath, remoteVerifyDownloads, digestUtil);
+    return new DiskAndRemoteCacheClient(diskCacheClient, remoteCacheClient);
+  }
+
   public static ReferenceCountedChannel createGrpcChannel(String target, String proxyUri,
       AuthAndTLSOptions authOptions, @Nullable ClientInterceptor interceptor) throws IOException {
     return new ReferenceCountedChannel(
@@ -53,7 +61,7 @@ public final class RemoteCacheClientFactory {
       Path workingDirectory, DigestUtil digestUtil) throws IOException {
     Preconditions.checkNotNull(workingDirectory, "workingDirectory");
     if (isHttpCache(options) && isDiskCache(options)) {
-      return createCombinedCache(workingDirectory, options.diskCache, options, creds, digestUtil);
+      return createDiskAndHttpCache(workingDirectory, options.diskCache, options, creds, digestUtil);
     }
     if (isHttpCache(options)) {
       return createHttp(options, creds, digestUtil);
@@ -110,7 +118,7 @@ public final class RemoteCacheClientFactory {
     }
   }
 
-  private static RemoteCacheClient createDiskCache(Path workingDirectory, PathFragment diskCachePath,
+  private static DiskCacheClient createDiskCache(Path workingDirectory, PathFragment diskCachePath,
       boolean verifyDownloads, DigestUtil digestUtil)
       throws IOException {
     Path cacheDir =
@@ -121,20 +129,12 @@ public final class RemoteCacheClientFactory {
     return new DiskCacheClient(cacheDir, verifyDownloads, digestUtil);
   }
 
-  private static RemoteCacheClient createCombinedCache(
+  private static RemoteCacheClient createDiskAndHttpCache(
       Path workingDirectory, PathFragment diskCachePath, RemoteOptions options, Credentials cred,
       DigestUtil digestUtil) throws IOException {
-    Path cacheDir =
-        workingDirectory.getRelative(Preconditions.checkNotNull(diskCachePath, "diskCachePath"));
-    if (!cacheDir.exists()) {
-      cacheDir.createDirectoryAndParents();
-    }
-
-    DiskCacheClient diskCache =
-        new DiskCacheClient(cacheDir, options.remoteVerifyDownloads, digestUtil);
     RemoteCacheClient httpCache = createHttp(options, cred, digestUtil);
-
-    return new CombinedDiskHttpCacheClient(diskCache, httpCache);
+    return createDiskAndRemoteClient(workingDirectory, diskCachePath, options.remoteVerifyDownloads,
+        digestUtil, httpCache);
   }
 
   public static boolean isDiskCache(RemoteOptions options) {
